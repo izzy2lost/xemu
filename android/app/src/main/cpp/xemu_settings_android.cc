@@ -10,8 +10,6 @@
 
 #include <sstream>
 #include <string>
-#include <algorithm>
-#include <cctype>
 
 #include "xemu-settings.h"
 
@@ -68,7 +66,7 @@ static void xemu_settings_apply_defaults(void)
     g_config.input.keyboard_controller_scancode_map.rtrigger = 18;
 
     g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
-    g_config.display.filtering = CONFIG_DISPLAY_FILTERING_LINEAR;
+    g_config.display.filtering = CONFIG_DISPLAY_FILTERING_NEAREST;
     g_config.display.quality.surface_scale = 1;
     g_config.display.window.fullscreen_on_startup = false;
     g_config.display.window.fullscreen_exclusive = false;
@@ -76,7 +74,7 @@ static void xemu_settings_apply_defaults(void)
         CONFIG_DISPLAY_WINDOW_STARTUP_SIZE_1280X960;
     g_config.display.window.last_width = 640;
     g_config.display.window.last_height = 480;
-    g_config.display.window.vsync = true;
+    g_config.display.window.vsync = false;
     g_config.display.ui.show_menubar = true;
     g_config.display.ui.show_notifications = true;
     g_config.display.ui.hide_cursor = true;
@@ -104,26 +102,40 @@ static void xemu_settings_apply_defaults(void)
     g_config.perf.cache_shaders = true;
 }
 
-static std::string to_lower(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char c) { return (char)std::tolower(c); });
-    return value;
-}
-
+// Optimized parsers - avoid string allocations
 static bool parse_renderer(const std::string &value, CONFIG_DISPLAY_RENDERER *out)
 {
-    std::string lowered = to_lower(value);
-    if (lowered == "opengl" || lowered == "gl") {
+    if (value.size() == 6 && (value == "opengl" || value == "OpenGL" || value == "OPENGL")) {
         *out = CONFIG_DISPLAY_RENDERER_OPENGL;
         return true;
     }
-    if (lowered == "vulkan" || lowered == "vk") {
+    if (value.size() == 2 && (value == "gl" || value == "GL")) {
+        *out = CONFIG_DISPLAY_RENDERER_OPENGL;
+        return true;
+    }
+    if (value.size() == 6 && (value == "vulkan" || value == "Vulkan" || value == "VULKAN")) {
         *out = CONFIG_DISPLAY_RENDERER_VULKAN;
         return true;
     }
-    if (lowered == "null" || lowered == "none") {
+    if (value.size() == 2 && (value == "vk" || value == "VK")) {
+        *out = CONFIG_DISPLAY_RENDERER_VULKAN;
+        return true;
+    }
+    if ((value.size() == 4 && (value == "null" || value == "NULL" || value == "Null" || value == "none" || value == "NONE" || value == "None"))) {
         *out = CONFIG_DISPLAY_RENDERER_NULL;
+        return true;
+    }
+    return false;
+}
+
+static bool parse_filtering(const std::string &value, CONFIG_DISPLAY_FILTERING *out)
+{
+    if (value.size() == 6 && (value == "linear" || value == "Linear" || value == "LINEAR")) {
+        *out = CONFIG_DISPLAY_FILTERING_LINEAR;
+        return true;
+    }
+    if (value.size() == 7 && (value == "nearest" || value == "Nearest" || value == "NEAREST")) {
+        *out = CONFIG_DISPLAY_FILTERING_NEAREST;
         return true;
     }
     return false;
@@ -189,68 +201,81 @@ bool xemu_settings_load(void)
 
     const char *path = xemu_settings_get_path();
     if (!path || *path == '\0') {
-        g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
         return true;
     }
 
     if (qemu_access(path, F_OK) == -1) {
-        g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
         return true;
     }
 
     try {
         toml::table tbl = toml::parse_file(path);
 
-        if (auto show_welcome = tbl["general"]["show_welcome"].value<bool>()) {
+        // Cache table lookups to avoid repeated traversal
+        auto general = tbl["general"];
+        auto display = tbl["display"];
+        auto display_window = display["window"];
+        auto perf = tbl["perf"];
+        auto android_cfg = tbl["android"];
+        auto sys = tbl["sys"];
+        auto sys_files = sys["files"];
+
+        // General settings
+        if (auto show_welcome = general["show_welcome"].value<bool>()) {
             g_config.general.show_welcome = *show_welcome;
         }
 
-        if (auto renderer = tbl["display"]["renderer"].value<std::string>()) {
+        // Display settings - force Vulkan on Android
+        g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
+        if (auto renderer = display["renderer"].value<std::string>()) {
             CONFIG_DISPLAY_RENDERER parsed;
-            if (parse_renderer(*renderer, &parsed)) {
-                (void)parsed;
-                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                                    "Config display.renderer=%s (Android forces Vulkan)",
-                                    renderer->c_str());
-            } else {
+            if (parse_renderer(*renderer, &parsed) && parsed != CONFIG_DISPLAY_RENDERER_VULKAN) {
                 __android_log_print(ANDROID_LOG_WARN, "xemu-android",
-                                    "Unknown display.renderer='%s'",
+                                    "Config display.renderer=%s requested, but Android forces Vulkan",
                                     renderer->c_str());
             }
         }
 
-        if (auto force_cpu = tbl["android"]["force_cpu_blit"].value<bool>()) {
-            if (*force_cpu) {
-                setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
-                __android_log_print(ANDROID_LOG_WARN, "xemu-android",
-                                    "Config android.force_cpu_blit=1 ignored on Android");
-            } else {
-                setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
-                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                                    "Config android.force_cpu_blit=0");
+        if (auto filtering = display["filtering"].value<std::string>()) {
+            CONFIG_DISPLAY_FILTERING parsed;
+            if (parse_filtering(*filtering, &parsed)) {
+                g_config.display.filtering = parsed;
             }
         }
-        if (auto egl_offscreen = tbl["android"]["egl_offscreen"].value<bool>()) {
+
+        if (auto vsync = display_window["vsync"].value<bool>()) {
+            g_config.display.window.vsync = *vsync;
+        }
+
+        // Performance settings
+        if (auto hard_fpu = perf["hard_fpu"].value<bool>()) {
+            g_config.perf.hard_fpu = *hard_fpu;
+        }
+        if (auto cache_shaders = perf["cache_shaders"].value<bool>()) {
+            g_config.perf.cache_shaders = *cache_shaders;
+        }
+
+        // Android-specific settings
+        if (auto egl_offscreen = android_cfg["egl_offscreen"].value<bool>()) {
             if (!*egl_offscreen) {
                 setenv("XEMU_ANDROID_EGL_OFFSCREEN", "0", 1);
-                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                                    "Config android.egl_offscreen=0");
             }
         }
 
-        if (auto bootrom = tbl["sys"]["files"]["bootrom_path"].value<std::string>()) {
+        // System file paths
+        if (auto bootrom = sys_files["bootrom_path"].value<std::string>()) {
             xemu_settings_set_string(&g_config.sys.files.bootrom_path, bootrom->c_str());
         }
-        if (auto flashrom = tbl["sys"]["files"]["flashrom_path"].value<std::string>()) {
+        if (auto flashrom = sys_files["flashrom_path"].value<std::string>()) {
             xemu_settings_set_string(&g_config.sys.files.flashrom_path, flashrom->c_str());
         }
-        if (auto hdd = tbl["sys"]["files"]["hdd_path"].value<std::string>()) {
+        if (auto hdd = sys_files["hdd_path"].value<std::string>()) {
             xemu_settings_set_string(&g_config.sys.files.hdd_path, hdd->c_str());
         }
-        if (auto dvd = tbl["sys"]["files"]["dvd_path"].value<std::string>()) {
+        if (auto dvd = sys_files["dvd_path"].value<std::string>()) {
             xemu_settings_set_string(&g_config.sys.files.dvd_path, dvd->c_str());
         }
-        if (auto eeprom = tbl["sys"]["files"]["eeprom_path"].value<std::string>()) {
+        if (auto eeprom = sys_files["eeprom_path"].value<std::string>()) {
             xemu_settings_set_string(&g_config.sys.files.eeprom_path, eeprom->c_str());
         }
     } catch (const toml::parse_error &err) {
@@ -260,7 +285,6 @@ bool xemu_settings_load(void)
         error_msg = oss.str();
         return false;
     }
-    g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
     return true;
 }
 

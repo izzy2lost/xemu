@@ -201,17 +201,26 @@ static bool WriteConfigToml(const std::string& config_path,
 
   toml::table* general = EnsureTable(tbl, "general");
   toml::table* display = EnsureTable(tbl, "display");
+  toml::table* display_window = EnsureTable(*display, "window");
   toml::table* android = EnsureTable(tbl, "android");
   toml::table* sys = EnsureTable(tbl, "sys");
   toml::table* files = EnsureTable(*sys, "files");
-  if (!general || !display || !android || !sys || !files) {
+  if (!general || !display || !display_window || !android || !sys || !files) {
     LogErrorFmt("Failed to build config tables at %s", config_path.c_str());
     return false;
   }
 
   general->insert_or_assign("show_welcome", false);
   display->insert_or_assign("renderer", "vulkan");
-  android->insert_or_assign("force_cpu_blit", false);
+  if (!display->contains("filtering")) {
+    display->insert_or_assign("filtering", "nearest");
+  }
+  if (!display_window->contains("vsync")) {
+    display_window->insert_or_assign("vsync", false);
+  }
+  if (!android->contains("force_cpu_blit")) {
+    android->insert_or_assign("force_cpu_blit", false);
+  }
 
   files->insert_or_assign("bootrom_path", mcpx);
   files->insert_or_assign("flashrom_path", flash);
@@ -431,7 +440,6 @@ extern "C" int SDL_main(int argc, char* argv[]) {
     } else if (!g_config.sys.files.eeprom_path) {
       xemu_settings_set_string(&g_config.sys.files.eeprom_path, "");
     }
-    g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
     setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
     g_config.general.show_welcome = false;
     g_config.perf.cache_shaders = true;
@@ -446,6 +454,9 @@ extern "C" int SDL_main(int argc, char* argv[]) {
 
     std::vector<std::string> arg_storage;
     arg_storage.emplace_back("xemu");
+    arg_storage.emplace_back("-accel");
+    arg_storage.emplace_back("tcg,thread=multi,tb-size=256");
+    LogInfo("SDL_main: forcing TCG accel thread=multi tb-size=256");
 
     std::vector<char*> xemu_argv;
     xemu_argv.reserve(arg_storage.size() + 1);

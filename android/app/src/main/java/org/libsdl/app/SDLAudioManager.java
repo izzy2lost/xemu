@@ -1,6 +1,7 @@
 package org.libsdl.app;
 
 import android.content.Context;
+import android.media.AudioAttributes;
 import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
@@ -264,7 +265,8 @@ public class SDLAudioManager {
 
         } else {
             if (mAudioTrack == null) {
-                mAudioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, channelConfig, audioFormat, desiredFrames * frameSize, AudioTrack.MODE_STREAM);
+                final int bufferSizeInBytes = desiredFrames * frameSize;
+                mAudioTrack = createPlaybackTrack(sampleRate, channelConfig, audioFormat, bufferSizeInBytes);
 
                 // Instantiating AudioTrack can "succeed" without an exception and the track may still be invalid
                 // Ref: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/master/media/java/android/media/AudioTrack.java
@@ -294,6 +296,40 @@ public class SDLAudioManager {
         Log.v(TAG, "Opening " + (isCapture ? "capture" : "playback") + ", got " + results[3] + " frames of " + results[2] + " channel " + getAudioFormatString(results[1]) + " audio at " + results[0] + " Hz");
 
         return results;
+    }
+
+    private static AudioTrack createPlaybackTrack(int sampleRate, int channelConfig, int audioFormat, int bufferSizeInBytes) {
+        if (Build.VERSION.SDK_INT >= 26 /* Android 8.0 (O) */) {
+            try {
+                AudioAttributes attributes = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_GAME)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build();
+
+                AudioFormat format = new AudioFormat.Builder()
+                        .setSampleRate(sampleRate)
+                        .setEncoding(audioFormat)
+                        .setChannelMask(channelConfig)
+                        .build();
+
+                AudioTrack track = new AudioTrack.Builder()
+                        .setAudioAttributes(attributes)
+                        .setAudioFormat(format)
+                        .setTransferMode(AudioTrack.MODE_STREAM)
+                        .setBufferSizeInBytes(bufferSizeInBytes)
+                        .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                        .build();
+                Log.v(TAG, "Created AudioTrack in low-latency performance mode");
+                return track;
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "Low-latency AudioTrack.Builder failed, falling back: " + e.getMessage());
+            } catch (UnsupportedOperationException e) {
+                Log.w(TAG, "Low-latency mode unsupported, falling back: " + e.getMessage());
+            }
+        }
+
+        return new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, channelConfig,
+                audioFormat, bufferSizeInBytes, AudioTrack.MODE_STREAM);
     }
 
     private static int sanitizeOutputChannelCount(int desiredChannels) {
