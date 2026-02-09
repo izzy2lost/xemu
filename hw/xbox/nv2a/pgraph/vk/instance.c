@@ -36,15 +36,7 @@ static char const *const validation_layers[] = {
     "VK_LAYER_KHRONOS_validation",
 };
 
-static char const *const required_instance_extensions[] = {
-    VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
-    VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME,
-    VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
-};
-
 static char const *const required_device_extensions[] = {
-    VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
-    VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
 #ifdef WIN32
     VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
     VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
@@ -129,17 +121,6 @@ is_extension_available(VkExtensionPropertiesArray *available_extensions,
     return false;
 }
 
-static StringArray *get_required_instance_extension_names(PGRAPHState *pg)
-{
-    StringArray *extensions = g_array_sized_new(
-        FALSE, FALSE, sizeof(char *),
-        ARRAY_SIZE(required_instance_extensions));
-    g_array_append_vals(extensions, required_instance_extensions,
-                        ARRAY_SIZE(required_instance_extensions));
-
-    return extensions;
-}
-
 static bool
 add_extension_if_available(VkExtensionPropertiesArray *available_extensions,
                            StringArray *enabled_extension_names,
@@ -186,31 +167,14 @@ static bool create_instance(PGRAPHState *pg, Error **errp)
             xemu_version_major, xemu_version_minor, xemu_version_patch),
         .pEngineName = "No Engine",
         .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-        .apiVersion = VK_API_VERSION_1_3,
+        .apiVersion = VK_API_VERSION_1_1,
     };
 
     g_autoptr(VkExtensionPropertiesArray) available_extensions =
         get_available_instance_extensions(pg);
 
     g_autoptr(StringArray) enabled_extension_names =
-        get_required_instance_extension_names(pg);
-
-    bool all_required_extensions_available = true;
-    for (int i = 0; i < enabled_extension_names->len; i++) {
-        const char *required_extension =
-            g_array_index(enabled_extension_names, const char *, i);
-        if (!is_extension_available(available_extensions, required_extension)) {
-            fprintf(stderr,
-                    "Error: Required instance extension not available: %s\n",
-                    required_extension);
-            all_required_extensions_available = false;
-        }
-    }
-
-    if (!all_required_extensions_available) {
-        error_setg(errp, "Required instance extensions not available");
-        goto error;
-    }
+        g_array_new(FALSE, FALSE, sizeof(char *));
 
     add_optional_instance_extension_names(pg, available_extensions,
                                           enabled_extension_names);
@@ -279,10 +243,6 @@ static bool create_instance(PGRAPHState *pg, Error **errp)
     }
 
     return true;
-
-error:
-    volkFinalize();
-    return false;
 }
 
 static bool is_queue_family_indicies_complete(QueueFamilyIndices indices)
@@ -384,6 +344,12 @@ static bool check_device_support_required_extensions(VkPhysicalDevice device)
 
 static bool is_device_compatible(VkPhysicalDevice device)
 {
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(device, &props);
+    if (props.apiVersion < VK_API_VERSION_1_1) {
+        return false;
+    }
+
     QueueFamilyIndices indices = pgraph_vk_find_queue_families(device);
 
     return is_queue_family_indicies_complete(indices) &&
@@ -655,35 +621,27 @@ static bool init_allocator(PGRAPHState *pg, Error **errp)
         .vkCreateImage = vkCreateImage,
         .vkDestroyImage = vkDestroyImage,
         .vkCmdCopyBuffer = vkCmdCopyBuffer,
-    #if VMA_DEDICATED_ALLOCATION || VMA_VULKAN_VERSION >= 1001000
-        /// Fetch "vkGetBufferMemoryRequirements2" on Vulkan >= 1.1, fetch "vkGetBufferMemoryRequirements2KHR" when using VK_KHR_dedicated_allocation extension.
         .vkGetBufferMemoryRequirements2KHR = vkGetBufferMemoryRequirements2,
-        /// Fetch "vkGetImageMemoryRequirements2" on Vulkan >= 1.1, fetch "vkGetImageMemoryRequirements2KHR" when using VK_KHR_dedicated_allocation extension.
         .vkGetImageMemoryRequirements2KHR = vkGetImageMemoryRequirements2,
-    #endif
-    #if VMA_BIND_MEMORY2 || VMA_VULKAN_VERSION >= 1001000
-        /// Fetch "vkBindBufferMemory2" on Vulkan >= 1.1, fetch "vkBindBufferMemory2KHR" when using VK_KHR_bind_memory2 extension.
         .vkBindBufferMemory2KHR = vkBindBufferMemory2,
-        /// Fetch "vkBindImageMemory2" on Vulkan >= 1.1, fetch "vkBindImageMemory2KHR" when using VK_KHR_bind_memory2 extension.
         .vkBindImageMemory2KHR = vkBindImageMemory2,
-    #endif
-    #if VMA_MEMORY_BUDGET || VMA_VULKAN_VERSION >= 1001000
-        /// Fetch from "vkGetPhysicalDeviceMemoryProperties2" on Vulkan >= 1.1, but you can also fetch it from "vkGetPhysicalDeviceMemoryProperties2KHR" if you enabled extension VK_KHR_get_physical_device_properties2.
-        .vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2KHR,
-    #endif
-    #if VMA_KHR_MAINTENANCE4 || VMA_VULKAN_VERSION >= 1003000
-        /// Fetch from "vkGetDeviceBufferMemoryRequirements" on Vulkan >= 1.3, but you can also fetch it from "vkGetDeviceBufferMemoryRequirementsKHR" if you enabled extension VK_KHR_maintenance4.
-        .vkGetDeviceBufferMemoryRequirements = vkGetDeviceBufferMemoryRequirements,
-        /// Fetch from "vkGetDeviceImageMemoryRequirements" on Vulkan >= 1.3, but you can also fetch it from "vkGetDeviceImageMemoryRequirementsKHR" if you enabled extension VK_KHR_maintenance4.
-        .vkGetDeviceImageMemoryRequirements = vkGetDeviceImageMemoryRequirements,
-    #endif
+        .vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2,
     };
+
+    uint32_t device_api_version = r->device_props.apiVersion;
+
+    if (device_api_version >= VK_API_VERSION_1_3) {
+        vulkanFunctions.vkGetDeviceBufferMemoryRequirements =
+            vkGetDeviceBufferMemoryRequirements;
+        vulkanFunctions.vkGetDeviceImageMemoryRequirements =
+            vkGetDeviceImageMemoryRequirements;
+    }
 
     VmaAllocatorCreateInfo create_info = {
         .flags = (r->memory_budget_extension_enabled ?
                       VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT :
                       0),
-        .vulkanApiVersion = VK_API_VERSION_1_3,
+        .vulkanApiVersion = device_api_version,
         .instance = r->instance,
         .physicalDevice = r->physical_device,
         .device = r->device,
