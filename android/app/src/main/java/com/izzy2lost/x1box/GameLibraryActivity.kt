@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -18,6 +19,7 @@ import androidx.documentfile.provider.DocumentFile
 import coil.load
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import java.net.URLEncoder
 import java.util.ArrayDeque
@@ -57,6 +59,7 @@ class GameLibraryActivity : AppCompatActivity() {
   private lateinit var gamesListContainer: LinearLayout
   private lateinit var gamesGridContainer: LinearLayout
   private lateinit var btnChangeFolder: MaterialButton
+  private lateinit var btnAbout: ImageButton
   private lateinit var viewModeToggle: MaterialButtonToggleGroup
   private lateinit var switchBoxArtLookup: MaterialSwitch
 
@@ -89,6 +92,7 @@ class GameLibraryActivity : AppCompatActivity() {
     gamesListContainer = findViewById(R.id.library_games_container)
     gamesGridContainer = findViewById(R.id.library_games_grid_container)
     btnChangeFolder = findViewById(R.id.btn_change_games_folder)
+    btnAbout = findViewById(R.id.btn_library_about)
     viewModeToggle = findViewById(R.id.library_view_mode_toggle)
     switchBoxArtLookup = findViewById(R.id.switch_box_art_lookup)
 
@@ -102,6 +106,9 @@ class GameLibraryActivity : AppCompatActivity() {
 
     btnChangeFolder.setOnClickListener {
       pickGamesFolder.launch(gamesFolderUri)
+    }
+    btnAbout.setOnClickListener {
+      showAboutDialog()
     }
     viewModeToggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
       if (!isChecked) {
@@ -618,6 +625,43 @@ class GameLibraryActivity : AppCompatActivity() {
 
   private fun dp(value: Int): Int {
     return (value * resources.displayMetrics.density).toInt()
+  }
+
+  private fun showAboutDialog() {
+    val labels = arrayOf(
+      getString(R.string.library_about_link_source),
+      getString(R.string.library_about_link_privacy),
+      getString(R.string.library_about_link_fork),
+      getString(R.string.library_about_link_license),
+      getString(R.string.library_about_link_disclaimer)
+    )
+    val urls = arrayOf(
+      getString(R.string.library_about_url_source),
+      getString(R.string.library_about_url_privacy),
+      getString(R.string.library_about_url_fork),
+      getString(R.string.library_about_url_license),
+      getString(R.string.library_about_url_disclaimer)
+    )
+
+    MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.library_about_title)
+      .setMessage(R.string.library_about_message)
+      .setItems(labels) { _, which ->
+        openExternalLink(urls[which])
+      }
+      .setNegativeButton(android.R.string.cancel, null)
+      .show()
+  }
+
+  private fun openExternalLink(url: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+      addCategory(Intent.CATEGORY_BROWSABLE)
+    }
+    try {
+      startActivity(intent)
+    } catch (_: Exception) {
+      Toast.makeText(this, getString(R.string.library_about_open_failed), Toast.LENGTH_SHORT).show()
+    }
   }
 }
 

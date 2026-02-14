@@ -39,19 +39,29 @@
           android:orientation="vertical"
           android:padding="24dp">
 
-          <TextView
-            android:layout_width="wrap_content"
+          <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/library_title"
-            android:textAppearance="@style/TextAppearance.Material3.HeadlineMedium" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-          <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:text="@string/library_subtitle"
-            android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
-            android:textColor="@color/xemu_text_muted" />
+            <TextView
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/library_title"
+              android:textAppearance="@style/TextAppearance.Material3.HeadlineMedium" />
+
+            <ImageButton
+              android:id="@+id/btn_library_about"
+              android:layout_width="40dp"
+              android:layout_height="40dp"
+              android:background="?attr/selectableItemBackgroundBorderless"
+              android:contentDescription="@string/library_about_button_desc"
+              android:padding="6dp"
+              android:src="@android:drawable/ic_dialog_info"
+              android:tint="@color/xemu_green" />
+          </LinearLayout>
 
           <TextView
             android:id="@+id/library_folder_text"

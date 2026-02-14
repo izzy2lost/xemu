@@ -28,7 +28,6 @@
   <string name="setup_disc_value">Games Folder: %1$s</string>
 
   <string name="library_title">Game Library</string>
-  <string name="library_subtitle">Pick a game to launch in xemu.</string>
   <string name="library_change_folder">Change Folder</string>
   <string name="library_view_list">List</string>
   <string name="library_view_cover_grid">Cover Grid</string>
@@ -40,4 +39,18 @@
   <string name="library_game_size">Size: %1$s</string>
   <string name="library_game_path">Path: %1$s</string>
   <string name="library_open_game">Open</string>
+  <string name="library_about_button_desc">About X1 BOX</string>
+  <string name="library_about_title">About X1 BOX</string>
+  <string name="library_about_message">X1 BOX is a community project based on xemu. Select a link below:</string>
+  <string name="library_about_open_failed">Unable to open link.</string>
+  <string name="library_about_link_source">Source Code (X1 BOX)</string>
+  <string name="library_about_link_privacy">Privacy Policy</string>
+  <string name="library_about_link_fork">Forked From (xemu)</string>
+  <string name="library_about_link_license">License (LICENSE)</string>
+  <string name="library_about_link_disclaimer">License Disclaimer (COPYING)</string>
+  <string name="library_about_url_source" translatable="false">https://github.com/izzy2lost/xemu</string>
+  <string name="library_about_url_privacy" translatable="false">https://www.izzy2lost.com/x1box-privacy</string>
+  <string name="library_about_url_fork" translatable="false">https://github.com/xemu-project/xemu</string>
+  <string name="library_about_url_license" translatable="false">https://github.com/izzy2lost/xemu/blob/master/LICENSE</string>
+  <string name="library_about_url_disclaimer" translatable="false">https://github.com/izzy2lost/xemu/blob/master/COPYING</string>
 </resources>
