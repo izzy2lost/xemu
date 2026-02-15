@@ -4,6 +4,10 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.method.LinkMovementMethod
+import android.text.style.ClickableSpan
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.ImageButton
@@ -628,29 +632,50 @@ class GameLibraryActivity : AppCompatActivity() {
   }
 
   private fun showAboutDialog() {
-    val labels = arrayOf(
-      getString(R.string.library_about_link_source),
-      getString(R.string.library_about_link_privacy),
-      getString(R.string.library_about_link_fork),
-      getString(R.string.library_about_link_license),
-      getString(R.string.library_about_link_disclaimer)
-    )
-    val urls = arrayOf(
-      getString(R.string.library_about_url_source),
-      getString(R.string.library_about_url_privacy),
-      getString(R.string.library_about_url_fork),
-      getString(R.string.library_about_url_license),
-      getString(R.string.library_about_url_disclaimer)
+    val links = listOf(
+      getString(R.string.library_about_link_source) to getString(R.string.library_about_url_source),
+      getString(R.string.library_about_link_privacy) to getString(R.string.library_about_url_privacy),
+      getString(R.string.library_about_link_fork) to getString(R.string.library_about_url_fork),
+      getString(R.string.library_about_link_license) to getString(R.string.library_about_url_license),
+      getString(R.string.library_about_link_disclaimer) to getString(R.string.library_about_url_disclaimer)
     )
 
-    MaterialAlertDialogBuilder(this)
-      .setTitle(R.string.library_about_title)
-      .setMessage(R.string.library_about_message)
-      .setItems(labels) { _, which ->
-        openExternalLink(urls[which])
+    val message = SpannableStringBuilder().apply {
+      append(getString(R.string.library_about_message))
+      append("\n\n")
+      links.forEachIndexed { index, pair ->
+        val label = pair.first
+        val url = pair.second
+        append(label)
+        append('\n')
+        val start = length
+        append(url)
+        setSpan(
+          object : ClickableSpan() {
+            override fun onClick(widget: View) {
+              openExternalLink(url)
+            }
+          },
+          start,
+          length,
+          Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        if (index != links.lastIndex) {
+          append("\n\n")
+        }
       }
-      .setNegativeButton(android.R.string.cancel, null)
+    }
+
+    val dialog = MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.library_about_title)
+      .setMessage(message)
+      .setPositiveButton(android.R.string.ok, null)
       .show()
+
+    dialog.findViewById<TextView>(android.R.id.message)?.apply {
+      movementMethod = LinkMovementMethod.getInstance()
+      linksClickable = true
+    }
   }
 
   private fun openExternalLink(url: String) {
