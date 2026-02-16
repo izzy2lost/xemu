@@ -1,0 +1,48 @@
+[package]
+name = "xdvdfs"
+description = "Library for interacting with XISO/XDVDFS images"
+keywords = ["no_std", "filesystem", "xdvdfs"]
+readme = "README.md"
+
+version = "0.9.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/antangelo/xdvdfs"
+homepage = "https://github.com/antangelo/xdvdfs"
+
+exclude = ["**/*.iso", "**/*.xiso"]
+
+[dependencies]
+bincode = "1.3.3"
+proc-bitfield = "0.2.2"
+serde = { version = "1.0.159", default-features = false, features = ["derive", "alloc"] }
+serde-big-array = "0.5.1"
+async-trait = { version = "0.1.68" }
+encoding_rs = "0.8.32"
+maybe-async = "0.2.7"
+thiserror = { version = "2.0.14", default-features = false }
+
+# optional
+log = { version = "0.4.17", optional = true }
+sha3 = { version = "0.10.8", optional = true, default-features = false }
+ciso = { version = "0.3.0", default-features = false, optional = true }
+wax = { version = "0.6.0", default-features = false, optional = true }
+
+[features]
+default = ["std", "read", "write", "logging", "checksum", "ciso_support"]
+std = ["serde/std", "sha3/std"]
+read = []
+write = ["std", "wax"]
+logging = ["log"]
+sync = ["maybe-async/is_sync", "ciso/sync"]
+checksum = ["sha3"]
+ciso_support = ["write", "ciso"]
+wax = ["dep:wax"]
+
+[lib]
+
+[dev-dependencies]
+rand = "0.8.5"
+futures = "0.3.28"
+serde_test = "1.0.159"
+tempfile = "3.20.0"

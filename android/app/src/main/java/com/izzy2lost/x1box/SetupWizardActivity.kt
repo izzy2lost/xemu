@@ -290,7 +290,7 @@ class SetupWizardActivity : AppCompatActivity() {
   }
 
   private fun persistUriPermission(uri: Uri) {
-    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
     try {
       contentResolver.takePersistableUriPermission(uri, flags)
     } catch (_: SecurityException) {

@@ -1,0 +1,14 @@
+D:\xemu\android\rust\xiso_converter\target\aarch64-linux-android\debug\deps\thiserror-29964f99cb7a4706.d: C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs D:\xemu\android\rust\xiso_converter\target\aarch64-linux-android\debug\build\thiserror-48bf73898a48ecd2\out/private.rs
+
+D:\xemu\android\rust\xiso_converter\target\aarch64-linux-android\debug\deps\libthiserror-29964f99cb7a4706.rlib: C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs D:\xemu\android\rust\xiso_converter\target\aarch64-linux-android\debug\build\thiserror-48bf73898a48ecd2\out/private.rs
+
+D:\xemu\android\rust\xiso_converter\target\aarch64-linux-android\debug\deps\libthiserror-29964f99cb7a4706.rmeta: C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs D:\xemu\android\rust\xiso_converter\target\aarch64-linux-android\debug\build\thiserror-48bf73898a48ecd2\out/private.rs
+
+C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\lib.rs:
+C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\aserror.rs:
+C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\display.rs:
+C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\var.rs:
+C:\Users\izzyn\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-2.0.18\src\private.rs:
+D:\xemu\android\rust\xiso_converter\target\aarch64-linux-android\debug\build\thiserror-48bf73898a48ecd2\out/private.rs:
+
+# env-dep:OUT_DIR=D:\\xemu\\android\\rust\\xiso_converter\\target\\aarch64-linux-android\\debug\\build\\thiserror-48bf73898a48ecd2\\out

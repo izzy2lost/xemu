@@ -1,0 +1,1 @@
+{"rustc":13564344157160913299,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[857979250431893282,"build_script_build",false,10893405924499004423]],"local":[{"RerunIfChanged":{"output":"aarch64-linux-android\\debug\\build\\typenum-41fa8f49c158f41a\\output","paths":["tests"]}}],"rustflags":[],"config":0,"compile_kind":0}

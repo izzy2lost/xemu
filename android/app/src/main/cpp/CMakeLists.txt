@@ -15,6 +15,22 @@ if(NOT PYTHON_EXECUTABLE)
 endif()
 
 option(XEMU_ENABLE_VULKAN "Enable Vulkan renderer" ON)
+option(XEMU_ENABLE_XISO_CONVERTER "Enable ISO->XISO converter library" ON)
+
+find_program(CARGO_EXECUTABLE NAMES cargo cargo.exe)
+if(CARGO_EXECUTABLE MATCHES "-NOTFOUND$" OR NOT CARGO_EXECUTABLE)
+  if(DEFINED ENV{USERPROFILE})
+    file(TO_CMAKE_PATH "$ENV{USERPROFILE}/.cargo/bin/cargo.exe" CARGO_USERPROFILE_BIN)
+    if(EXISTS "${CARGO_USERPROFILE_BIN}")
+      set(CARGO_EXECUTABLE "${CARGO_USERPROFILE_BIN}" CACHE FILEPATH "Path to cargo executable" FORCE)
+    endif()
+  endif()
+endif()
+set(XEMU_XISO_CONVERTER_BUILD_ENABLED ${XEMU_ENABLE_XISO_CONVERTER})
+if(XEMU_XISO_CONVERTER_BUILD_ENABLED AND NOT CARGO_EXECUTABLE)
+  message(WARNING "cargo not found in PATH; disabling XISO converter")
+  set(XEMU_XISO_CONVERTER_BUILD_ENABLED OFF)
+endif()
 
 # --- SDL2 ---
 option(XEMU_FETCH_SDL2 "Download and build SDL2 for Android" ON)
@@ -150,6 +166,82 @@ endif()
 
 set(ANDROID_TRIPLE "aarch64-none-linux-android${ANDROID_API}")
 set(NDK_TOOLCHAIN "${NDK_PATH}/toolchains/llvm/prebuilt/windows-x86_64/bin")
+
+if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
+  if(CMAKE_HOST_WIN32)
+    if(NOT DEFINED XISO_CONVERTER_RUSTUP_TOOLCHAIN OR
+       XISO_CONVERTER_RUSTUP_TOOLCHAIN STREQUAL "")
+      set(XISO_CONVERTER_RUSTUP_TOOLCHAIN
+        "stable-x86_64-pc-windows-gnu"
+        CACHE STRING "Rustup host toolchain for ISO->XISO converter"
+        FORCE
+      )
+    else()
+      set(XISO_CONVERTER_RUSTUP_TOOLCHAIN
+        "${XISO_CONVERTER_RUSTUP_TOOLCHAIN}"
+        CACHE STRING "Rustup host toolchain for ISO->XISO converter"
+      )
+    endif()
+  else()
+    set(XISO_CONVERTER_RUSTUP_TOOLCHAIN
+      ""
+      CACHE STRING "Rustup host toolchain for ISO->XISO converter"
+    )
+  endif()
+
+  set(XISO_CONVERTER_CARGO_ENV_VARS "")
+  if(DEFINED XISO_CONVERTER_RUSTUP_TOOLCHAIN AND
+     NOT XISO_CONVERTER_RUSTUP_TOOLCHAIN STREQUAL "")
+    list(APPEND XISO_CONVERTER_CARGO_ENV_VARS
+      "RUSTUP_TOOLCHAIN=${XISO_CONVERTER_RUSTUP_TOOLCHAIN}"
+    )
+  endif()
+
+  set(XISO_CONVERTER_RS_DIR "${REPO_ROOT}/android/rust/xiso_converter")
+  set(XISO_CONVERTER_RS_TARGET "aarch64-linux-android")
+  set(XISO_CONVERTER_RS_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-target")
+  set(XISO_CONVERTER_RS_LIB
+    "${XISO_CONVERTER_RS_TARGET_DIR}/${XISO_CONVERTER_RS_TARGET}/release/libxiso_converter_rs.a"
+  )
+  set(XISO_CONVERTER_RS_LINKER
+    "${NDK_TOOLCHAIN}/aarch64-linux-android${ANDROID_API}-clang"
+  )
+  set(XISO_CONVERTER_RS_AR "${NDK_TOOLCHAIN}/llvm-ar")
+
+  file(GLOB_RECURSE XISO_CONVERTER_RS_SOURCES CONFIGURE_DEPENDS
+    "${XISO_CONVERTER_RS_DIR}/src/*.rs"
+    "${XISO_CONVERTER_RS_DIR}/Cargo.toml"
+    "${REPO_ROOT}/android/third_party/xdvdfs-core/src/*.rs"
+    "${REPO_ROOT}/android/third_party/xdvdfs-core/Cargo.toml"
+  )
+
+  add_custom_command(
+    OUTPUT "${XISO_CONVERTER_RS_LIB}"
+    COMMAND "${CMAKE_COMMAND}" -E env
+      "CARGO_TARGET_DIR=${XISO_CONVERTER_RS_TARGET_DIR}"
+      "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${XISO_CONVERTER_RS_LINKER}"
+      "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=${XISO_CONVERTER_RS_AR}"
+      ${XISO_CONVERTER_CARGO_ENV_VARS}
+      "${CARGO_EXECUTABLE}" build
+      --manifest-path "${XISO_CONVERTER_RS_DIR}/Cargo.toml"
+      --release
+      --target "${XISO_CONVERTER_RS_TARGET}"
+    DEPENDS ${XISO_CONVERTER_RS_SOURCES}
+    WORKING_DIRECTORY "${XISO_CONVERTER_RS_DIR}"
+    COMMENT "Building Rust ISO->XISO converter"
+    VERBATIM
+  )
+
+  add_custom_target(xiso_converter_rs_build ALL
+    DEPENDS "${XISO_CONVERTER_RS_LIB}"
+  )
+
+  add_library(xiso_converter_rs STATIC IMPORTED GLOBAL)
+  set_target_properties(xiso_converter_rs PROPERTIES
+    IMPORTED_LOCATION "${XISO_CONVERTER_RS_LIB}"
+  )
+  add_dependencies(xiso_converter_rs xiso_converter_rs_build)
+endif()
 
 set(GLIB_VERSION "2.66.8")
 set(GLIB_SOURCE_DIR "${CMAKE_BINARY_DIR}/glib-src")
@@ -843,6 +935,22 @@ find_library(egl-lib EGL)
 find_library(glesv3-lib GLESv3)
 find_library(vulkan-lib vulkan)
 find_library(zlib-lib z)
+
+if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
+  add_library(xiso_converter SHARED
+    xiso_converter_jni.cpp
+  )
+
+  target_compile_definitions(xiso_converter PRIVATE ANDROID __ANDROID__)
+  target_compile_options(xiso_converter PRIVATE -fexceptions -frtti -g0
+    $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:-UNDEBUG>
+  )
+
+  target_link_libraries(xiso_converter PRIVATE
+    xiso_converter_rs
+    ${log-lib}
+  )
+endif()
 
 if(TARGET SDL2::SDL2)
   target_link_libraries(xemu PRIVATE SDL2::SDL2)

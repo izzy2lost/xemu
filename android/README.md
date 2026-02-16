@@ -11,6 +11,13 @@ runs an event loop. The xemu core is not yet wired.
 - NDK r29+ (configured to 29.0.14206865 in Gradle)
 - CMake 3.30.3
 - JDK 21
+- Rust toolchain (`cargo`) for ISO->XISO converter
+  - On Windows, this project uses `stable-x86_64-pc-windows-gnu` (to avoid MSVC `link.exe`)
+  - Install once:
+    - `rustup toolchain install stable-x86_64-pc-windows-gnu`
+    - `rustup target add aarch64-linux-android --toolchain stable-x86_64-pc-windows-gnu`
+
+If Rust is not available, configure CMake with `-DXEMU_ENABLE_XISO_CONVERTER=OFF`.
 
 ## Build
 From this directory:

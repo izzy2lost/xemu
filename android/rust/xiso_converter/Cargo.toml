@@ -1,0 +1,12 @@
+[package]
+name = "xiso_converter_rs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+anyhow = "1.0.95"
+xdvdfs = { path = "../../third_party/xdvdfs-core", default-features = false, features = ["std", "read", "write", "sync"] }
