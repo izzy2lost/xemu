@@ -1,0 +1,61 @@
+name: Build for Android
+
+on:
+  workflow_call:
+    inputs:
+      pkg_version:
+        description: Build version
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Build for Android
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download source package
+      uses: actions/download-artifact@v4
+      with:
+        name: src
+        path: .
+
+    - name: Extract source package
+      run: |
+        mkdir src
+        tar -xf xemu-${{ inputs.pkg_version }}.tar.zst -C src --strip-components=2
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-linux-android
+
+    - name: Install build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y meson ninja-build
+        $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.30.3"
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        validate-wrappers: false
+
+    - name: Build with Gradle
+      run: |
+        cd src/android
+        chmod +x gradlew
+        ./gradlew assembleDebug assembleRelease
+
+    - name: Upload APKs
+      uses: actions/upload-artifact@v4
+      with:
+        name: xemu-android
+        path: |
+          src/android/app/build/outputs/apk/debug/*.apk
+          src/android/app/build/outputs/apk/release/*.apk
