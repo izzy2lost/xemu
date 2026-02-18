@@ -59,3 +59,5 @@ jobs:
         path: |
           src/android/app/build/outputs/apk/debug/*.apk
           src/android/app/build/outputs/apk/release/*.apk
+
+  
