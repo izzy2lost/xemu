@@ -380,8 +380,11 @@ bool xemu_settings_load(void)
             std::string normalized = to_lower_ascii(driver);
             if (normalized == "audiotrack") {
                 setenv("XEMU_ANDROID_AUDIO_DRIVER", "android", 1);
-            } else if (normalized == "opensl") {
+            } else if (normalized == "opensl" || normalized == "opensles") {
                 setenv("XEMU_ANDROID_AUDIO_DRIVER", "opensles", 1);
+            } else if (normalized == "auto" || normalized == "default") {
+                // "auto" used to be the default; treat it as aaudio now
+                setenv("XEMU_ANDROID_AUDIO_DRIVER", "aaudio", 1);
             } else if (!driver.empty()) {
                 setenv("XEMU_ANDROID_AUDIO_DRIVER", driver.c_str(), 1);
             }

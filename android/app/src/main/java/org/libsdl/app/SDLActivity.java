@@ -1637,6 +1637,10 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     };
 
     public void onSystemUiVisibilityChange(int visibility) {
+        // On Android 11+ (API 30+), WindowInsetsController handles system UI hiding,
+        // so this legacy rehide loop is not needed and causes focus flicker noise.
+        if (Build.VERSION.SDK_INT >= 30) return;
+
         if (SDLActivity.mFullscreenModeActive && ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0 || (visibility & View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) == 0)) {
 
             Handler handler = getWindow().getDecorView().getHandler();

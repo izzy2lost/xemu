@@ -188,7 +188,7 @@ static std::string ToLowerAscii(std::string value) {
 }
 
 static std::string ResolveAndroidAudioDriverHint() {
-  constexpr const char* kDefaultAudioDriverHint = "openslES,aaudio,android";
+  constexpr const char* kDefaultAudioDriverHint = "aaudio,android";
   const char* value = SDL_getenv("XEMU_ANDROID_AUDIO_DRIVER");
   if (!value || value[0] == '\0') {
     return kDefaultAudioDriverHint;
@@ -200,13 +200,13 @@ static std::string ResolveAndroidAudioDriverHint() {
     return kDefaultAudioDriverHint;
   }
   if (normalized == "opensl" || normalized == "opensles") {
-    return "openslES,aaudio,android";
+    return "openslES,android";
   }
   if (normalized == "aaudio") {
-    return "aaudio,openslES,android";
+    return "aaudio,android";
   }
   if (normalized == "android" || normalized == "audiotrack") {
-    return "android,openslES,aaudio";
+    return "android";
   }
   return raw;
 }
@@ -662,7 +662,7 @@ static bool WriteConfigToml(const std::string& config_path,
     android->insert_or_assign("tcg_tb_size", 128);
   }
   if (!android->contains("audio_driver")) {
-    android->insert_or_assign("audio_driver", "auto");
+    android->insert_or_assign("audio_driver", "aaudio");
   }
 
   files->insert_or_assign("bootrom_path", mcpx);
