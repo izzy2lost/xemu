@@ -1,5 +1,5 @@
 <resources>
-  <style name="Theme.Xemu" parent="Theme.Material3.DayNight.NoActionBar">
+  <style name="Theme.Xemu" parent="Theme.Material3.Dark.NoActionBar">
     <item name="colorPrimary">@color/xemu_green</item>
     <item name="colorOnPrimary">@color/xemu_black</item>
     <item name="colorPrimaryContainer">@color/xemu_green_dark</item>
