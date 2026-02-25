@@ -22,6 +22,10 @@
 #include "renderer.h"
 #include "hw/xbox/nv2a/pgraph/prim_rewrite.h"
 #include <math.h>
+#ifdef __ANDROID__
+#include <SDL.h>
+#include <android/log.h>
+#endif
 
 void pgraph_vk_draw_begin(NV2AState *d)
 {
@@ -99,6 +103,22 @@ static bool pipeline_cache_entry_compare(Lru *lru, LruNode *node,
     return memcmp(&snode->key, key, sizeof(PipelineKey));
 }
 
+#ifdef __ANDROID__
+static char *get_pipeline_cache_path(PGRAPHVkState *r)
+{
+    char *pref_path = SDL_GetPrefPath("xemu", "xemu");
+    if (!pref_path) {
+        return NULL;
+    }
+    char *path = g_strdup_printf("%svk_pipeline_cache_%08x_%08x.bin",
+                                 pref_path,
+                                 r->device_props.deviceID,
+                                 r->device_props.driverVersion);
+    SDL_free(pref_path);
+    return path;
+}
+#endif
+
 static void init_pipeline_cache(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -110,8 +130,32 @@ static void init_pipeline_cache(PGRAPHState *pg)
         .pInitialData = NULL,
         .pNext = NULL,
     };
+
+#ifdef __ANDROID__
+    g_autofree char *cache_path = get_pipeline_cache_path(r);
+    gchar *cache_data = NULL;
+    gsize cache_data_size = 0;
+    if (cache_path) {
+        GError *err = NULL;
+        if (g_file_get_contents(cache_path, &cache_data, &cache_data_size, &err)) {
+            cache_info.initialDataSize = (size_t)cache_data_size;
+            cache_info.pInitialData = (const void *)cache_data;
+            __android_log_print(ANDROID_LOG_INFO, "xemu-vk",
+                                "Loaded pipeline cache: %zu bytes", cache_data_size);
+        } else {
+            if (err) {
+                g_error_free(err);
+            }
+        }
+    }
+#endif
+
     VK_CHECK(vkCreatePipelineCache(r->device, &cache_info, NULL,
                                    &r->vk_pipeline_cache));
+
+#ifdef __ANDROID__
+    g_free(cache_data);
+#endif
 
     const size_t pipeline_cache_size = 2048;
     lru_init(&r->pipeline_cache);
@@ -134,6 +178,34 @@ static void finalize_pipeline_cache(PGRAPHState *pg)
     lru_flush(&r->pipeline_cache);
     g_free(r->pipeline_cache_entries);
     r->pipeline_cache_entries = NULL;
+
+#ifdef __ANDROID__
+    g_autofree char *cache_path = get_pipeline_cache_path(r);
+    if (cache_path) {
+        size_t data_size = 0;
+        VkResult res = vkGetPipelineCacheData(r->device, r->vk_pipeline_cache,
+                                              &data_size, NULL);
+        if (res == VK_SUCCESS && data_size > 0) {
+            g_autofree void *data = g_malloc(data_size);
+            res = vkGetPipelineCacheData(r->device, r->vk_pipeline_cache,
+                                         &data_size, data);
+            if (res == VK_SUCCESS) {
+                GError *err = NULL;
+                if (g_file_set_contents(cache_path, (const gchar *)data,
+                                        (gssize)data_size, &err)) {
+                    __android_log_print(ANDROID_LOG_INFO, "xemu-vk",
+                                        "Saved pipeline cache: %zu bytes", data_size);
+                } else {
+                    __android_log_print(ANDROID_LOG_WARN, "xemu-vk",
+                                        "Failed to save pipeline cache");
+                    if (err) {
+                        g_error_free(err);
+                    }
+                }
+            }
+        }
+    }
+#endif
 
     vkDestroyPipelineCache(r->device, r->vk_pipeline_cache, NULL);
 }

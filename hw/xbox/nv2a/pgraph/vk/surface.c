@@ -498,15 +498,14 @@ void pgraph_vk_wait_for_surface_download(SurfaceBinding *surface)
     NV2AState *d = g_nv2a;
     bool require_download = qatomic_read(&surface->draw_dirty);
 
-#ifdef __ANDROID__
     /*
-     * Android Vulkan currently presents through the CPU/VGA fallback path.
-     * Force framebuffer surface download so fallback upload sees fresh pixels.
+     * Android presents through the CPU/VGA fallback path (no external memory
+     * interop). We rely on draw_dirty to gate downloads: it is set atomically
+     * whenever the Vulkan renderer draws to this surface and cleared after each
+     * successful download. Skipping the download when draw_dirty is false
+     * avoids a GPU stall on frames where the Xbox GPU has not redrawn the
+     * framebuffer (static screens, menus, load screens, etc.).
      */
-    if (!d->pgraph.vk_renderer_state->display.use_external_memory) {
-        require_download = true;
-    }
-#endif
 
     if (require_download) {
         qemu_mutex_lock(&d->pfifo.lock);

@@ -43,7 +43,11 @@ android {
           "-DXEMU_ANDROID_BUILD_ID=3",
           "-DXEMU_ENABLE_XISO_CONVERTER=ON",
           "-DCMAKE_C_FLAGS_DEBUG=-O2 -g0",
-          "-DCMAKE_CXX_FLAGS_DEBUG=-O2 -g0"
+          "-DCMAKE_CXX_FLAGS_DEBUG=-O2 -g0",
+          "-DCMAKE_C_FLAGS_RELEASE=-O3 -g0 -march=armv8.2-a -ffunction-sections -fdata-sections",
+          "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -g0 -march=armv8.2-a -ffunction-sections -fdata-sections",
+          "-DCMAKE_EXE_LINKER_FLAGS_RELEASE=-Wl,--gc-sections",
+          "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-Wl,--gc-sections"
         )
         cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
       }

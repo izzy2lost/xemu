@@ -1381,7 +1381,7 @@ void xemu_android_display_loop(void)
             sdl2_poll_events(&sdl2_console[0]);
             bql_unlock();
             qemu_mutex_unlock_main_loop();
-            SDL_Delay(16);
+            SDL_Delay(100);
             continue;
         }
         sdl2_gl_refresh(&sdl2_console[0].dcl);
@@ -1570,7 +1570,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
         sdl2_poll_events(scon);
         bql_unlock();
         qemu_mutex_unlock_main_loop();
-        SDL_Delay(16);
+        SDL_Delay(100);
         return;
     }
 #endif
@@ -1776,7 +1776,11 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     bql_unlock();
     qemu_mutex_unlock_main_loop();
 
+#ifdef __ANDROID__
+    glFlush();
+#else
     glFinish();
+#endif
     nv2a_release_framebuffer_surface();
 #ifdef __ANDROID__
     android_log_gl_error("refresh-finish");
@@ -1807,7 +1811,9 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     int64_t spin_acc = 0;
 #endif
 
-#ifndef _WIN32
+#ifdef __ANDROID__
+    const int64_t sleep_threshold = 500000;   // 0.5ms — Android CFS scheduler jitter is ~0.2ms
+#elif !defined(_WIN32)
     const int64_t sleep_threshold = 2000000;
 #else
     const int64_t sleep_threshold = 250000;
