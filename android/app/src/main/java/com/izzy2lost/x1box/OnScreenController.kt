@@ -175,14 +175,16 @@ class OnScreenController @JvmOverloads constructor(
       smallButtonRadius
     )
 
-    // Stick buttons
+    // LS/RS (thumbstick click) as dedicated buttons — separate from the stick
+    // circles so they can't be triggered accidentally by joystick movement.
+    // LS sits bottom-left of left stick; RS sits bottom-left of right stick.
     buttons[Button.LEFT_STICK_BUTTON] = ButtonState(
-      sticks[Stick.LEFT]!!.center,
-      stickRadius * 0.3f
+      PointF(w * 0.07f, h * 0.53f),
+      smallButtonRadius
     )
     buttons[Button.RIGHT_STICK_BUTTON] = ButtonState(
-      sticks[Stick.RIGHT]!!.center,
-      stickRadius * 0.3f
+      PointF(w * 0.51f, h * 0.9f),
+      smallButtonRadius
     )
   }
 
@@ -216,10 +218,6 @@ class OnScreenController @JvmOverloads constructor(
 
     // Draw buttons
     buttons.forEach { (button, state) ->
-      // Skip stick buttons as they're drawn with sticks
-      if (button == Button.LEFT_STICK_BUTTON || button == Button.RIGHT_STICK_BUTTON) {
-        return@forEach
-      }
 
       paint.style = Paint.Style.FILL
       paint.color = when {
@@ -284,6 +282,8 @@ class OnScreenController @JvmOverloads constructor(
       Button.BACK -> "◀"
       Button.BLACK -> "BK"
       Button.WHITE -> "WH"
+      Button.LEFT_STICK_BUTTON -> "LS"
+      Button.RIGHT_STICK_BUTTON -> "RS"
       else -> ""
     }
   }
