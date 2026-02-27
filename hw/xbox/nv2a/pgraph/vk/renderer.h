@@ -425,6 +425,7 @@ typedef struct PGRAPHVkState {
     QSIMPLEQ_HEAD(, QueryReport) report_queue; // FIXME: Statically allocate
 
     SurfaceFormatInfo kelvin_surface_zeta_vk_map[3];
+    SurfaceFormatInfo kelvin_surface_color_vk_map[11]; // indices 0x00–0x0A, per-device substitutions
 
     uint32_t clear_parameter;
 

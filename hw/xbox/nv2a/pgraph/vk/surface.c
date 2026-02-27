@@ -28,6 +28,12 @@
 #include "qemu/compiler.h"
 #include "ui/xemu-settings.h"
 #include "renderer.h"
+#ifdef __ANDROID__
+#include <android/log.h>
+#define NV2A_LOG(...) __android_log_print(ANDROID_LOG_INFO, "xemu-android", __VA_ARGS__)
+#else
+#define NV2A_LOG(...) fprintf(stderr, __VA_ARGS__)
+#endif
 
 const int num_invalid_surfaces_to_keep = 10;  // FIXME: Make automatic
 const int max_surface_frame_time_delta = 5;
@@ -1328,12 +1334,14 @@ static void populate_surface_binding_target_sized(NV2AState *d, bool color,
         assert(pg->surface_shape.color_format <
                ARRAY_SIZE(kelvin_surface_color_format_vk_map));
         fmt = kelvin_surface_color_format_map[pg->surface_shape.color_format];
-        host_fmt = kelvin_surface_color_format_vk_map[pg->surface_shape.color_format];
+        host_fmt = r->kelvin_surface_color_vk_map[pg->surface_shape.color_format];
         if (host_fmt.host_bytes_per_pixel == 0) {
             fprintf(stderr, "nv2a: unimplemented color surface format 0x%x\n",
                     pg->surface_shape.color_format);
             abort();
         }
+        NV2A_LOG("nv2a: [surface] color fmt=0x%x vk_format=%d",
+                 pg->surface_shape.color_format, (int)host_fmt.vk_format);
     } else {
         surface = &pg->surface_zeta;
         dma_address = pg->dma_zeta;
@@ -1704,15 +1712,74 @@ void pgraph_vk_init_surfaces(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
 
-    // Make sure all surface format types are supported. We don't expect issue
-    // with these, and therefore have no fallback mechanism.
-    bool color_formats_supported = check_surface_internal_formats_supported(
-        r, kelvin_surface_color_format_vk_map,
-        ARRAY_SIZE(kelvin_surface_color_format_vk_map));
-    if (!color_formats_supported) {
-        fprintf(stderr,
-                "Warning: Some Vulkan surface color formats are unsupported; "
-                "continuing with best-effort mapping.\n");
+    // Build the per-device mutable color format map. We start from the const
+    // baseline and then check each format that has known portability issues.
+    // If the primary VkFormat is not supported as COLOR_ATTACHMENT on this
+    // device, we substitute a compatible fallback (same or wider bpp).
+    // This mirrors the existing per-device substitution done for zeta formats.
+    assert(ARRAY_SIZE(kelvin_surface_color_format_vk_map) <=
+           ARRAY_SIZE(r->kelvin_surface_color_vk_map));
+    memcpy(r->kelvin_surface_color_vk_map, kelvin_surface_color_format_vk_map,
+           sizeof(kelvin_surface_color_format_vk_map));
+
+    static const struct {
+        int idx;
+        const SurfaceFormatInfo *f1;
+        const SurfaceFormatInfo *f2;
+    } color_fallbacks[] = {
+        // A1R5G5B5_UNORM_PACK16 has known issues on Adreno GPUs:
+        //   Adreno 740: not supported as COLOR_ATTACHMENT → hard crash
+        //   Adreno 710: renders with broken alpha → invisible geometry
+        // R5G6B5 is the correct substitute for Xbox's X1R5G5B5 format because
+        // the "X" bit is always opaque; no alpha data is lost.
+        { NV097_SET_SURFACE_FORMAT_COLOR_LE_X1R5G5B5_Z1R5G5B5,
+          &color_r5g6b5_fallback, &color_b8g8r8a8_fallback },
+        { NV097_SET_SURFACE_FORMAT_COLOR_LE_X1R5G5B5_O1R5G5B5,
+          &color_r5g6b5_fallback, &color_b8g8r8a8_fallback },
+        // B8G8R8A8 is widely supported but try R8G8B8A8 as a fallback.
+        { NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_Z8R8G8B8,
+          &color_r8g8b8a8_fallback, NULL },
+        { NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_O8R8G8B8,
+          &color_r8g8b8a8_fallback, NULL },
+        { NV097_SET_SURFACE_FORMAT_COLOR_LE_X1A7R8G8B8_Z1A7R8G8B8,
+          &color_r8g8b8a8_fallback, NULL },
+        { NV097_SET_SURFACE_FORMAT_COLOR_LE_X1A7R8G8B8_O1A7R8G8B8,
+          &color_r8g8b8a8_fallback, NULL },
+        { NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8,
+          &color_r8g8b8a8_fallback, NULL },
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(color_fallbacks); i++) {
+        int idx = color_fallbacks[i].idx;
+        SurfaceFormatInfo *slot = &r->kelvin_surface_color_vk_map[idx];
+        if (slot->host_bytes_per_pixel == 0) {
+            continue; // absent entry, skip
+        }
+        if (check_format_and_usage_supported(r, slot->vk_format, slot->usage)) {
+            NV2A_LOG("nv2a: color surface fmt 0x%x vk_format=%d OK on this device",
+                     idx, (int)slot->vk_format);
+            continue; // primary format fine on this device
+        }
+        const SurfaceFormatInfo *sub = NULL;
+        if (color_fallbacks[i].f1 &&
+            check_format_and_usage_supported(r, color_fallbacks[i].f1->vk_format,
+                                             color_fallbacks[i].f1->usage)) {
+            sub = color_fallbacks[i].f1;
+        } else if (color_fallbacks[i].f2 &&
+                   check_format_and_usage_supported(r, color_fallbacks[i].f2->vk_format,
+                                                    color_fallbacks[i].f2->usage)) {
+            sub = color_fallbacks[i].f2;
+        }
+        if (sub) {
+            NV2A_LOG("nv2a: color surface fmt 0x%x vk_format=%d not supported "
+                     "as COLOR_ATTACHMENT, substituting vk_format=%d",
+                     idx, (int)slot->vk_format, (int)sub->vk_format);
+            *slot = *sub;
+        } else {
+            NV2A_LOG("nv2a: color surface fmt 0x%x vk_format=%d not supported "
+                     "as COLOR_ATTACHMENT, no fallback available",
+                     idx, (int)slot->vk_format);
+        }
     }
 
     // Check if the device supports preferred VK_FORMAT_D24_UNORM_S8_UINT

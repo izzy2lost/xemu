@@ -347,6 +347,14 @@ static const SurfaceFormatInfo kelvin_surface_color_format_vk_map[] = {
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT,
     },
+    [NV097_SET_SURFACE_FORMAT_COLOR_LE_X1R5G5B5_O1R5G5B5] =
+    {
+        // FIXME: Force alpha to one
+        2,
+        VK_FORMAT_A1R5G5B5_UNORM_PACK16,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+    },
     [NV097_SET_SURFACE_FORMAT_COLOR_LE_R5G6B5] =
     {
         2,
@@ -357,6 +365,30 @@ static const SurfaceFormatInfo kelvin_surface_color_format_vk_map[] = {
     [NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_Z8R8G8B8] =
     {
         // FIXME: Force alpha to zero
+        4,
+        VK_FORMAT_B8G8R8A8_UNORM,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+    },
+    [NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_O8R8G8B8] =
+    {
+        // FIXME: Force alpha to one
+        4,
+        VK_FORMAT_B8G8R8A8_UNORM,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+    },
+    [NV097_SET_SURFACE_FORMAT_COLOR_LE_X1A7R8G8B8_Z1A7R8G8B8] =
+    {
+        // FIXME: Precise X1A7 alpha encoding not emulated; stored as 8-bit alpha
+        4,
+        VK_FORMAT_B8G8R8A8_UNORM,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+    },
+    [NV097_SET_SURFACE_FORMAT_COLOR_LE_X1A7R8G8B8_O1A7R8G8B8] =
+    {
+        // FIXME: Precise X1A7 alpha encoding not emulated; stored as 8-bit alpha
         4,
         VK_FORMAT_B8G8R8A8_UNORM,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
@@ -413,6 +445,33 @@ static const SurfaceFormatInfo zeta_d24_unorm_s8_uint = {
     VK_FORMAT_D24_UNORM_S8_UINT,
     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+};
+
+// Fallback color surface formats used when the primary VkFormat is not
+// supported as VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT on a given device.
+// VK_FORMAT_A1R5G5B5_UNORM_PACK16 has known issues on Adreno: not supported
+// as COLOR_ATTACHMENT on Adreno 740 (crashes), and renders with broken alpha
+// on Adreno 710 (invisible geometry). R5G6B5 is universally supported and
+// correct for Xbox's X1R5G5B5 surfaces where the X bit is always opaque.
+static const SurfaceFormatInfo color_r5g6b5_fallback = {
+    2,
+    VK_FORMAT_R5G6B5_UNORM_PACK16,
+    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+    VK_IMAGE_ASPECT_COLOR_BIT,
+};
+
+static const SurfaceFormatInfo color_b8g8r8a8_fallback = {
+    4,
+    VK_FORMAT_B8G8R8A8_UNORM,
+    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+    VK_IMAGE_ASPECT_COLOR_BIT,
+};
+
+static const SurfaceFormatInfo color_r8g8b8a8_fallback = {
+    4,
+    VK_FORMAT_R8G8B8A8_UNORM,
+    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+    VK_IMAGE_ASPECT_COLOR_BIT,
 };
 
 #endif
