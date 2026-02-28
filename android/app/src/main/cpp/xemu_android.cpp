@@ -693,6 +693,8 @@ static bool WriteConfigToml(const std::string& config_path,
   return true;
 }
 
+extern "C" void xemu_android_set_display_mode_setting(int mode);
+
 static SetupFiles SyncSetupFiles() {
   SetupFiles out{};
   JNIEnv* env = GetEnv();
@@ -799,6 +801,9 @@ static SetupFiles SyncSetupFiles() {
     }
   }
   out.audio_driver = GetPrefString(env, activity, "setting_audio_driver");
+
+  int displayMode = GetPrefInt(env, activity, "setting_display_mode", 0);
+  xemu_android_set_display_mode_setting(displayMode);
 
   out.config_path = base + "/xemu.toml";
   WriteConfigToml(out.config_path, out.mcpx, out.flash, out.hdd, out.dvd, out.eeprom, emuSettings);

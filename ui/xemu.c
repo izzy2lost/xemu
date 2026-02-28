@@ -137,6 +137,7 @@ static GLuint g_android_blit_vao;
 static GLuint g_android_blit_vbo;
 static GLint g_android_blit_tex_loc = -1;
 static GLint g_android_blit_flip_loc = -1;
+static int g_android_display_mode = 0; /* 0=stretch, 1=4:3, 2=16:9 */
 static GLuint g_android_cpu_tex = 0;
 static int g_android_cpu_tex_w = 0;
 static int g_android_cpu_tex_h = 0;
@@ -200,6 +201,11 @@ static GLuint android_gl_compile_shader(GLenum type, const char *src)
         return 0;
     }
     return shader;
+}
+
+void xemu_android_set_display_mode_setting(int mode)
+{
+    g_android_display_mode = mode;
 }
 
 static bool android_blit_init(void)
@@ -291,8 +297,21 @@ static void android_blit_frame(GLuint tex, bool flip)
     if (w <= 0) w = 1;
     if (h <= 0) h = 1;
 
+    int vx = 0, vy = 0, vw = w, vh = h;
+    if (g_android_display_mode != 0) {
+        float target = (g_android_display_mode == 1) ? (4.0f / 3.0f) : (16.0f / 9.0f);
+        float screen = (float)w / (float)h;
+        if (screen > target) {
+            vw = (int)(h * target);
+            vx = (w - vw) / 2;
+        } else {
+            vh = (int)(w / target);
+            vy = (h - vh) / 2;
+        }
+    }
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, w, h);
+    glViewport(vx, vy, vw, vh);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);

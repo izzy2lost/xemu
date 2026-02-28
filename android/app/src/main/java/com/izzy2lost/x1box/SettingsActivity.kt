@@ -20,6 +20,7 @@ class SettingsActivity : AppCompatActivity() {
     val btn1x             = findViewById<MaterialButton>(R.id.btn_scale_1x)
     val btn2x             = findViewById<MaterialButton>(R.id.btn_scale_2x)
     val btn3x             = findViewById<MaterialButton>(R.id.btn_scale_3x)
+    val toggleDisplayMode = findViewById<MaterialButtonToggleGroup>(R.id.toggle_display_mode)
     val toggleThread      = findViewById<MaterialButtonToggleGroup>(R.id.toggle_tcg_thread)
     val btnMulti          = findViewById<MaterialButton>(R.id.btn_thread_multi)
     val btnSingle         = findViewById<MaterialButton>(R.id.btn_thread_single)
@@ -36,6 +37,13 @@ class SettingsActivity : AppCompatActivity() {
       2    -> toggleScale.check(R.id.btn_scale_2x)
       3    -> toggleScale.check(R.id.btn_scale_3x)
       else -> toggleScale.check(R.id.btn_scale_1x)
+    }
+
+    val displayMode = prefs.getInt("setting_display_mode", 0)
+    when (displayMode) {
+      1    -> toggleDisplayMode.check(R.id.btn_display_4_3)
+      2    -> toggleDisplayMode.check(R.id.btn_display_16_9)
+      else -> toggleDisplayMode.check(R.id.btn_display_stretch)
     }
 
     val tcgThread = prefs.getString("setting_tcg_thread", "multi") ?: "multi"
@@ -58,6 +66,11 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     btnSave.setOnClickListener {
+      val selectedDisplayMode = when (toggleDisplayMode.checkedButtonId) {
+        R.id.btn_display_4_3  -> 1
+        R.id.btn_display_16_9 -> 2
+        else                   -> 0
+      }
       val selectedScale = when (toggleScale.checkedButtonId) {
         R.id.btn_scale_2x -> 2
         R.id.btn_scale_3x -> 3
@@ -74,6 +87,7 @@ class SettingsActivity : AppCompatActivity() {
       }
 
       prefs.edit()
+        .putInt("setting_display_mode", selectedDisplayMode)
         .putInt("setting_surface_scale", selectedScale)
         .putString("setting_tcg_thread", selectedThread)
         .putBoolean("setting_use_dsp", switchDsp.isChecked)

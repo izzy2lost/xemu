@@ -97,6 +97,49 @@
 
           </com.google.android.material.button.MaterialButtonToggleGroup>
 
+          <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="6dp"
+            android:text="@string/settings_display_mode"
+            android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+            android:textColor="@color/xemu_text_muted" />
+
+          <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/toggle_display_mode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            app:selectionRequired="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_display_stretch"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/settings_display_mode_stretch" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_display_4_3"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/settings_display_mode_4_3" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_display_16_9"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/settings_display_mode_16_9" />
+
+          </com.google.android.material.button.MaterialButtonToggleGroup>
+
           <!-- ── PERFORMANCE ── -->
           <TextView
             android:layout_width="match_parent"
