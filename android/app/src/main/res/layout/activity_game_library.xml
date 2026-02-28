@@ -98,6 +98,17 @@
             app:iconPadding="8dp" />
 
           <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_snapshots"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/library_snapshots"
+            app:icon="@android:drawable/ic_menu_recent_history"
+            app:iconGravity="textStart"
+            app:iconPadding="8dp" />
+
+          <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_convert_iso"
             style="?attr/materialButtonOutlinedStyle"
             android:layout_width="match_parent"

@@ -2,6 +2,7 @@ package com.izzy2lost.x1box
 
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.text.SpannableStringBuilder
@@ -10,9 +11,12 @@ import android.text.method.LinkMovementMethod
 import android.text.style.ClickableSpan
 import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
+import android.widget.BaseAdapter
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.Space
 import android.widget.TextView
@@ -30,6 +34,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.URLEncoder
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -37,6 +43,8 @@ import java.util.concurrent.ConcurrentHashMap
 class GameLibraryActivity : AppCompatActivity() {
   companion object {
     const val EXTRA_RESTART_LAST_GAME = "com.izzy2lost.x1box.extra.RESTART_LAST_GAME"
+    private const val SNAPSHOT_PREVIEW_HEADER_SIZE = 12
+    private const val TOTAL_SNAPSHOT_SLOTS = 10
   }
 
   private data class GameEntry(
@@ -51,6 +59,13 @@ class GameLibraryActivity : AppCompatActivity() {
     val tokens: Set<String>,
     val numericTokens: Set<String>,
     val url: String
+  )
+
+  private data class SnapshotSlotPreview(
+    val slot: Int,
+    val slotLabel: String,
+    val gameTitle: String,
+    val thumbnail: Bitmap?,
   )
 
   private val prefs by lazy { getSharedPreferences("x1box_prefs", MODE_PRIVATE) }
@@ -72,6 +87,7 @@ class GameLibraryActivity : AppCompatActivity() {
   private lateinit var gamesGridContainer: LinearLayout
   private lateinit var btnChangeFolder: MaterialButton
   private lateinit var btnSettings: MaterialButton
+  private lateinit var btnSnapshots: MaterialButton
   private lateinit var btnConvertIso: MaterialButton
   private lateinit var btnAbout: ImageButton
   private lateinit var viewModeToggle: MaterialButtonToggleGroup
@@ -112,6 +128,7 @@ class GameLibraryActivity : AppCompatActivity() {
     gamesGridContainer = findViewById(R.id.library_games_grid_container)
     btnChangeFolder = findViewById(R.id.btn_change_games_folder)
     btnSettings = findViewById(R.id.btn_settings)
+    btnSnapshots = findViewById(R.id.btn_snapshots)
     btnConvertIso = findViewById(R.id.btn_convert_iso)
     btnAbout = findViewById(R.id.btn_library_about)
     viewModeToggle = findViewById(R.id.library_view_mode_toggle)
@@ -134,6 +151,9 @@ class GameLibraryActivity : AppCompatActivity() {
     }
     btnSettings.setOnClickListener {
       startActivity(Intent(this, SettingsActivity::class.java))
+    }
+    btnSnapshots.setOnClickListener {
+      showSnapshotStartupPicker()
     }
     btnConvertIso.setOnClickListener {
       showIsoConversionPicker()
@@ -214,6 +234,226 @@ class GameLibraryActivity : AppCompatActivity() {
   private fun launchMainActivityForRestart() {
     startActivity(Intent(this, MainActivity::class.java))
     finish()
+  }
+
+  private fun slotName(slot: Int) = "android_slot_$slot"
+
+  private fun snapshotPreviewDir(): File = File(filesDir, "x1box/snapshots")
+
+  private fun snapshotPreviewDirs(): List<File> {
+    val dirs = ArrayList<File>(2)
+    dirs.add(snapshotPreviewDir())
+    getExternalFilesDir(null)?.let { dirs.add(File(it, "x1box/snapshots")) }
+    return dirs.distinctBy { it.absolutePath }
+  }
+
+  private fun slotNameAliases(slot: Int): List<String> {
+    val aliases = linkedSetOf(
+      slotName(slot),
+      "slot_$slot",
+      "slot$slot",
+      "snapshot_$slot",
+    )
+    return aliases.toList()
+  }
+
+  private fun resolveSnapshotPreviewFile(slot: Int, extension: String): File? {
+    for (dir in snapshotPreviewDirs()) {
+      for (name in slotNameAliases(slot)) {
+        val file = File(dir, "$name.$extension")
+        if (file.isFile) {
+          return file
+        }
+      }
+    }
+    return null
+  }
+
+  private fun extractDisplayName(rawName: String?): String? {
+    if (rawName.isNullOrBlank()) {
+      return null
+    }
+    val decoded = Uri.decode(rawName)
+    val leaf = decoded.substringAfterLast('/').substringAfterLast(':')
+    if (leaf.isBlank()) {
+      return null
+    }
+    val stem = leaf.substringBeforeLast('.', leaf).trim()
+    return stem.takeIf { it.isNotEmpty() }
+  }
+
+  private fun fallbackCurrentGameName(): String {
+    val pathName = extractDisplayName(prefs.getString("dvdPath", null)?.let { File(it).name })
+    if (!pathName.isNullOrEmpty()) {
+      return pathName
+    }
+    val uriName = extractDisplayName(prefs.getString("dvdUri", null))
+    if (!uriName.isNullOrEmpty()) {
+      return uriName
+    }
+    return getString(R.string.snapshot_unknown_game)
+  }
+
+  private fun readSnapshotGameTitle(slot: Int): String {
+    val title = runCatching {
+      val file = resolveSnapshotPreviewFile(slot, "title")
+      if (file != null && file.exists()) {
+        file.readText(Charsets.UTF_8).trim()
+      } else {
+        ""
+      }
+    }.getOrDefault("")
+
+    if (title.isNotEmpty()) {
+      return title
+    }
+
+    return if (resolveSnapshotPreviewFile(slot, "thm") != null) {
+      fallbackCurrentGameName()
+    } else {
+      getString(R.string.snapshot_empty_slot)
+    }
+  }
+
+  private fun decodeSnapshotThumbnail(slot: Int): Bitmap? {
+    val sourceFile = resolveSnapshotPreviewFile(slot, "thm") ?: return null
+    val bytes = runCatching { sourceFile.readBytes() }.getOrNull() ?: return null
+    if (bytes.size < SNAPSHOT_PREVIEW_HEADER_SIZE) {
+      return null
+    }
+
+    if (bytes[0] != 'X'.code.toByte() ||
+      bytes[1] != '1'.code.toByte() ||
+      bytes[2] != 'T'.code.toByte() ||
+      bytes[3] != 'H'.code.toByte()) {
+      return null
+    }
+
+    val header = ByteBuffer.wrap(bytes, 4, 8).order(ByteOrder.LITTLE_ENDIAN)
+    val version = header.short.toInt() and 0xFFFF
+    val width = header.short.toInt() and 0xFFFF
+    val height = header.short.toInt() and 0xFFFF
+    val channels = header.short.toInt() and 0xFFFF
+
+    if (version != 1 || channels != 4 || width <= 0 || height <= 0) {
+      return null
+    }
+
+    val pixelBytesLong = width.toLong() * height.toLong() * channels.toLong()
+    if (pixelBytesLong <= 0 || pixelBytesLong > Int.MAX_VALUE) {
+      return null
+    }
+
+    val pixelBytes = pixelBytesLong.toInt()
+    if (bytes.size < SNAPSHOT_PREVIEW_HEADER_SIZE + pixelBytes) {
+      return null
+    }
+
+    val pixels = IntArray(width * height)
+    var src = SNAPSHOT_PREVIEW_HEADER_SIZE
+    for (y in 0 until height) {
+      val dstRow = (height - 1 - y) * width
+      for (x in 0 until width) {
+        val r = bytes[src].toInt() and 0xFF
+        val g = bytes[src + 1].toInt() and 0xFF
+        val b = bytes[src + 2].toInt() and 0xFF
+        pixels[dstRow + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        src += 4
+      }
+    }
+
+    return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+  }
+
+  private fun loadSnapshotSlotPreviews(): List<SnapshotSlotPreview> {
+    return (1..TOTAL_SNAPSHOT_SLOTS).map { slot ->
+      SnapshotSlotPreview(
+        slot = slot,
+        slotLabel = getString(R.string.snapshot_slot_label, slot),
+        gameTitle = readSnapshotGameTitle(slot),
+        thumbnail = decodeSnapshotThumbnail(slot),
+      )
+    }
+  }
+
+  private fun showSnapshotPreviewDialog(preview: SnapshotSlotPreview) {
+    val bitmap = preview.thumbnail ?: return
+    val image = ImageView(this).apply {
+      setImageBitmap(bitmap)
+      adjustViewBounds = true
+      scaleType = ImageView.ScaleType.FIT_CENTER
+      setPadding(16, 16, 16, 16)
+    }
+
+    MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(getString(R.string.snapshot_preview_title, preview.slot, preview.gameTitle))
+      .setView(image)
+      .setPositiveButton(android.R.string.ok, null)
+      .show()
+  }
+
+  private fun launchMainActivityWithSnapshot(slot: Int) {
+    val intent = Intent(this, MainActivity::class.java).apply {
+      putExtra(MainActivity.EXTRA_AUTO_LOAD_SNAPSHOT_SLOT, slot)
+    }
+    startActivity(intent)
+    finish()
+  }
+
+  private fun showSnapshotStartupPicker() {
+    val previews = loadSnapshotSlotPreviews()
+    val listView = ListView(this)
+    lateinit var dialog: androidx.appcompat.app.AlertDialog
+
+    val adapter = object : BaseAdapter() {
+      override fun getCount(): Int = previews.size
+      override fun getItem(position: Int): SnapshotSlotPreview = previews[position]
+      override fun getItemId(position: Int): Long = previews[position].slot.toLong()
+
+      override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+        val view = convertView ?: layoutInflater.inflate(R.layout.item_snapshot_slot, parent, false)
+        val preview = getItem(position)
+
+        val slotLabel = view.findViewById<TextView>(R.id.snapshot_slot_label)
+        val gameTitle = view.findViewById<TextView>(R.id.snapshot_game_title)
+        val previewHint = view.findViewById<TextView>(R.id.snapshot_preview_hint)
+        val thumbnail = view.findViewById<ImageView>(R.id.snapshot_thumbnail)
+
+        slotLabel.text = preview.slotLabel
+        gameTitle.text = preview.gameTitle
+
+        if (preview.thumbnail != null) {
+          thumbnail.setImageBitmap(preview.thumbnail)
+          previewHint.text = getString(R.string.snapshot_preview_tap_hint)
+          previewHint.visibility = View.VISIBLE
+          thumbnail.setOnClickListener {
+            showSnapshotPreviewDialog(preview)
+          }
+        } else {
+          thumbnail.setImageResource(android.R.drawable.ic_menu_report_image)
+          previewHint.text = getString(R.string.snapshot_preview_unavailable)
+          previewHint.visibility = View.VISIBLE
+          thumbnail.setOnClickListener(null)
+        }
+
+        return view
+      }
+    }
+
+    listView.adapter = adapter
+    listView.setOnItemClickListener { _, _, position, _ ->
+      val slot = previews[position].slot
+      dialog.dismiss()
+      launchMainActivityWithSnapshot(slot)
+    }
+
+    dialog = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(R.string.snapshot_select_load_slot)
+      .setView(listView)
+      .setNegativeButton(android.R.string.cancel, null)
+      .create()
+
+    dialog.show()
   }
 
   private fun loadGames() {

@@ -27,7 +27,7 @@ extern "C" {
 #include "qemu/osdep.h"
 #include "block/snapshot.h"
 #if defined(ANDROID) || defined(__ANDROID__)
-typedef unsigned int GLuint;
+#include <GLES3/gl3.h>
 #else
 #include <epoxy/gl.h>
 #endif

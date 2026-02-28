@@ -2,20 +2,44 @@ package com.izzy2lost.x1box
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.hardware.input.InputManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.widget.BaseAdapter
 import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.ListView
+import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.libsdl.app.SDLActivity
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
+  companion object {
+    const val EXTRA_AUTO_LOAD_SNAPSHOT_SLOT = "com.izzy2lost.x1box.extra.AUTO_LOAD_SNAPSHOT_SLOT"
+    private const val SNAPSHOT_PREVIEW_HEADER_SIZE = 12
+    private const val TOTAL_SNAPSHOT_SLOTS = 10
+  }
+
+  private data class SnapshotSlotPreview(
+    val slot: Int,
+    val slotLabel: String,
+    val gameTitle: String,
+    val thumbnail: Bitmap?,
+  )
+
   private var onScreenController: OnScreenController? = null
   private var controllerBridge: ControllerInputBridge? = null
   private var isControllerVisible = false
@@ -25,9 +49,15 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var startButtonDown = false
   private var selectButtonDown = false
   private var comboTriggered = false
+  private var startupSnapshotSlot: Int? = null
+  private var startupSnapshotLoadScheduled = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    val requestedSlot = intent?.getIntExtra(EXTRA_AUTO_LOAD_SNAPSHOT_SLOT, 0) ?: 0
+    if (requestedSlot in 1..TOTAL_SNAPSHOT_SLOTS) {
+      startupSnapshotSlot = requestedSlot
+    }
     setupOnScreenController()
     setupControllerDetection()
     hideSystemUI()
@@ -119,6 +149,35 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     mLayout?.postDelayed({
       registerVirtualController()
     }, 1000)
+
+    scheduleStartupSnapshotLoadIfRequested()
+  }
+
+  private fun scheduleStartupSnapshotLoadIfRequested() {
+    val slot = startupSnapshotSlot ?: return
+    if (startupSnapshotLoadScheduled) {
+      return
+    }
+    startupSnapshotLoadScheduled = true
+
+    val hostView = mLayout ?: window.decorView
+    hostView.postDelayed({
+      Thread {
+        val ok = nativeLoadSnapshot(slotName(slot))
+        runOnUiThread {
+          if (ok) {
+            writeSnapshotTitleFallback(slot)
+          }
+          val msg = if (ok) {
+            getString(R.string.snapshot_loaded, slot)
+          } else {
+            getString(R.string.snapshot_load_failed, slot)
+          }
+          Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+      }.start()
+      startupSnapshotSlot = null
+    }, 2500)
   }
 
   private fun registerVirtualController() {
@@ -285,6 +344,273 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       ((source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)
   }
 
+  private external fun nativeSaveSnapshot(name: String): Boolean
+  private external fun nativeLoadSnapshot(name: String): Boolean
+
+  private fun slotName(slot: Int) = "android_slot_$slot"
+
+  private fun snapshotPreviewDir(): File = File(filesDir, "x1box/snapshots")
+
+  private fun snapshotPreviewDirs(): List<File> {
+    val dirs = ArrayList<File>(2)
+    dirs.add(snapshotPreviewDir())
+    getExternalFilesDir(null)?.let { dirs.add(File(it, "x1box/snapshots")) }
+    return dirs.distinctBy { it.absolutePath }
+  }
+
+  private fun slotNameAliases(slot: Int): List<String> {
+    val aliases = linkedSetOf(
+      slotName(slot),
+      "slot_$slot",
+      "slot$slot",
+      "snapshot_$slot",
+    )
+    return aliases.toList()
+  }
+
+  private fun resolveSnapshotPreviewFile(slot: Int, extension: String): File? {
+    for (dir in snapshotPreviewDirs()) {
+      for (name in slotNameAliases(slot)) {
+        val file = File(dir, "$name.$extension")
+        if (file.isFile) {
+          return file
+        }
+      }
+    }
+    return null
+  }
+
+  private fun snapshotPreviewTitleFile(slot: Int): File =
+    File(snapshotPreviewDir(), "${slotName(slot)}.title")
+
+  private fun extractDisplayName(rawName: String?): String? {
+    if (rawName.isNullOrBlank()) {
+      return null
+    }
+    val decoded = Uri.decode(rawName)
+    val leaf = decoded.substringAfterLast('/').substringAfterLast(':')
+    if (leaf.isBlank()) {
+      return null
+    }
+    val stem = leaf.substringBeforeLast('.', leaf).trim()
+    return stem.takeIf { it.isNotEmpty() }
+  }
+
+  private fun fallbackCurrentGameName(): String {
+    val prefs = getSharedPreferences("x1box_prefs", MODE_PRIVATE)
+    val pathName = extractDisplayName(prefs.getString("dvdPath", null)?.let { File(it).name })
+    if (!pathName.isNullOrEmpty()) {
+      return pathName
+    }
+    val uriName = extractDisplayName(prefs.getString("dvdUri", null))
+    if (!uriName.isNullOrEmpty()) {
+      return uriName
+    }
+    return getString(R.string.snapshot_unknown_game)
+  }
+
+  private fun writeSnapshotTitleFallback(slot: Int) {
+    val file = snapshotPreviewTitleFile(slot)
+    if (runCatching { file.exists() && file.readText(Charsets.UTF_8).trim().isNotEmpty() }.getOrDefault(false)) {
+      return
+    }
+
+    val title = fallbackCurrentGameName().trim()
+    if (title.isEmpty() || title == getString(R.string.snapshot_unknown_game)) {
+      return
+    }
+
+    runCatching {
+      val dir = snapshotPreviewDir()
+      if (!dir.exists()) {
+        dir.mkdirs()
+      }
+      file.writeText(title, Charsets.UTF_8)
+    }
+  }
+
+  private fun readSnapshotGameTitle(slot: Int): String {
+    val title = runCatching {
+      val file = resolveSnapshotPreviewFile(slot, "title")
+      if (file != null && file.exists()) {
+        file.readText(Charsets.UTF_8).trim()
+      } else {
+        ""
+      }
+    }.getOrDefault("")
+
+    if (title.isNotEmpty()) {
+      return title
+    }
+
+    return if (resolveSnapshotPreviewFile(slot, "thm") != null) {
+      fallbackCurrentGameName()
+    } else {
+      getString(R.string.snapshot_empty_slot)
+    }
+  }
+
+  private fun decodeSnapshotThumbnail(slot: Int): Bitmap? {
+    val sourceFile = resolveSnapshotPreviewFile(slot, "thm") ?: return null
+    val bytes = runCatching { sourceFile.readBytes() }.getOrNull() ?: return null
+    if (bytes.size < SNAPSHOT_PREVIEW_HEADER_SIZE) {
+      return null
+    }
+
+    if (bytes[0] != 'X'.code.toByte() ||
+      bytes[1] != '1'.code.toByte() ||
+      bytes[2] != 'T'.code.toByte() ||
+      bytes[3] != 'H'.code.toByte()) {
+      return null
+    }
+
+    val header = ByteBuffer.wrap(bytes, 4, 8).order(ByteOrder.LITTLE_ENDIAN)
+    val version = header.short.toInt() and 0xFFFF
+    val width = header.short.toInt() and 0xFFFF
+    val height = header.short.toInt() and 0xFFFF
+    val channels = header.short.toInt() and 0xFFFF
+
+    if (version != 1 || channels != 4 || width <= 0 || height <= 0) {
+      return null
+    }
+
+    val pixelBytesLong = width.toLong() * height.toLong() * channels.toLong()
+    if (pixelBytesLong <= 0 || pixelBytesLong > Int.MAX_VALUE) {
+      return null
+    }
+
+    val pixelBytes = pixelBytesLong.toInt()
+    if (bytes.size < SNAPSHOT_PREVIEW_HEADER_SIZE + pixelBytes) {
+      return null
+    }
+
+    val pixels = IntArray(width * height)
+    var src = SNAPSHOT_PREVIEW_HEADER_SIZE
+    for (y in 0 until height) {
+      val dstRow = (height - 1 - y) * width
+      for (x in 0 until width) {
+        val r = bytes[src].toInt() and 0xFF
+        val g = bytes[src + 1].toInt() and 0xFF
+        val b = bytes[src + 2].toInt() and 0xFF
+        pixels[dstRow + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        src += 4
+      }
+    }
+
+    return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+  }
+
+  private fun loadSnapshotSlotPreviews(): List<SnapshotSlotPreview> {
+    return (1..TOTAL_SNAPSHOT_SLOTS).map { slot ->
+      SnapshotSlotPreview(
+        slot = slot,
+        slotLabel = getString(R.string.snapshot_slot_label, slot),
+        gameTitle = readSnapshotGameTitle(slot),
+        thumbnail = decodeSnapshotThumbnail(slot),
+      )
+    }
+  }
+
+  private fun showSnapshotPreviewDialog(preview: SnapshotSlotPreview) {
+    val bitmap = preview.thumbnail ?: return
+    val image = ImageView(this).apply {
+      setImageBitmap(bitmap)
+      adjustViewBounds = true
+      scaleType = ImageView.ScaleType.FIT_CENTER
+      setPadding(16, 16, 16, 16)
+    }
+
+    MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(getString(R.string.snapshot_preview_title, preview.slot, preview.gameTitle))
+      .setView(image)
+      .setPositiveButton(android.R.string.ok, null)
+      .show()
+  }
+
+  private fun runSnapshotOperation(slot: Int, save: Boolean) {
+    Thread {
+      val ok = if (save) nativeSaveSnapshot(slotName(slot)) else nativeLoadSnapshot(slotName(slot))
+      runOnUiThread {
+        if (ok) {
+          writeSnapshotTitleFallback(slot)
+        }
+        val msg = if (save) {
+          if (ok) getString(R.string.snapshot_saved, slot) else getString(R.string.snapshot_save_failed)
+        } else {
+          if (ok) getString(R.string.snapshot_loaded, slot) else getString(R.string.snapshot_load_failed, slot)
+        }
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+      }
+    }.start()
+  }
+
+  private fun showSnapshotSlotDialog(save: Boolean) {
+    val previews = loadSnapshotSlotPreviews()
+    val listView = ListView(this)
+    lateinit var dialog: AlertDialog
+
+    val adapter = object : BaseAdapter() {
+      override fun getCount(): Int = previews.size
+      override fun getItem(position: Int): SnapshotSlotPreview = previews[position]
+      override fun getItemId(position: Int): Long = previews[position].slot.toLong()
+
+      override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+        val view = convertView ?: layoutInflater.inflate(R.layout.item_snapshot_slot, parent, false)
+        val preview = getItem(position)
+
+        val slotLabel = view.findViewById<TextView>(R.id.snapshot_slot_label)
+        val gameTitle = view.findViewById<TextView>(R.id.snapshot_game_title)
+        val previewHint = view.findViewById<TextView>(R.id.snapshot_preview_hint)
+        val thumbnail = view.findViewById<ImageView>(R.id.snapshot_thumbnail)
+
+        slotLabel.text = preview.slotLabel
+        gameTitle.text = preview.gameTitle
+
+        if (preview.thumbnail != null) {
+          thumbnail.setImageBitmap(preview.thumbnail)
+          previewHint.text = getString(R.string.snapshot_preview_tap_hint)
+          previewHint.visibility = View.VISIBLE
+          thumbnail.setOnClickListener {
+            showSnapshotPreviewDialog(preview)
+          }
+        } else {
+          thumbnail.setImageResource(android.R.drawable.ic_menu_report_image)
+          previewHint.text = getString(R.string.snapshot_preview_unavailable)
+          previewHint.visibility = View.VISIBLE
+          thumbnail.setOnClickListener(null)
+        }
+
+        return view
+      }
+    }
+
+    listView.adapter = adapter
+    listView.setOnItemClickListener { _, _, position, _ ->
+      val slot = previews[position].slot
+      dialog.dismiss()
+      runSnapshotOperation(slot, save)
+    }
+
+    dialog = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(
+        if (save) getString(R.string.snapshot_select_save_slot)
+        else getString(R.string.snapshot_select_load_slot)
+      )
+      .setView(listView)
+      .setNegativeButton(android.R.string.cancel, null)
+      .create()
+
+    dialog.show()
+  }
+
+  private fun showSaveStateDialog() {
+    showSnapshotSlotDialog(save = true)
+  }
+
+  private fun showLoadStateDialog() {
+    showSnapshotSlotDialog(save = false)
+  }
+
   private fun showInGameMenu() {
     val options = arrayOf(
       getString(R.string.in_game_menu_resume),
@@ -293,6 +619,8 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       } else {
         getString(R.string.in_game_menu_show_touch_controls)
       },
+      getString(R.string.in_game_menu_save_state),
+      getString(R.string.in_game_menu_load_state),
       getString(R.string.in_game_menu_exit_to_library),
       getString(R.string.in_game_menu_quit_app),
     )
@@ -301,12 +629,12 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       .setTitle(getString(R.string.in_game_menu_title))
       .setItems(options) { _, which ->
         when (which) {
-          0 -> {
-            // Resume
-          }
+          0 -> { /* Resume — dismiss dialog */ }
           1 -> toggleOnScreenController()
-          2 -> exitToGameLibrary()
-          3 -> finishAffinity()
+          2 -> showSaveStateDialog()
+          3 -> showLoadStateDialog()
+          4 -> exitToGameLibrary()
+          5 -> finishAffinity()
         }
       }
       .setOnDismissListener {

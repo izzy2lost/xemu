@@ -1762,9 +1762,14 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     glClear(GL_COLOR_BUFFER_BIT);
 #ifdef __ANDROID__
     android_blit_frame(tex, flip_required);
-#else
-#endif
-#ifdef __ANDROID__
+    /*
+     * Android uses a HUD stub, but snapshot JNI requests are dispatched
+     * from xemu_hud_render(). Keep this hook active each frame so save/load
+     * requests run on the SDL/QEMU render thread.
+     */
+    xemu_snapshots_set_framebuffer_texture(tex, flip_required);
+    xemu_hud_set_framebuffer_texture(tex, flip_required);
+    xemu_hud_render();
     android_log_gl_error("refresh-blit");
 #else
     xemu_snapshots_set_framebuffer_texture(tex, flip_required);

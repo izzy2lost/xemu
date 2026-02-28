@@ -1,6 +1,8 @@
 #include "qemu/osdep.h"
 #include "xui/xemu-hud.h"
 
+extern void xemu_android_process_snapshot_request(void);
+
 void xemu_hud_init(SDL_Window *window, void *sdl_gl_context)
 {
     (void)window;
@@ -13,6 +15,7 @@ void xemu_hud_cleanup(void)
 
 void xemu_hud_render(void)
 {
+    xemu_android_process_snapshot_request();
 }
 
 void xemu_hud_process_sdl_events(SDL_Event *event)

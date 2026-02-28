@@ -29,6 +29,7 @@
 
   <string name="library_title">Game Library</string>
   <string name="library_change_folder">Change Folder</string>
+  <string name="library_snapshots">Snapshots</string>
   <string name="library_convert_iso">Convert ISO to XISO</string>
   <string name="library_view_list">List</string>
   <string name="library_view_cover_grid">Cover Grid</string>
@@ -108,4 +109,19 @@
   <string name="in_game_menu_hide_touch_controls">Hide Touch Controls</string>
   <string name="in_game_menu_exit_to_library">Exit to Game Library</string>
   <string name="in_game_menu_quit_app">Quit App</string>
+  <string name="in_game_menu_save_state">Save State</string>
+  <string name="in_game_menu_load_state">Load State</string>
+  <string name="snapshot_slot_label">Slot %1$d</string>
+  <string name="snapshot_saved">State saved to Slot %1$d</string>
+  <string name="snapshot_save_failed">Save failed</string>
+  <string name="snapshot_loaded">State loaded from Slot %1$d</string>
+  <string name="snapshot_load_failed">No save found in Slot %1$d</string>
+  <string name="snapshot_select_save_slot">Select slot to save</string>
+  <string name="snapshot_select_load_slot">Select slot to load</string>
+  <string name="snapshot_empty_slot">Empty slot</string>
+  <string name="snapshot_unknown_game">Unknown game</string>
+  <string name="snapshot_preview_tap_hint">Tap thumbnail to enlarge</string>
+  <string name="snapshot_preview_unavailable">No screenshot yet</string>
+  <string name="snapshot_preview_title">Slot %1$d - %2$s</string>
+  <string name="snapshot_thumbnail_desc">Snapshot thumbnail</string>
 </resources>
