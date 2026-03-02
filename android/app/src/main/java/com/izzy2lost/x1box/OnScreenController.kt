@@ -20,7 +20,14 @@ class OnScreenController @JvmOverloads constructor(
   private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
   private val buttons = mutableMapOf<Button, ButtonState>()
   private val sticks = mutableMapOf<Stick, StickState>()
-  
+
+  private var menuButtonCenter = PointF(0f, 0f)
+  private var menuButtonRadius = 0f
+  private var menuButtonPressed = false
+  private var menuButtonPointerId = -1
+
+  var onMenuButtonTapped: (() -> Unit)? = null
+
   private var controllerListener: ControllerListener? = null
 
   enum class Button {
@@ -186,6 +193,13 @@ class OnScreenController @JvmOverloads constructor(
       PointF(w * 0.51f, h * 0.9f),
       smallButtonRadius
     )
+
+    // Menu button — bottom-right corner, opens in-game menu
+    menuButtonRadius = smallButtonRadius * 1.25f
+    menuButtonCenter = PointF(
+      w - menuButtonRadius - w * 0.018f,
+      h - menuButtonRadius - h * 0.022f
+    )
   }
 
   override fun onDraw(canvas: Canvas) {
@@ -240,6 +254,26 @@ class OnScreenController @JvmOverloads constructor(
       val label = getButtonLabel(button)
       canvas.drawText(label, state.center.x, state.center.y + state.radius * 0.3f, paint)
     }
+
+    // Draw menu button (bottom-right corner)
+    paint.style = Paint.Style.FILL
+    paint.color = if (menuButtonPressed) {
+      Color.argb(200, 120, 120, 220)
+    } else {
+      Color.argb(120, 100, 100, 180)
+    }
+    canvas.drawCircle(menuButtonCenter.x, menuButtonCenter.y, menuButtonRadius, paint)
+
+    paint.style = Paint.Style.STROKE
+    paint.strokeWidth = 3f
+    paint.color = Color.argb(150, 255, 255, 255)
+    canvas.drawCircle(menuButtonCenter.x, menuButtonCenter.y, menuButtonRadius, paint)
+
+    paint.style = Paint.Style.FILL
+    paint.color = Color.WHITE
+    paint.textSize = menuButtonRadius * 1.0f
+    paint.textAlign = Paint.Align.CENTER
+    canvas.drawText("☰", menuButtonCenter.x, menuButtonCenter.y + menuButtonRadius * 0.35f, paint)
   }
 
   private fun getButtonColor(button: Button): Int {
@@ -320,6 +354,13 @@ class OnScreenController @JvmOverloads constructor(
   }
 
   private fun handleTouchDown(x: Float, y: Float, pointerId: Int) {
+    // Check menu button first (UI button, not a controller input)
+    if (menuButtonPointerId == -1 && isPointInCircle(x, y, menuButtonCenter, menuButtonRadius)) {
+      menuButtonPressed = true
+      menuButtonPointerId = pointerId
+      return
+    }
+
     // Check sticks first
     sticks.forEach { (stick, state) ->
       if (state.activePointerId == -1 && isPointInCircle(x, y, state.center, state.radius)) {
@@ -349,6 +390,15 @@ class OnScreenController @JvmOverloads constructor(
   }
 
   private fun handleTouchUp(pointerId: Int) {
+    // Release menu button (fire on up = tap semantics)
+    if (menuButtonPointerId == pointerId) {
+      if (menuButtonPressed) {
+        onMenuButtonTapped?.invoke()
+      }
+      menuButtonPressed = false
+      menuButtonPointerId = -1
+    }
+
     // Release sticks
     sticks.forEach { (stick, state) ->
       if (state.activePointerId == pointerId) {
@@ -373,6 +423,11 @@ class OnScreenController @JvmOverloads constructor(
   }
 
   private fun handleCancel() {
+    if (menuButtonPointerId != -1) {
+      menuButtonPressed = false
+      menuButtonPointerId = -1
+    }
+
     sticks.forEach { (stick, state) ->
       if (state.activePointerId != -1) {
         state.activePointerId = -1

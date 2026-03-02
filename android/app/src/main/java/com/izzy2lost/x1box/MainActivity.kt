@@ -157,6 +157,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     // Create input bridge
     controllerBridge = ControllerInputBridge()
     onScreenController?.setControllerListener(controllerBridge!!)
+    onScreenController?.onMenuButtonTapped = { showInGameMenu() }
 
     // Add to layout
     mLayout?.addView(onScreenController)
