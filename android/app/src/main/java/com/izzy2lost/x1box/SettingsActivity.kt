@@ -47,6 +47,7 @@ class SettingsActivity : AppCompatActivity() {
     val switchHrtf        = findViewById<MaterialSwitch>(R.id.switch_hrtf)
     val switchShaders     = findViewById<MaterialSwitch>(R.id.switch_cache_shaders)
     val switchFpu         = findViewById<MaterialSwitch>(R.id.switch_hard_fpu)
+    val switchShowFps     = findViewById<MaterialSwitch>(R.id.switch_show_fps_counter)
     val toggleAudioDriver = findViewById<MaterialButtonToggleGroup>(R.id.toggle_audio_driver)
     val btnSave           = findViewById<MaterialButton>(R.id.btn_settings_save)
     tvVulkanDriverName    = findViewById(R.id.tv_vulkan_driver_name)
@@ -83,6 +84,7 @@ class SettingsActivity : AppCompatActivity() {
     switchHrtf.isChecked    = prefs.getBoolean("setting_hrtf", true)
     switchShaders.isChecked = prefs.getBoolean("setting_cache_shaders", true)
     switchFpu.isChecked     = prefs.getBoolean("setting_hard_fpu", true)
+    switchShowFps.isChecked = prefs.getBoolean("setting_show_fps_counter", false)
 
     val audioDriver = prefs.getString("setting_audio_driver", "openslES") ?: "openslES"
     when (audioDriver) {
@@ -131,6 +133,7 @@ class SettingsActivity : AppCompatActivity() {
         .putBoolean("setting_hrtf", switchHrtf.isChecked)
         .putBoolean("setting_cache_shaders", switchShaders.isChecked)
         .putBoolean("setting_hard_fpu", switchFpu.isChecked)
+        .putBoolean("setting_show_fps_counter", switchShowFps.isChecked)
         .putString("setting_audio_driver", selectedAudioDriver)
 
       when {

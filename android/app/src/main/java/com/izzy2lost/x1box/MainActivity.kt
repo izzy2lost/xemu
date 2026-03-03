@@ -3,10 +3,16 @@ package com.izzy2lost.x1box
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Typeface
 import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.View
@@ -17,6 +23,7 @@ import android.widget.BaseAdapter
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.ListView
+import android.widget.RelativeLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -25,12 +32,14 @@ import org.libsdl.app.SDLActivity
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 
 class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   companion object {
     const val EXTRA_AUTO_LOAD_SNAPSHOT_SLOT = "com.izzy2lost.x1box.extra.AUTO_LOAD_SNAPSHOT_SLOT"
     private const val SNAPSHOT_PREVIEW_HEADER_SIZE = 12
     private const val TOTAL_SNAPSHOT_SLOTS = 10
+    private const val PREF_SHOW_FPS_COUNTER = "setting_show_fps_counter"
   }
 
   private data class SnapshotSlotPreview(
@@ -51,6 +60,17 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var comboTriggered = false
   private var startupSnapshotSlot: Int? = null
   private var startupSnapshotLoadScheduled = false
+  private var showFpsCounter = false
+  private var fpsCounterView: TextView? = null
+  private val fpsUpdateHandler = Handler(Looper.getMainLooper())
+  private val fpsUpdateRunnable = object : Runnable {
+    override fun run() {
+      val view = fpsCounterView ?: return
+      val fps = nativeGetFps().coerceAtLeast(0f)
+      view.text = String.format(Locale.US, "FPS %.1f", fps)
+      fpsUpdateHandler.postDelayed(this, 500L)
+    }
+  }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -58,7 +78,12 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     if (requestedSlot in 1..TOTAL_SNAPSHOT_SLOTS) {
       startupSnapshotSlot = requestedSlot
     }
+    showFpsCounter = isFpsCounterEnabled()
+    nativeSetFpsCounterEnabled(showFpsCounter)
     setupOnScreenController()
+    if (showFpsCounter) {
+      setupFpsCounter()
+    }
     setupControllerDetection()
     hideSystemUI()
   }
@@ -133,12 +158,116 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     // Create input bridge
     controllerBridge = ControllerInputBridge()
     onScreenController?.setControllerListener(controllerBridge!!)
+    onScreenController?.onMenuButtonTapped = { showInGameMenu() }
 
     // Add to layout
     mLayout?.addView(onScreenController)
 
     // Check for existing controllers and show/hide accordingly
     updateControllerVisibility()
+  }
+
+  private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
+
+  private fun isFpsCounterEnabled(): Boolean {
+    return getSharedPreferences("x1box_prefs", MODE_PRIVATE)
+      .getBoolean(PREF_SHOW_FPS_COUNTER, false)
+  }
+
+  private fun applyFpsCounterPreference() {
+    val shouldShow = isFpsCounterEnabled()
+    if (shouldShow == showFpsCounter) {
+      if (showFpsCounter && fpsCounterView == null) {
+        setupFpsCounter()
+      }
+      nativeSetFpsCounterEnabled(showFpsCounter)
+      return
+    }
+
+    showFpsCounter = shouldShow
+    if (showFpsCounter) {
+      setupFpsCounter()
+      startFpsUpdates()
+    } else {
+      stopFpsUpdates()
+      fpsCounterView?.let { view ->
+        (view.parent as? ViewGroup)?.removeView(view)
+      }
+      fpsCounterView = null
+    }
+    nativeSetFpsCounterEnabled(showFpsCounter)
+  }
+
+  private fun setupFpsCounter() {
+    if (fpsCounterView != null) {
+      return
+    }
+
+    val parent = mLayout ?: return
+    val baseTopMargin = dpToPx(12)
+    val counter = TextView(this).apply {
+      text = "FPS 0.0"
+      setTextColor(Color.WHITE)
+      setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+      setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+      setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+      setBackgroundColor(Color.argb(150, 0, 0, 0))
+      isClickable = false
+      isFocusable = false
+      importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    counter.layoutParams = if (parent is RelativeLayout) {
+      RelativeLayout.LayoutParams(
+        RelativeLayout.LayoutParams.WRAP_CONTENT,
+        RelativeLayout.LayoutParams.WRAP_CONTENT
+      ).apply {
+        addRule(RelativeLayout.ALIGN_PARENT_TOP)
+        addRule(RelativeLayout.CENTER_HORIZONTAL)
+        topMargin = baseTopMargin
+      }
+    } else {
+      FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT
+      ).apply {
+        gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        topMargin = baseTopMargin
+      }
+    }
+
+    counter.setOnApplyWindowInsetsListener { view, insets ->
+      val topInset = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        insets.getInsets(WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout()).top
+      } else {
+        @Suppress("DEPRECATION")
+        insets.systemWindowInsetTop
+      }
+
+      val layoutParams = view.layoutParams
+      if (layoutParams is ViewGroup.MarginLayoutParams) {
+        val wantedTopMargin = baseTopMargin + topInset
+        if (layoutParams.topMargin != wantedTopMargin) {
+          layoutParams.topMargin = wantedTopMargin
+          view.layoutParams = layoutParams
+        }
+      }
+      insets
+    }
+
+    fpsCounterView = counter
+    parent.addView(counter)
+    counter.bringToFront()
+    counter.requestApplyInsets()
+  }
+
+  private fun startFpsUpdates() {
+    fpsUpdateHandler.removeCallbacks(fpsUpdateRunnable)
+    fpsUpdateRunnable.run()
+  }
+
+  private fun stopFpsUpdates() {
+    fpsUpdateHandler.removeCallbacks(fpsUpdateRunnable)
   }
 
   override fun onResume() {
@@ -150,7 +279,17 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       registerVirtualController()
     }, 1000)
 
+    applyFpsCounterPreference()
     scheduleStartupSnapshotLoadIfRequested()
+    if (showFpsCounter) {
+      startFpsUpdates()
+    }
+  }
+
+  override fun onPause() {
+    stopFpsUpdates()
+    nativeSetFpsCounterEnabled(false)
+    super.onPause()
   }
 
   private fun scheduleStartupSnapshotLoadIfRequested() {
@@ -260,6 +399,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   override fun onDestroy() {
+    stopFpsUpdates()
     inGameMenuDialog?.dismiss()
     inGameMenuDialog = null
 
@@ -271,6 +411,8 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     }
     
     inputManager?.unregisterInputDeviceListener(this)
+    fpsCounterView = null
+    nativeSetFpsCounterEnabled(false)
     super.onDestroy()
   }
 
@@ -346,6 +488,8 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   private external fun nativeSaveSnapshot(name: String): Boolean
   private external fun nativeLoadSnapshot(name: String): Boolean
+  private external fun nativeGetFps(): Float
+  private external fun nativeSetFpsCounterEnabled(enabled: Boolean)
 
   private fun slotName(slot: Int) = "android_slot_$slot"
 

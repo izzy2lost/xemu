@@ -140,6 +140,14 @@
 
           </com.google.android.material.button.MaterialButtonToggleGroup>
 
+          <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switch_show_fps_counter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_show_fps_counter"
+            android:textColor="@color/xemu_text_muted" />
+
           <!-- ── VULKAN DRIVER ── -->
           <TextView
             android:layout_width="match_parent"

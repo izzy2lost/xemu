@@ -112,6 +112,16 @@ class GameLibraryActivity : AppCompatActivity() {
       }
     }
 
+  private var pendingCustomCoverGame: GameEntry? = null
+  private val pickCustomCover =
+    registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+      val game = pendingCustomCoverGame ?: return@registerForActivityResult
+      pendingCustomCoverGame = null
+      if (uri != null) {
+        saveCustomCover(game, uri)
+      }
+    }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     setContentView(R.layout.activity_game_library)
@@ -534,6 +544,7 @@ class GameLibraryActivity : AppCompatActivity() {
       pathText.text = getString(R.string.library_game_path, game.relativePath)
 
       item.setOnClickListener { launchGame(game) }
+      item.setOnLongClickListener { showGameContextMenu(game); true }
       gamesListContainer.addView(item)
     }
   }
@@ -574,6 +585,7 @@ class GameLibraryActivity : AppCompatActivity() {
       nameText.text = game.title
       sizeText.text = getString(R.string.library_game_size, formatSize(game.sizeBytes))
       item.setOnClickListener { launchGame(game) }
+      item.setOnLongClickListener { showGameContextMenu(game); true }
       bindCoverArt(coverImage, game)
     }
 
@@ -601,6 +613,17 @@ class GameLibraryActivity : AppCompatActivity() {
 
   private fun bindCoverArt(coverView: ImageView, game: GameEntry) {
     coverView.tag = game.uri.toString()
+
+    val customFile = getCustomCoverFile(game)
+    if (customFile.exists()) {
+      coverView.load(customFile) {
+        crossfade(true)
+        placeholder(android.R.drawable.ic_menu_report_image)
+        error(android.R.drawable.ic_menu_report_image)
+      }
+      return
+    }
+
     coverView.setImageResource(android.R.drawable.ic_menu_report_image)
 
     if (!boxArtLookupEnabled) {
@@ -1239,6 +1262,65 @@ class GameLibraryActivity : AppCompatActivity() {
       movementMethod = LinkMovementMethod.getInstance()
       linksClickable = true
     }
+  }
+
+  private fun customCoversDir(): File = File(filesDir, "custom_covers")
+
+  private fun getCustomCoverFile(game: GameEntry): File =
+    File(customCoversDir(), "${collapseCoverKey(game.title)}.png")
+
+  private fun saveCustomCover(game: GameEntry, uri: Uri) {
+    val dir = customCoversDir()
+    if (!dir.exists()) dir.mkdirs()
+    val target = getCustomCoverFile(game)
+    try {
+      val input = contentResolver.openInputStream(uri) ?: run {
+        Toast.makeText(this, getString(R.string.library_custom_cover_failed), Toast.LENGTH_SHORT).show()
+        return
+      }
+      input.use { stream ->
+        FileOutputStream(target).use { output ->
+          stream.copyTo(output)
+        }
+      }
+      boxArtCache.remove(normalizeCoverKey(game.title))
+      renderGames()
+      Toast.makeText(this, getString(R.string.library_custom_cover_set), Toast.LENGTH_SHORT).show()
+    } catch (_: IOException) {
+      Toast.makeText(this, getString(R.string.library_custom_cover_failed), Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  private fun removeCustomCover(game: GameEntry) {
+    val file = getCustomCoverFile(game)
+    if (file.exists()) {
+      file.delete()
+      boxArtCache.remove(normalizeCoverKey(game.title))
+      renderGames()
+      Toast.makeText(this, getString(R.string.library_custom_cover_removed), Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  private fun showGameContextMenu(game: GameEntry) {
+    val hasCustomCover = getCustomCoverFile(game).exists()
+    val options = buildList {
+      add(getString(R.string.library_custom_cover_set_option))
+      if (hasCustomCover) add(getString(R.string.library_custom_cover_remove_option))
+    }.toTypedArray()
+
+    MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(game.title)
+      .setItems(options) { _, which ->
+        when {
+          which == 0 -> {
+            pendingCustomCoverGame = game
+            pickCustomCover.launch("image/*")
+          }
+          which == 1 && hasCustomCover -> removeCustomCover(game)
+        }
+      }
+      .setNegativeButton(android.R.string.cancel, null)
+      .show()
   }
 
   private fun openExternalLink(url: String) {
