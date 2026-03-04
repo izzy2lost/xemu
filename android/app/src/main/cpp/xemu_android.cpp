@@ -581,6 +581,7 @@ struct EmulatorSettings {
   bool hrtf            = true;
   bool cache_shaders   = true;
   bool hard_fpu        = true;
+  bool skip_boot_anim  = false;
 };
 
 struct SetupFiles {
@@ -639,6 +640,7 @@ static bool WriteConfigToml(const std::string& config_path,
   }
 
   general->insert_or_assign("show_welcome", false);
+  general->insert_or_assign("skip_boot_anim", settings.skip_boot_anim);
   display->insert_or_assign("renderer", "vulkan");
   if (!display->contains("filtering")) {
     display->insert_or_assign("filtering", "nearest");
@@ -808,6 +810,8 @@ static SetupFiles SyncSetupFiles() {
   emuSettings.hrtf           = GetPrefBool(env, activity, "setting_hrtf", true);
   emuSettings.cache_shaders  = GetPrefBool(env, activity, "setting_cache_shaders", true);
   emuSettings.hard_fpu       = GetPrefBool(env, activity, "setting_hard_fpu", true);
+  emuSettings.skip_boot_anim =
+      GetPrefBool(env, activity, "setting_skip_boot_anim", false);
   {
     std::string tcgThread = GetPrefString(env, activity, "setting_tcg_thread");
     if (tcgThread == "single") {

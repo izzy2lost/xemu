@@ -243,6 +243,9 @@ bool xemu_settings_load(void)
         if (auto show_welcome = general["show_welcome"].value<bool>()) {
             g_config.general.show_welcome = *show_welcome;
         }
+        if (auto skip_boot_anim = general["skip_boot_anim"].value<bool>()) {
+            g_config.general.skip_boot_anim = *skip_boot_anim;
+        }
 
         // Display settings - force Vulkan on Android
         g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
