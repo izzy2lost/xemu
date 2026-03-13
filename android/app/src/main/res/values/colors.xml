@@ -4,6 +4,7 @@
   <color name="xemu_surface_variant">#141914</color>
   <color name="xemu_text">#E8F5E9</color>
   <color name="xemu_text_muted">#A3B7A3</color>
+  <color name="xemu_warning">#FF6B6B</color>
   <color name="xemu_green">#41B14D</color>
   <color name="xemu_green_dark">#1E7A2E</color>
   <color name="xemu_outline">#263126</color>

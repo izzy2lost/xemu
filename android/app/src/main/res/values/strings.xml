@@ -56,7 +56,15 @@
   <string name="library_convert_copy_output_failed">Failed to copy converted XISO back to games folder.</string>
   <string name="library_convert_resolve_failed">Could not resolve destination folder for selected game.</string>
   <string name="library_restart_failed">Unable to restart. The selected game is no longer accessible.</string>
+  <string name="library_delete_option">Delete Game</string>
+  <string name="library_delete_title">Delete Game</string>
+  <string name="library_delete_action">Delete</string>
+  <string name="library_delete_confirm_message">Are you sure you want to delete %1$s?</string>
+  <string name="library_delete_success">Deleted %1$s</string>
+  <string name="library_delete_failed">Failed to delete %1$s</string>
+  <string name="library_delete_write_permission">Games folder is read-only. Re-select it to allow deleting files.</string>
   <string name="library_game_size">Size: %1$s</string>
+  <string name="library_regular_iso_badge">! Convert to XISO</string>
   <string name="library_game_path">Path: %1$s</string>
   <string name="library_open_game">Open</string>
   <string name="library_about_button_desc">About X1 BOX</string>

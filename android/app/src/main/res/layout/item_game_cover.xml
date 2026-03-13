@@ -48,7 +48,7 @@
       android:layout_height="wrap_content"
       android:layout_marginTop="2dp"
       android:ellipsize="end"
-      android:maxLines="1"
+      android:maxLines="2"
       android:textAppearance="@style/TextAppearance.Material3.BodySmall"
       android:textColor="@color/xemu_text_muted"
       app:layout_constraintBottom_toBottomOf="parent"

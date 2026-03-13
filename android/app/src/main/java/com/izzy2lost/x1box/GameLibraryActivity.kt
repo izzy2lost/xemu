@@ -3,12 +3,16 @@ package com.izzy2lost.x1box
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.method.LinkMovementMethod
 import android.text.style.ClickableSpan
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -45,13 +49,37 @@ class GameLibraryActivity : AppCompatActivity() {
     const val EXTRA_RESTART_LAST_GAME = "com.izzy2lost.x1box.extra.RESTART_LAST_GAME"
     private const val SNAPSHOT_PREVIEW_HEADER_SIZE = 12
     private const val TOTAL_SNAPSHOT_SLOTS = 10
+    private const val XDVDFS_SECTOR_SIZE = 2048L
+    private const val XDVDFS_VOLUME_DESCRIPTOR_OFFSET = 32L * XDVDFS_SECTOR_SIZE
+    private const val XDVDFS_VOLUME_DESCRIPTOR_SIZE = 0x800
+    private const val XDVDFS_TRAILING_MAGIC_OFFSET = 0x7EC
+    private const val XDVDFS_XGD1_OFFSET = 405_798_912L
+    private const val XDVDFS_XGD2_OFFSET = 265_879_552L
+    private const val XDVDFS_XGD3_OFFSET = 34_078_720L
+    private val XDVDFS_VOLUME_MAGIC = "MICROSOFT*XBOX*MEDIA".toByteArray(Charsets.US_ASCII)
+    private val XDVDFS_IMAGE_OFFSETS =
+      longArrayOf(0L, XDVDFS_XGD1_OFFSET, XDVDFS_XGD2_OFFSET, XDVDFS_XGD3_OFFSET)
+  }
+
+  private enum class DiscImageFormat {
+    OTHER,
+    XISO,
+    REGULAR_ISO,
+    UNKNOWN_ISO,
+  }
+
+  private enum class GameContextAction {
+    SET_CUSTOM_COVER,
+    REMOVE_CUSTOM_COVER,
+    DELETE_GAME,
   }
 
   private data class GameEntry(
     val title: String,
     val uri: Uri,
     val relativePath: String,
-    val sizeBytes: Long
+    val sizeBytes: Long,
+    val discImageFormat: DiscImageFormat,
   )
 
   private data class CoverEntry(
@@ -529,7 +557,7 @@ class GameLibraryActivity : AppCompatActivity() {
       val pathText = item.findViewById<TextView>(R.id.game_path_text)
 
       nameText.text = game.title
-      sizeText.text = getString(R.string.library_game_size, formatSize(game.sizeBytes))
+      sizeText.text = buildGameSizeText(game)
       pathText.text = getString(R.string.library_game_path, game.relativePath)
 
       item.setOnClickListener { launchGame(game) }
@@ -572,7 +600,7 @@ class GameLibraryActivity : AppCompatActivity() {
       val coverImage = item.findViewById<ImageView>(R.id.game_cover_image)
 
       nameText.text = game.title
-      sizeText.text = getString(R.string.library_game_size, formatSize(game.sizeBytes))
+      sizeText.text = buildGameSizeText(game)
       item.setOnClickListener { launchGame(game) }
       item.setOnLongClickListener { showGameContextMenu(game); true }
       bindCoverArt(coverImage, game)
@@ -1074,9 +1102,40 @@ class GameLibraryActivity : AppCompatActivity() {
     }
   }
 
+  private fun buildGameSizeText(game: GameEntry): CharSequence {
+    val sizeLabel = getString(R.string.library_game_size, formatSize(game.sizeBytes))
+    if (game.discImageFormat != DiscImageFormat.REGULAR_ISO) {
+      return sizeLabel
+    }
+
+    return SpannableStringBuilder(sizeLabel).apply {
+      append("  ")
+      val badgeStart = length
+      append(getString(R.string.library_regular_iso_badge))
+      setSpan(
+        ForegroundColorSpan(getColor(R.color.xemu_warning)),
+        badgeStart,
+        length,
+        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+      )
+      setSpan(
+        StyleSpan(Typeface.BOLD),
+        badgeStart,
+        length,
+        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+      )
+    }
+  }
+
   private fun isConvertibleIso(game: GameEntry): Boolean {
-    val lower = game.relativePath.lowercase(Locale.ROOT)
-    return lower.endsWith(".iso") && !lower.endsWith(".xiso.iso")
+    return when (game.discImageFormat) {
+      DiscImageFormat.REGULAR_ISO -> true
+      DiscImageFormat.UNKNOWN_ISO -> {
+        val lower = game.relativePath.lowercase(Locale.ROOT)
+        lower.endsWith(".iso") && !lower.endsWith(".xiso.iso")
+      }
+      else -> false
+    }
   }
 
   private fun buildXisoFileName(sourceName: String): String {
@@ -1126,7 +1185,8 @@ class GameLibraryActivity : AppCompatActivity() {
             title = toGameTitle(name),
             uri = child.uri,
             relativePath = prefix + name,
-            sizeBytes = child.length()
+            sizeBytes = child.length(),
+            discImageFormat = detectDiscImageFormat(child.uri, name),
           )
         )
       }
@@ -1134,6 +1194,79 @@ class GameLibraryActivity : AppCompatActivity() {
 
     games.sortBy { it.title.lowercase(Locale.ROOT) }
     return games
+  }
+
+  private fun detectDiscImageFormat(uri: Uri, fileName: String): DiscImageFormat {
+    val lower = fileName.lowercase(Locale.ROOT)
+    if (!isDiscImageFormatDetectable(lower)) {
+      return DiscImageFormat.OTHER
+    }
+
+    return try {
+      contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+        readDiscImageFormat(descriptor)
+      } ?: DiscImageFormat.UNKNOWN_ISO
+    } catch (_: Exception) {
+      DiscImageFormat.UNKNOWN_ISO
+    }
+  }
+
+  private fun isDiscImageFormatDetectable(lowerFileName: String): Boolean {
+    return lowerFileName.endsWith(".iso") || lowerFileName.endsWith(".xiso")
+  }
+
+  private fun readDiscImageFormat(descriptor: ParcelFileDescriptor): DiscImageFormat {
+    FileInputStream(descriptor.fileDescriptor).use { input ->
+      val channel = input.channel
+      val imageSize = channel.size()
+      val header = ByteBuffer.allocate(XDVDFS_VOLUME_DESCRIPTOR_SIZE.toInt())
+
+      for (offset in XDVDFS_IMAGE_OFFSETS) {
+        val descriptorOffset = offset + XDVDFS_VOLUME_DESCRIPTOR_OFFSET
+        if (imageSize < descriptorOffset + XDVDFS_VOLUME_DESCRIPTOR_SIZE) {
+          continue
+        }
+
+        header.clear()
+        channel.position(descriptorOffset)
+
+        while (header.hasRemaining()) {
+          val read = channel.read(header)
+          if (read <= 0) {
+            break
+          }
+        }
+
+        if (header.hasRemaining()) {
+          continue
+        }
+
+        if (isValidXdvdfsVolumeDescriptor(header.array())) {
+          return if (offset == 0L) DiscImageFormat.XISO else DiscImageFormat.REGULAR_ISO
+        }
+      }
+    }
+
+    return DiscImageFormat.UNKNOWN_ISO
+  }
+
+  private fun isValidXdvdfsVolumeDescriptor(header: ByteArray): Boolean {
+    return matchesXdvdfsMagic(header, 0) &&
+      matchesXdvdfsMagic(header, XDVDFS_TRAILING_MAGIC_OFFSET)
+  }
+
+  private fun matchesXdvdfsMagic(buffer: ByteArray, startIndex: Int): Boolean {
+    if (buffer.size < startIndex + XDVDFS_VOLUME_MAGIC.size) {
+      return false
+    }
+
+    for (index in XDVDFS_VOLUME_MAGIC.indices) {
+      if (buffer[startIndex + index] != XDVDFS_VOLUME_MAGIC[index]) {
+        return false
+      }
+    }
+
+    return true
   }
 
   private fun isSupportedGame(name: String): Boolean {
@@ -1292,22 +1425,99 @@ class GameLibraryActivity : AppCompatActivity() {
     }
   }
 
+  private fun confirmDeleteGame(game: GameEntry) {
+    val folderUri = gamesFolderUri
+    if (folderUri == null) {
+      Toast.makeText(this, getString(R.string.library_no_folder), Toast.LENGTH_SHORT).show()
+      return
+    }
+    if (!hasPersistedWritePermission(folderUri)) {
+      Toast.makeText(
+        this,
+        getString(R.string.library_delete_write_permission),
+        Toast.LENGTH_LONG
+      ).show()
+      pickGamesFolder.launch(folderUri)
+      return
+    }
+
+    MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(R.string.library_delete_title)
+      .setMessage(getString(R.string.library_delete_confirm_message, game.title))
+      .setPositiveButton(R.string.library_delete_action) { _, _ ->
+        deleteGame(game)
+      }
+      .setNegativeButton(android.R.string.cancel, null)
+      .show()
+  }
+
+  private fun deleteGame(game: GameEntry) {
+    if (isConvertingIso) {
+      Toast.makeText(this, getString(R.string.library_convert_busy), Toast.LENGTH_SHORT).show()
+      return
+    }
+
+    val folderUri = gamesFolderUri
+    if (folderUri == null) {
+      Toast.makeText(this, getString(R.string.library_no_folder), Toast.LENGTH_SHORT).show()
+      return
+    }
+
+    val root = DocumentFile.fromTreeUri(this, folderUri)
+    val parent = root?.let { resolveParentDirectory(it, game.relativePath) }
+    val sourceName = game.relativePath.substringAfterLast('/')
+    val target = parent?.findFile(sourceName)
+
+    if (target == null || !target.isFile) {
+      Toast.makeText(this, getString(R.string.library_delete_failed, game.title), Toast.LENGTH_LONG).show()
+      loadGames()
+      return
+    }
+
+    val deleted = runCatching { target.delete() }.getOrDefault(false)
+    if (!deleted) {
+      Toast.makeText(this, getString(R.string.library_delete_failed, game.title), Toast.LENGTH_LONG).show()
+      return
+    }
+
+    val customCover = getCustomCoverFile(game)
+    if (customCover.exists()) {
+      customCover.delete()
+    }
+    boxArtCache.remove(normalizeCoverKey(game.title))
+    boxArtMisses.remove(normalizeCoverKey(game.title))
+
+    Toast.makeText(this, getString(R.string.library_delete_success, game.title), Toast.LENGTH_SHORT).show()
+    loadGames()
+  }
+
   private fun showGameContextMenu(game: GameEntry) {
     val hasCustomCover = getCustomCoverFile(game).exists()
-    val options = buildList {
-      add(getString(R.string.library_custom_cover_set_option))
-      if (hasCustomCover) add(getString(R.string.library_custom_cover_remove_option))
+    val actions = buildList {
+      add(GameContextAction.SET_CUSTOM_COVER)
+      if (hasCustomCover) {
+        add(GameContextAction.REMOVE_CUSTOM_COVER)
+      }
+      add(GameContextAction.DELETE_GAME)
+    }
+    val options = actions.map { action ->
+      when (action) {
+        GameContextAction.SET_CUSTOM_COVER -> getString(R.string.library_custom_cover_set_option)
+        GameContextAction.REMOVE_CUSTOM_COVER -> getString(R.string.library_custom_cover_remove_option)
+        GameContextAction.DELETE_GAME -> getString(R.string.library_delete_option)
+      }
     }.toTypedArray()
 
     MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
       .setTitle(game.title)
       .setItems(options) { _, which ->
-        when {
-          which == 0 -> {
+        when (actions[which]) {
+          GameContextAction.SET_CUSTOM_COVER -> {
             pendingCustomCoverGame = game
             pickCustomCover.launch("image/*")
           }
-          which == 1 && hasCustomCover -> removeCustomCover(game)
+          GameContextAction.REMOVE_CUSTOM_COVER -> removeCustomCover(game)
+          GameContextAction.DELETE_GAME -> confirmDeleteGame(game)
         }
       }
       .setNegativeButton(android.R.string.cancel, null)
@@ -1325,4 +1535,3 @@ class GameLibraryActivity : AppCompatActivity() {
     }
   }
 }
-
