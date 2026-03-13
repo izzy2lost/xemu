@@ -130,25 +130,27 @@ class OnScreenController @JvmOverloads constructor(
       faceButtonRadius
     )
 
-    // D-Pad (bottom left corner) - smaller buttons
-    val dpadCenterX = w * 0.12f
-    val dpadCenterY = h * 0.83f
+    // Spread the left-side controls apart: D-pad farther left, left stick farther right.
+    val leftUpperControlCenterX = w * 0.13f
+    val leftUpperControlCenterY = h * 0.45f
+    val leftLowerControlCenterX = w * 0.18f
+    val leftLowerControlCenterY = h * 0.82f
     val dpadSpacing = w * 0.045f
 
     buttons[Button.DPAD_UP] = ButtonState(
-      PointF(dpadCenterX, dpadCenterY - dpadSpacing),
+      PointF(leftUpperControlCenterX, leftUpperControlCenterY - dpadSpacing),
       dpadButtonRadius
     )
     buttons[Button.DPAD_DOWN] = ButtonState(
-      PointF(dpadCenterX, dpadCenterY + dpadSpacing),
+      PointF(leftUpperControlCenterX, leftUpperControlCenterY + dpadSpacing),
       dpadButtonRadius
     )
     buttons[Button.DPAD_LEFT] = ButtonState(
-      PointF(dpadCenterX - dpadSpacing, dpadCenterY),
+      PointF(leftUpperControlCenterX - dpadSpacing, leftUpperControlCenterY),
       dpadButtonRadius
     )
     buttons[Button.DPAD_RIGHT] = ButtonState(
-      PointF(dpadCenterX + dpadSpacing, dpadCenterY),
+      PointF(leftUpperControlCenterX + dpadSpacing, leftUpperControlCenterY),
       dpadButtonRadius
     )
 
@@ -165,7 +167,7 @@ class OnScreenController @JvmOverloads constructor(
 
     // Analog sticks
     sticks[Stick.LEFT] = StickState(
-      PointF(w * 0.18f, h * 0.45f),
+      PointF(leftLowerControlCenterX, leftLowerControlCenterY),
       stickRadius
     )
     sticks[Stick.RIGHT] = StickState(
@@ -173,8 +175,8 @@ class OnScreenController @JvmOverloads constructor(
       stickRadius
     )
 
-    // Center buttons - moved near bottom, between D-pad and right stick
-    val centerButtonsBaseX = (dpadCenterX + sticks[Stick.RIGHT]!!.center.x) * 0.5f
+    // Center buttons - keep these near the lower controls and right stick.
+    val centerButtonsBaseX = (leftLowerControlCenterX + sticks[Stick.RIGHT]!!.center.x) * 0.5f
     val centerButtonsY = h * 0.9f
     val centerButtonSpacing = smallButtonRadius * 3.4f
     buttons[Button.BACK] = ButtonState(
@@ -199,11 +201,11 @@ class OnScreenController @JvmOverloads constructor(
       smallButtonRadius
     )
 
-    // LS/RS (thumbstick click) as dedicated buttons — separate from the stick
+    // LS/RS (thumbstick click) as dedicated buttons separate from the stick
     // circles so they can't be triggered accidentally by joystick movement.
-    // LS sits bottom-left of left stick; RS sits bottom-left of right stick.
+    // LS follows the left stick into the lower-left cluster.
     buttons[Button.LEFT_STICK_BUTTON] = ButtonState(
-      PointF(w * 0.07f, h * 0.53f),
+      PointF(leftLowerControlCenterX - (w * 0.10f), leftLowerControlCenterY + (h * 0.08f)),
       smallButtonRadius
     )
     buttons[Button.RIGHT_STICK_BUTTON] = ButtonState(
@@ -335,7 +337,6 @@ class OnScreenController @JvmOverloads constructor(
       Button.WHITE -> "WH"
       Button.LEFT_STICK_BUTTON -> "LS"
       Button.RIGHT_STICK_BUTTON -> "RS"
-      else -> ""
     }
   }
 
