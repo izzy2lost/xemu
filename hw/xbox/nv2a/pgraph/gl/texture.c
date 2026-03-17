@@ -333,6 +333,56 @@ static void android_prepare_tex_upload(const TextureShape s,
 }
 #endif
 
+static void pgraph_gl_unbind_texture_targets(void)
+{
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+#ifndef __ANDROID__
+    glBindTexture(GL_TEXTURE_1D, 0);
+#endif
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindTexture(GL_TEXTURE_3D, 0);
+}
+
+static bool pgraph_gl_texture_range_valid(NV2AState *d,
+                                          hwaddr vram_offset,
+                                          size_t length)
+{
+    hwaddr vram_size = memory_region_size(d->vram);
+
+    if (length == 0 || vram_offset >= vram_size) {
+        return false;
+    }
+
+    return length <= (vram_size - vram_offset);
+}
+
+static void pgraph_gl_log_invalid_texture_range(NV2AState *d,
+                                                int unit,
+                                                const char *range_name,
+                                                const TextureShape *shape,
+                                                hwaddr vram_offset,
+                                                size_t length)
+{
+    hwaddr vram_size = memory_region_size(d->vram);
+
+    NV2A_XPRINTF(true,
+                 "Skipping %s for stage %d: offset=0x%" HWADDR_PRIx
+                 " length=0x%zx vram=0x%" HWADDR_PRIx
+                 " dim=%u fmt=0x%X levels=%u border=%d cubemap=%d\n",
+                 range_name, unit, vram_offset, length, vram_size,
+                 shape->dimensionality, shape->color_format, shape->levels,
+                 shape->border, shape->cubemap);
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+                        "Skipping %s for stage %d: offset=0x%" HWADDR_PRIx
+                        " length=0x%zx vram=0x%" HWADDR_PRIx
+                        " dim=%u fmt=0x%X levels=%u border=%d cubemap=%d",
+                        range_name, unit, vram_offset, length, vram_size,
+                        shape->dimensionality, shape->color_format,
+                        shape->levels, shape->border, shape->cubemap);
+#endif
+}
+
 static TextureBinding* generate_texture(const TextureShape s, const uint8_t *texture_data, const uint8_t *palette_data);
 static void texture_binding_destroy(gpointer data);
 
@@ -556,12 +606,7 @@ void pgraph_gl_bind_textures(NV2AState *d)
         android_log_texture_stage_errors(i, "after_active_texture", NULL, 0);
 #endif
         if (!enabled) {
-            glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
-#ifndef __ANDROID__
-            glBindTexture(GL_TEXTURE_1D, 0);
-#endif
-            glBindTexture(GL_TEXTURE_2D, 0);
-            glBindTexture(GL_TEXTURE_3D, 0);
+            pgraph_gl_unbind_texture_targets();
 #ifdef __ANDROID__
             android_log_texture_stage_errors(i, "disabled_unbind", NULL, 0);
 #endif
@@ -582,18 +627,53 @@ void pgraph_gl_bind_textures(NV2AState *d)
         if (filter & NV_PGRAPH_TEXFILTER0_BSIGNED) NV2A_UNIMPLEMENTED("NV_PGRAPH_TEXFILTER0_BSIGNED");
 
         TextureShape state = pgraph_get_texture_shape(pg, i);
-        hwaddr texture_vram_offset, palette_vram_offset;
-        size_t length, palette_length;
+        hwaddr texture_vram_offset, palette_vram_offset = 0;
+        size_t length, palette_length = 0;
+        bool is_indexed = (state.color_format ==
+                NV097_SET_TEXTURE_FORMAT_COLOR_SZ_I8_A8R8G8B8);
 
         length = pgraph_get_texture_length(pg, &state);
         texture_vram_offset = pgraph_get_texture_phys_addr(pg, i);
-        palette_vram_offset = pgraph_get_texture_palette_phys_addr_length(pg, i, &palette_length);
+        if (is_indexed) {
+            palette_vram_offset = pgraph_get_texture_palette_phys_addr_length(
+                pg, i, &palette_length);
+        }
 
-        assert((texture_vram_offset + length) < memory_region_size(d->vram));
-        assert((palette_vram_offset + palette_length)
-               < memory_region_size(d->vram));
-        bool is_indexed = (state.color_format ==
-                NV097_SET_TEXTURE_FORMAT_COLOR_SZ_I8_A8R8G8B8);
+        if (!pgraph_gl_texture_range_valid(d, texture_vram_offset, length)) {
+            pgraph_gl_log_invalid_texture_range(d, i, "texture", &state,
+                                                texture_vram_offset, length);
+            pgraph_gl_unbind_texture_targets();
+#ifdef __ANDROID__
+            android_log_texture_stage_errors(i, "invalid_texture_range",
+                                             &state, 0);
+#endif
+            if (r->texture_binding[i]) {
+                texture_binding_destroy(r->texture_binding[i]);
+                r->texture_binding[i] = NULL;
+            }
+            pg->texture_dirty[i] = false;
+            continue;
+        }
+
+        if (is_indexed &&
+            !pgraph_gl_texture_range_valid(d, palette_vram_offset,
+                                           palette_length)) {
+            pgraph_gl_log_invalid_texture_range(d, i, "palette", &state,
+                                                palette_vram_offset,
+                                                palette_length);
+            pgraph_gl_unbind_texture_targets();
+#ifdef __ANDROID__
+            android_log_texture_stage_errors(i, "invalid_palette_range",
+                                             &state, 0);
+#endif
+            if (r->texture_binding[i]) {
+                texture_binding_destroy(r->texture_binding[i]);
+                r->texture_binding[i] = NULL;
+            }
+            pg->texture_dirty[i] = false;
+            continue;
+        }
+
         bool possibly_dirty = false;
         bool possibly_dirty_checked = false;
 
