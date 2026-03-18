@@ -92,47 +92,6 @@ static bool android_drain_gl_errors_silent(void)
     return had_error;
 }
 
-static void android_glo_readpixels(PGRAPHGLState *r, GLenum gl_format, GLenum gl_type,
-                    unsigned int bytes_per_pixel, unsigned int stride,
-                    unsigned int width, unsigned int height, bool vflip,
-                    void *data)
-{
-    size_t required_size = stride * height;
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, r->gl_download_pbo);
-    if (required_size > r->gl_download_pbo_size) {
-        glBufferData(GL_PIXEL_PACK_BUFFER, required_size, NULL, GL_STREAM_READ);
-        r->gl_download_pbo_size = required_size;
-    }
-
-    int rl, pa;
-    glGetIntegerv(GL_PACK_ROW_LENGTH, &rl);
-    glGetIntegerv(GL_PACK_ALIGNMENT, &pa);
-    glPixelStorei(GL_PACK_ROW_LENGTH, stride / bytes_per_pixel);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-
-    glReadPixels(0, 0, width, height, gl_format, gl_type, 0);
-
-    void *mapped_data = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, required_size, GL_MAP_READ_BIT);
-    if (mapped_data) {
-        if (vflip) {
-            GLubyte *b = (GLubyte *) data;
-            GLubyte *c = &((GLubyte *) mapped_data)[stride * (height - 1)];
-            for (unsigned int irow = 0; irow < height; irow++) {
-                memcpy(b, c, width * bytes_per_pixel);
-                b += stride;
-                c -= stride;
-            }
-        } else {
-            memcpy(data, mapped_data, required_size);
-        }
-        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-    }
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-
-    glPixelStorei(GL_PACK_ROW_LENGTH, rl);
-    glPixelStorei(GL_PACK_ALIGNMENT, pa);
-}
 static void android_sanitize_surface_format(PGRAPHGLState *r,
                                             SurfaceFormatInfo *fmt)
 {
@@ -1416,7 +1375,7 @@ static bool android_surface_download_depth16_to_guest(NV2AState *d,
     }
 
     rgba_pixels = g_malloc(read_height * rgba_stride);
-    android_glo_readpixels(r, GL_RGBA, GL_UNSIGNED_BYTE, 4, rgba_stride, read_width,
+    glo_readpixels(GL_RGBA, GL_UNSIGNED_BYTE, 4, rgba_stride, read_width,
                    read_height, flip, rgba_pixels);
 
     if (android_log_surface_download_errors(
@@ -1574,7 +1533,7 @@ static bool android_surface_download_z24s8_to_guest(NV2AState *d,
     }
 
     depth_pixels = g_malloc(read_width * read_height * 4);
-    android_glo_readpixels(r, GL_RGBA, GL_UNSIGNED_BYTE, 4, read_width * 4, read_width,
+    glo_readpixels(GL_RGBA, GL_UNSIGNED_BYTE, 4, read_width * 4, read_width,
                    read_height, flip, depth_pixels);
     if (android_log_surface_download_errors(
             "surface_download_z24s8: post-read-depth-pack", surface)) {
@@ -1594,7 +1553,7 @@ static bool android_surface_download_z24s8_to_guest(NV2AState *d,
     }
 
     stencil_pixels = g_malloc0(read_width * read_height);
-    android_glo_readpixels(r, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, 1, read_width,
+    glo_readpixels(GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, 1, read_width,
                    read_width, read_height, flip,
                    stencil_pixels);
     if (android_drain_gl_errors_silent()) {
@@ -1754,7 +1713,7 @@ static void surface_download_to_buffer(NV2AState *d, SurfaceBinding *surface,
         uint8_t *rgba_linear = rgba_pixels;
         uint8_t *linear_guest = pixels;
 
-        android_glo_readpixels(pg->gl_renderer_state, GL_RGBA, GL_UNSIGNED_BYTE, 4, rgba_stride,
+        glo_readpixels(GL_RGBA, GL_UNSIGNED_BYTE, 4, rgba_stride,
                        read_width, read_height, flip, rgba_pixels);
         android_log_surface_download_errors(
             "surface_download_to_buffer: post-read_rgba8", surface);
@@ -1809,11 +1768,7 @@ static void surface_download_to_buffer(NV2AState *d, SurfaceBinding *surface,
         gl_read_buf = pg->scale_buf;
     }
 
-#ifdef __ANDROID__
-    android_glo_readpixels(pg->gl_renderer_state,
-#else
     glo_readpixels(
-#endif
         surface->fmt.gl_format, surface->fmt.gl_type, surface->fmt.bytes_per_pixel,
         pg->surface_scale_factor * surface->pitch,
         pg->surface_scale_factor * surface->width,
@@ -2565,10 +2520,6 @@ void pgraph_gl_init_surfaces(PGRAPHState *pg)
     pgraph_gl_reload_surface_scale_factor(pg);
     glGenFramebuffers(1, &r->gl_framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, r->gl_framebuffer);
-#ifdef __ANDROID__
-    glGenBuffers(1, &r->gl_download_pbo);
-    r->gl_download_pbo_size = 0;
-#endif
     QTAILQ_INIT(&r->surfaces);
     r->downloads_pending = false;
     qemu_event_init(&r->downloads_complete, false);
@@ -2606,14 +2557,6 @@ void pgraph_gl_finalize_surfaces(PGRAPHState *pg)
     flush_surfaces(d);
     glDeleteFramebuffers(1, &r->gl_framebuffer);
     r->gl_framebuffer = 0;
-
-#ifdef __ANDROID__
-    if (r->gl_download_pbo) {
-        glDeleteBuffers(1, &r->gl_download_pbo);
-        r->gl_download_pbo = 0;
-        r->gl_download_pbo_size = 0;
-    }
-#endif
 
     finalize_render_to_texture(pg);
 }
