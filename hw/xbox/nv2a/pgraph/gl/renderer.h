@@ -196,6 +196,13 @@ typedef struct PGRAPHGLState {
 #ifdef __ANDROID__
     GLuint gl_download_pbo;
     size_t gl_download_pbo_size;
+
+    /* Persistent scratch buffers for RGBA8 format conversion.
+     * Avoids per-frame g_malloc/g_free in surface upload/download hot paths. */
+    uint8_t *android_conv_buf;       /* upload conversion (pgraph_gl_upload_surface_data) */
+    size_t   android_conv_buf_size;
+    uint8_t *android_s2t_conv_buf;   /* render-to-texture conversion */
+    size_t   android_s2t_conv_buf_size;
 #endif
 
     TextureBinding *texture_binding[NV2A_MAX_TEXTURES];

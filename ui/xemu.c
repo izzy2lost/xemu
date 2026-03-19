@@ -62,6 +62,9 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#ifdef __aarch64__
+#include <arm_neon.h>
+#endif
 #endif
 #ifdef _WIN32
 #include "nvapi.h"
@@ -1455,28 +1458,49 @@ void xb_surface_gl_create_texture(DisplaySurface *surface)
     uint8_t *converted = NULL;
     bool use_row_length = true;
     if (upload_format == GL_BGRA_EXT) {
-        const int width = surface_width(surface);
-        const int height = surface_height(surface);
-        const int stride = surface_stride(surface);
-        const uint8_t *src = (const uint8_t *)surface_data(surface);
-        converted = g_malloc((size_t)width * height * 4);
-        for (int y = 0; y < height; ++y) {
-            const uint8_t *row = src + (size_t)y * stride;
-            uint8_t *dst = converted + (size_t)y * width * 4;
-            for (int x = 0; x < width; ++x) {
-                const uint8_t b = row[x * 4 + 0];
-                const uint8_t g = row[x * 4 + 1];
-                const uint8_t r = row[x * 4 + 2];
-                const uint8_t a = row[x * 4 + 3];
-                dst[x * 4 + 0] = r;
-                dst[x * 4 + 1] = g;
-                dst[x * 4 + 2] = b;
-                dst[x * 4 + 3] = a;
+        if (g_android_gl_bgra_supported) {
+            /* GL_EXT_texture_format_BGRA8888: upload native BGRA with no CPU
+             * work. The spec requires internalformat == GL_BGRA_EXT too. */
+            internal_format = GL_BGRA_EXT;
+            /* upload_format stays GL_BGRA_EXT, use_row_length stays true */
+        } else {
+            /* Fallback: swizzle BGRA→RGBA on CPU before upload */
+            const int width = surface_width(surface);
+            const int height = surface_height(surface);
+            const int stride = surface_stride(surface);
+            const uint8_t *src = (const uint8_t *)surface_data(surface);
+            converted = g_malloc((size_t)width * height * 4);
+            for (int y = 0; y < height; ++y) {
+                const uint8_t *row = src + (size_t)y * stride;
+                uint8_t *dst = converted + (size_t)y * width * 4;
+#ifdef __aarch64__
+                /* vqtbl1q_u8: 16-byte table lookup, processes 4 pixels/cycle */
+                static const uint8_t perm_arr[16] =
+                    {2,1,0,3, 6,5,4,7, 10,9,8,11, 14,13,12,15};
+                uint8x16_t vperm = vld1q_u8(perm_arr);
+                int px = width;
+                while (px >= 4) {
+                    vst1q_u8(dst, vqtbl1q_u8(vld1q_u8(row), vperm));
+                    row += 16; dst += 16; px -= 4;
+                }
+                while (px-- > 0) {
+                    dst[0] = row[2]; dst[1] = row[1];
+                    dst[2] = row[0]; dst[3] = row[3];
+                    row += 4; dst += 4;
+                }
+#else
+                for (int x = 0; x < width; ++x) {
+                    dst[x * 4 + 0] = row[x * 4 + 2];
+                    dst[x * 4 + 1] = row[x * 4 + 1];
+                    dst[x * 4 + 2] = row[x * 4 + 0];
+                    dst[x * 4 + 3] = row[x * 4 + 3];
+                }
+#endif
             }
+            upload_format = GL_RGBA;
+            pixels = converted;
+            use_row_length = false;
         }
-        upload_format = GL_RGBA;
-        pixels = converted;
-        use_row_length = false;
     }
     if (use_row_length) {
 #endif

@@ -302,8 +302,8 @@ static void monitor_sink_cb(void *opaque, uint8_t *stream, int free_b)
         if (avail >= free_b) {
             break;
         }
-        sleep_ns(500000);
         qemu_cond_broadcast(&s->cond);
+        sleep_ns(500000);
         if (!runstate_is_running()) {
             memset(stream, 0, free_b);
             return;

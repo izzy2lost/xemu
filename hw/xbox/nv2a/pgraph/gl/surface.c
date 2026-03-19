@@ -28,6 +28,9 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#ifdef __aarch64__
+#include <arm_neon.h>
+#endif
 #endif
 
 #ifdef __ANDROID__
@@ -211,22 +214,50 @@ static void android_surface_guest_to_rgba8(const SurfaceBinding *surface,
         break;
     case NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_Z8R8G8B8:
     case NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8:
+    {
+        bool preserve_alpha = (surface->shape.color_format ==
+                               NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8);
         for (y = 0; y < height; y++) {
             const uint8_t *src_row = src + y * src_stride;
             uint8_t *dst_row = dst + y * width * 4;
+#ifdef __aarch64__
+            /* vqtbl1q_u8: 16-byte shuffle, processes 4 pixels per instruction.
+             * Permutation swaps R (byte 2) and B (byte 0) within each pixel. */
+            static const uint8_t perm_arr[16] =
+                {2,1,0,3, 6,5,4,7, 10,9,8,11, 14,13,12,15};
+            uint8x16_t vperm = vld1q_u8(perm_arr);
+            /* For X8R8G8B8, force alpha=0xFF by ORing a pre-built mask. */
+            static const uint8_t alpha_mask_arr[16] =
+                {0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF};
+            uint8x16_t valpha_mask = preserve_alpha
+                ? vdupq_n_u8(0)
+                : vld1q_u8(alpha_mask_arr);
+            unsigned int px = width;
+            while (px >= 4) {
+                uint8x16_t v = vqtbl1q_u8(vld1q_u8(src_row), vperm);
+                vst1q_u8(dst_row, vorrq_u8(v, valpha_mask));
+                src_row += 16; dst_row += 16; px -= 4;
+            }
+            /* scalar tail for widths not divisible by 4 */
+            while (px-- > 0) {
+                dst_row[0] = src_row[2];
+                dst_row[1] = src_row[1];
+                dst_row[2] = src_row[0];
+                dst_row[3] = preserve_alpha ? src_row[3] : 0xFF;
+                src_row += 4; dst_row += 4;
+            }
+#else
             for (x = 0; x < width; x++) {
                 const uint8_t *pixel = src_row + x * 4;
                 dst_row[x * 4 + 0] = pixel[2];
                 dst_row[x * 4 + 1] = pixel[1];
                 dst_row[x * 4 + 2] = pixel[0];
-                dst_row[x * 4 + 3] =
-                    (surface->shape.color_format ==
-                     NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8)
-                        ? pixel[3]
-                        : 0xFF;
+                dst_row[x * 4 + 3] = preserve_alpha ? pixel[3] : 0xFF;
             }
+#endif
         }
         break;
+    }
     default:
         g_assert_not_reached();
     }
@@ -867,20 +898,24 @@ static void render_surface_to_texture_slow(NV2AState *d,
 
 #ifdef __ANDROID__
     if (android_surface_to_texture_rgba8_compatible(surface, texture_shape)) {
-        uint8_t *upload_tmp = g_malloc(width * height * 4);
+        PGRAPHGLState *r = pg->gl_renderer_state;
+        size_t needed = (size_t)width * height * 4;
+        if (needed > r->android_s2t_conv_buf_size) {
+            r->android_s2t_conv_buf = g_realloc(r->android_s2t_conv_buf, needed);
+            r->android_s2t_conv_buf_size = needed;
+        }
         if (android_surface_to_texture_needs_guest_reinterpretation(
                 surface, texture_shape)) {
             android_surface_guest_to_texture_rgba8(
                 texture_shape, buf, width, height,
-                width * surface->fmt.bytes_per_pixel, upload_tmp);
+                width * surface->fmt.bytes_per_pixel, r->android_s2t_conv_buf);
         } else {
             android_surface_guest_to_rgba8(surface, buf, width, height,
                                            width * surface->fmt.bytes_per_pixel,
-                                           upload_tmp);
+                                           r->android_s2t_conv_buf);
         }
         glTexImage2D(texture->gl_target, 0, GL_RGBA8, width, height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, upload_tmp);
-        g_free(upload_tmp);
+                     GL_RGBA, GL_UNSIGNED_BYTE, r->android_s2t_conv_buf);
     } else
 #endif
     glTexImage2D(texture->gl_target, 0, f->gl_internal_format, width, height, 0,
@@ -2068,8 +2103,8 @@ void pgraph_gl_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
     glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
 #ifdef __ANDROID__
     {
+        PGRAPHGLState *r = pg->gl_renderer_state;
         const uint8_t *upload_buf = gl_read_buf;
-        uint8_t *upload_tmp = NULL;
         GLint upload_ifmt;
         GLenum upload_fmt;
         GLenum upload_type;
@@ -2077,15 +2112,18 @@ void pgraph_gl_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
         android_surface_get_storage_format(surface, &upload_ifmt, &upload_fmt,
                                            &upload_type);
         if (android_surface_uses_rgba8_transfer(surface)) {
-            upload_tmp = g_malloc(width * height * 4);
+            size_t needed = (size_t)width * height * 4;
+            if (needed > r->android_conv_buf_size) {
+                r->android_conv_buf = g_realloc(r->android_conv_buf, needed);
+                r->android_conv_buf_size = needed;
+            }
             android_surface_guest_to_rgba8(surface, gl_read_buf, width, height,
                                            width * surface->fmt.bytes_per_pixel,
-                                           upload_tmp);
-            upload_buf = upload_tmp;
+                                           r->android_conv_buf);
+            upload_buf = r->android_conv_buf;
         }
         glTexImage2D(GL_TEXTURE_2D, 0, upload_ifmt, width, height, 0,
                      upload_fmt, upload_type, upload_buf);
-        g_free(upload_tmp);
     }
 #else
     glTexImage2D(GL_TEXTURE_2D, 0, surface->fmt.gl_internal_format, width,
@@ -2577,6 +2615,10 @@ void pgraph_gl_init_surfaces(PGRAPHState *pg)
 #ifdef __ANDROID__
     glGenBuffers(1, &r->gl_download_pbo);
     r->gl_download_pbo_size = 0;
+    r->android_conv_buf = NULL;
+    r->android_conv_buf_size = 0;
+    r->android_s2t_conv_buf = NULL;
+    r->android_s2t_conv_buf_size = 0;
 #endif
     QTAILQ_INIT(&r->surfaces);
     r->downloads_pending = false;
@@ -2622,6 +2664,12 @@ void pgraph_gl_finalize_surfaces(PGRAPHState *pg)
         r->gl_download_pbo = 0;
         r->gl_download_pbo_size = 0;
     }
+    g_free(r->android_conv_buf);
+    r->android_conv_buf = NULL;
+    r->android_conv_buf_size = 0;
+    g_free(r->android_s2t_conv_buf);
+    r->android_s2t_conv_buf = NULL;
+    r->android_s2t_conv_buf_size = 0;
 #endif
 
     finalize_render_to_texture(pg);
