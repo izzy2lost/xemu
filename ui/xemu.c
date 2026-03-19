@@ -1381,7 +1381,7 @@ void xemu_android_display_loop(void)
     }
 #ifdef __ANDROID__
     xemu_android_refresh_frame_limit_from_env();
-    SDL_GL_SetSwapInterval(g_config.display.window.vsync ? 1 : 0);
+    SDL_GL_SetSwapInterval(0);
     xemu_hud_init(m_window, m_context);
 #endif
     tcg_register_init_ctx();
@@ -1737,10 +1737,14 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
      */
     static int64_t last_update = 0;
 #ifdef __ANDROID__
-    int64_t deadline = last_update + g_android_frame_interval_ns;
+    const int64_t frame_interval = g_android_frame_interval_ns;
 #else
-    int64_t deadline = last_update + 16666666;
+    const int64_t frame_interval = 16666666;
 #endif
+    if (last_update == 0) {
+        last_update = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    }
+    int64_t deadline = last_update + frame_interval;
 
 #ifdef DEBUG_XEMU_C
     int64_t sleep_acc = 0;
@@ -1775,7 +1779,11 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
             }
         } else {
             DPRINTF("zzZz %g %ld\n", (double)sleep_acc/1000000.0, spin_acc);
-            last_update = now;
+            if (now - deadline > frame_interval) {
+                last_update = now;
+            } else {
+                last_update = deadline;
+            }
             break;
         }
     }

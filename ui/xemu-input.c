@@ -48,6 +48,7 @@
 
 #define XEMU_INPUT_MIN_INPUT_UPDATE_INTERVAL_US  2500
 #define XEMU_INPUT_MIN_RUMBLE_UPDATE_INTERVAL_US 2500
+#define XEMU_INPUT_MIN_BUTTON_HOLD_US            50000
 
 #if 0
 static void xemu_input_print_controller_state(ControllerState *state)
@@ -91,6 +92,58 @@ ControllerState *bound_controllers[4] = { NULL, NULL, NULL, NULL };
 const char *bound_drivers[4] = { DRIVER_DUKE, DRIVER_DUKE, DRIVER_DUKE,
                                  DRIVER_DUKE };
 int test_mode;
+
+static ControllerState *xemu_input_find_sdl_controller(SDL_JoystickID id)
+{
+    ControllerState *iter;
+
+    QTAILQ_FOREACH(iter, &available_controllers, entry) {
+        if (iter->type == INPUT_DEVICE_SDL_GAMECONTROLLER &&
+            iter->sdl_joystick_id == id) {
+            return iter;
+        }
+    }
+
+    return NULL;
+}
+
+static int xemu_input_sdl_button_to_button_id(uint8_t button)
+{
+    switch (button) {
+    case SDL_CONTROLLER_BUTTON_A:
+        return 0;
+    case SDL_CONTROLLER_BUTTON_B:
+        return 1;
+    case SDL_CONTROLLER_BUTTON_X:
+        return 2;
+    case SDL_CONTROLLER_BUTTON_Y:
+        return 3;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+        return 4;
+    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+        return 5;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+        return 6;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+        return 7;
+    case SDL_CONTROLLER_BUTTON_BACK:
+        return 8;
+    case SDL_CONTROLLER_BUTTON_START:
+        return 9;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+        return 10;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+        return 11;
+    case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+        return 12;
+    case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
+        return 13;
+    case SDL_CONTROLLER_BUTTON_GUIDE:
+        return 14;
+    default:
+        return -1;
+    }
+}
 
 static const char **port_index_to_settings_key_map[] = {
     &g_config.input.bindings.port1,
@@ -444,6 +497,17 @@ void xemu_input_process_sdl_events(const SDL_Event *event)
             xemu_queue_notification(buf);
             xemu_input_rebind_xmu(port);
         }
+    } else if (event->type == SDL_CONTROLLERBUTTONDOWN) {
+        ControllerState *state =
+            xemu_input_find_sdl_controller(event->cbutton.which);
+        int button_id =
+            xemu_input_sdl_button_to_button_id(event->cbutton.button);
+
+        if (state && button_id >= 0) {
+            state->button_hold_until_us[button_id] =
+                qemu_clock_get_us(QEMU_CLOCK_REALTIME) +
+                XEMU_INPUT_MIN_BUTTON_HOLD_US;
+        }
     } else if (event->type == SDL_CONTROLLERDEVICEREMOVED) {
         DPRINTF("Controller Removed: %d\n", event->cdevice.which);
         int handled = 0;
@@ -575,6 +639,8 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
 
 void xemu_input_update_sdl_controller_state(ControllerState *state)
 {
+    int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
+
     state->buttons = 0;
     memset(state->axis, 0, sizeof(state->axis));
     if (!state->controller_map) {
@@ -640,6 +706,14 @@ void xemu_input_update_sdl_controller_state(ControllerState *state)
     }
 
 #undef INVERT_AXIS
+
+    for (int i = 0; i < 15; i++) {
+        if (state->button_hold_until_us[i] > now) {
+            state->buttons |= CONTROLLER_STATE_BUTTON_ID_TO_MASK(i);
+        } else {
+            state->button_hold_until_us[i] = 0;
+        }
+    }
 
     // xemu_input_print_controller_state(state);
 }

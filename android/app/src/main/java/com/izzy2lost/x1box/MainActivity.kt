@@ -99,6 +99,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       // gesture panel, notification shade, or dialog appears). Without this,
       // triggers can stay "pressed" if the touch UP event is never delivered.
       onScreenController?.resetAllInputs()
+      controllerBridge?.reset()
     }
   }
 
@@ -218,6 +219,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   override fun onPause() {
     swipeUpGestureRecognizer.reset()
     onScreenController?.resetAllInputs()
+    controllerBridge?.reset()
     super.onPause()
   }
 

@@ -180,7 +180,7 @@ static void pgraph_gl_finalize(NV2AState *d)
 static void pgraph_gl_flip_stall(NV2AState *d)
 {
     NV2A_GL_DFRAME_TERMINATOR();
-    glFinish();
+    glFlush();
 }
 
 static void pgraph_gl_flush(NV2AState *d)

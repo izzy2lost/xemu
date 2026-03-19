@@ -1,5 +1,8 @@
 package com.izzy2lost.x1box
 
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.KeyEvent
 import org.libsdl.app.SDLControllerManager
 
@@ -8,9 +11,16 @@ import org.libsdl.app.SDLControllerManager
  */
 class ControllerInputBridge : OnScreenController.ControllerListener {
 
+  private data class ButtonDispatchState(
+    var isDown: Boolean = false,
+    var pressedAtMs: Long = 0L,
+    var pendingRelease: Runnable? = null,
+  )
+
   companion object {
     // Virtual device ID for on-screen controller
     const val VIRTUAL_DEVICE_ID = -2
+    private const val MIN_TAP_HOLD_MS = 50L
 
     // Axis indices for SDL
     const val AXIS_LEFT_X = 0
@@ -21,33 +31,57 @@ class ControllerInputBridge : OnScreenController.ControllerListener {
     const val AXIS_RIGHT_TRIGGER = 5
   }
 
+  private val mainHandler = Handler(Looper.getMainLooper())
+  private val buttonStates = mutableMapOf<OnScreenController.Button, ButtonDispatchState>()
+
   override fun onButtonPressed(button: OnScreenController.Button) {
+    val state = buttonStates.getOrPut(button) { ButtonDispatchState() }
+    state.pendingRelease?.let(mainHandler::removeCallbacks)
+    state.pendingRelease = null
+    state.pressedAtMs = SystemClock.uptimeMillis()
+    if (state.isDown) {
+      return
+    }
+    state.isDown = true
+
     try {
-      when (button) {
-        OnScreenController.Button.LEFT_TRIGGER,
-        OnScreenController.Button.RIGHT_TRIGGER ->
-          setTriggerState(button, pressed = true)
-        else -> {
-          val keyCode = getKeyCodeForButton(button)
-          SDLControllerManager.onNativePadDown(VIRTUAL_DEVICE_ID, keyCode)
-        }
-      }
+      dispatchButtonState(button, pressed = true)
     } catch (e: Exception) {
       DebugLog.e("ControllerBridge", e) { "Error on button press: ${e.message}" }
     }
   }
 
   override fun onButtonReleased(button: OnScreenController.Button) {
-    try {
-      when (button) {
-        OnScreenController.Button.LEFT_TRIGGER,
-        OnScreenController.Button.RIGHT_TRIGGER ->
-          setTriggerState(button, pressed = false)
-        else -> {
-          val keyCode = getKeyCodeForButton(button)
-          SDLControllerManager.onNativePadUp(VIRTUAL_DEVICE_ID, keyCode)
+    val state = buttonStates.getOrPut(button) { ButtonDispatchState() }
+    state.pendingRelease?.let(mainHandler::removeCallbacks)
+    state.pendingRelease = null
+    if (!state.isDown) {
+      return
+    }
+
+    val elapsed = SystemClock.uptimeMillis() - state.pressedAtMs
+    val remaining = MIN_TAP_HOLD_MS - elapsed
+    if (remaining > 0L) {
+      val releaseTask = Runnable {
+        state.pendingRelease = null
+        if (!state.isDown) {
+          return@Runnable
+        }
+        state.isDown = false
+        try {
+          dispatchButtonState(button, pressed = false)
+        } catch (e: Exception) {
+          DebugLog.e("ControllerBridge", e) { "Error on delayed button release: ${e.message}" }
         }
       }
+      state.pendingRelease = releaseTask
+      mainHandler.postDelayed(releaseTask, remaining)
+      return
+    }
+
+    state.isDown = false
+    try {
+      dispatchButtonState(button, pressed = false)
     } catch (e: Exception) {
       DebugLog.e("ControllerBridge", e) { "Error on button release: ${e.message}" }
     }
@@ -91,6 +125,38 @@ class ControllerInputBridge : OnScreenController.ControllerListener {
       SDLControllerManager.onNativePadUp(VIRTUAL_DEVICE_ID, keyCode)
     } catch (e: Exception) {
       DebugLog.e("ControllerBridge", e) { "Error on stick release: ${e.message}" }
+    }
+  }
+
+  fun reset() {
+    buttonStates.forEach { (button, state) ->
+      state.pendingRelease?.let(mainHandler::removeCallbacks)
+      state.pendingRelease = null
+      if (!state.isDown) {
+        return@forEach
+      }
+      state.isDown = false
+      try {
+        dispatchButtonState(button, pressed = false)
+      } catch (e: Exception) {
+        DebugLog.e("ControllerBridge", e) { "Error resetting $button: ${e.message}" }
+      }
+    }
+  }
+
+  private fun dispatchButtonState(button: OnScreenController.Button, pressed: Boolean) {
+    when (button) {
+      OnScreenController.Button.LEFT_TRIGGER,
+      OnScreenController.Button.RIGHT_TRIGGER ->
+        setTriggerState(button, pressed)
+      else -> {
+        val keyCode = getKeyCodeForButton(button)
+        if (pressed) {
+          SDLControllerManager.onNativePadDown(VIRTUAL_DEVICE_ID, keyCode)
+        } else {
+          SDLControllerManager.onNativePadUp(VIRTUAL_DEVICE_ID, keyCode)
+        }
+      }
     }
   }
 

@@ -264,6 +264,22 @@ static int getenv_int_clamped(const char *name, int min_value, int max_value,
     return (int)parsed;
 }
 
+static void monitor_hold_last_sample(MCPXAPUState *s, uint8_t *stream, int len)
+{
+    int frame_bytes = sizeof(s->monitor.last_output_sample);
+    int frames = len / frame_bytes;
+    int16_t *out = (int16_t *)stream;
+    for (int i = 0; i < frames; i++) {
+        out[i * 2 + 0] = s->monitor.last_output_sample[0];
+        out[i * 2 + 1] = s->monitor.last_output_sample[1];
+    }
+
+    int tail_bytes = len - (frames * frame_bytes);
+    if (tail_bytes > 0) {
+        memset(stream + (frames * frame_bytes), 0, tail_bytes);
+    }
+}
+
 static void monitor_sink_cb(void *opaque, uint8_t *stream, int free_b)
 {
     MCPXAPUState *s = MCPX_APU_DEVICE(opaque);
@@ -274,7 +290,12 @@ static void monitor_sink_cb(void *opaque, uint8_t *stream, int free_b)
     }
 
     int avail = 0;
-    for (int i = 0; i < 10; i++) {
+#ifdef __ANDROID__
+    int wait_attempts = 24;
+#else
+    int wait_attempts = 10;
+#endif
+    for (int i = 0; i < wait_attempts; i++) {
         qemu_spin_lock(&s->monitor.fifo_lock);
         avail = fifo8_num_used(&s->monitor.fifo);
         qemu_spin_unlock(&s->monitor.fifo_lock);
@@ -304,7 +325,14 @@ static void monitor_sink_cb(void *opaque, uint8_t *stream, int free_b)
     }
 
     if (copied < free_b) {
-        memset(stream + copied, 0, free_b - copied);
+        monitor_hold_last_sample(s, stream + copied, free_b - copied);
+    }
+
+    if (free_b >= sizeof(s->monitor.last_output_sample)) {
+        int16_t *last = (int16_t *)(stream + free_b -
+                                    sizeof(s->monitor.last_output_sample));
+        s->monitor.last_output_sample[0] = last[0];
+        s->monitor.last_output_sample[1] = last[1];
     }
 
     qemu_cond_broadcast(&s->cond);
@@ -317,11 +345,16 @@ static void monitor_init(MCPXAPUState *d)
     d->monitor.device_buffer_bytes = 0;
     d->monitor.queued_bytes_low = 0;
     d->monitor.queued_bytes_high = 0;
+    d->monitor.last_output_sample[0] = 0;
+    d->monitor.last_output_sample[1] = 0;
 
     int fifo_frames = 3;
     int audio_samples = 512;
 #ifdef __ANDROID__
-    fifo_frames = 16;
+    /* Give Android a little more audio headroom to ride out short stalls
+     * without increasing the device callback size again.
+     */
+    fifo_frames = 24;
     audio_samples = 2048;
     fifo_frames = getenv_int_clamped("XEMU_ANDROID_AUDIO_FIFO_FRAMES", 3, 32,
                                      fifo_frames);

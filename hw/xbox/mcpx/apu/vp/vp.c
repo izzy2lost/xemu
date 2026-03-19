@@ -1751,6 +1751,43 @@ voice_work_dispatch(MCPXAPUState *d,
     qemu_mutex_lock(&vwd->lock);
 
     if (vwd->queue_len) {
+        if (vwd->num_workers == 1) {
+            VoiceWorker *worker = &vwd->workers[0];
+            int voice_count = vwd->queue_len;
+
+            memset(worker->mixbins, 0, sizeof(worker->mixbins));
+            if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
+                memset(worker->sample_buf, 0, sizeof(worker->sample_buf));
+            }
+
+            for (int i = 0; i < vwd->queue_len; i++) {
+                voice_process(d, worker->mixbins, worker->sample_buf,
+                              vwd->queue[i].voice, vwd->queue[i].list);
+            }
+
+            voice_work_release_voice_locks(d);
+            vwd->queue_len = 0;
+
+            for (int b = 0; b < NUM_MIXBINS; b++) {
+                for (int s = 0; s < NUM_SAMPLES_PER_FRAME; s++) {
+                    mixbins[b][s] += worker->mixbins[b][s];
+                }
+            }
+            if (d->monitor.point == MCPX_APU_DEBUG_MON_VP) {
+                for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+                    d->vp.sample_buf[i][0] += worker->sample_buf[i][0];
+                    d->vp.sample_buf[i][1] += worker->sample_buf[i][1];
+                }
+            }
+
+            g_dbg.vp.workers[0].num_voices = voice_count;
+            g_dbg.vp.workers[0].time_us =
+                qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_time;
+            g_dbg.vp.total_worker_time_us = g_dbg.vp.workers[0].time_us;
+            qemu_mutex_unlock(&vwd->lock);
+            return;
+        }
+
         memset(vwd->mixbins, 0, sizeof(vwd->mixbins));
 
         // Signal workers and wait for completion
@@ -1782,8 +1819,9 @@ static int mcpx_apu_default_vp_worker_count(void)
 #ifdef __ANDROID__
     /*
      * Mobile SoCs are often oversubscribed already (TCG + render + I/O).
-     * Keep VP worker defaults conservative to reduce thread contention and
-     * audio underruns; allow explicit override via env.
+     * Keep VP worker defaults very conservative to reduce thread contention and
+     * leave more CPU time for the emulation threads that gate frametime.
+     * Allow explicit override via env.
      */
     const char *value = getenv("XEMU_ANDROID_VP_WORKERS");
     if (value && value[0] != '\0') {
@@ -1794,16 +1832,10 @@ static int mcpx_apu_default_vp_worker_count(void)
         }
     }
 
-    if (cpu_count <= 2) {
+    if (cpu_count <= 6) {
         return 1;
     }
-    if (cpu_count <= 4) {
-        return 2;
-    }
-    if (cpu_count <= 6) {
-        return 3;
-    }
-    return 4;
+    return 2;
 #else
     return cpu_count;
 #endif
@@ -1829,6 +1861,10 @@ static void voice_work_init(MCPXAPUState *d)
     qemu_mutex_lock(&vwd->lock);
     qemu_cond_init(&vwd->work_pending);
     qemu_cond_init(&vwd->work_finished);
+    if (vwd->num_workers == 1) {
+        qemu_mutex_unlock(&vwd->lock);
+        return;
+    }
     for (int i = 0; i < vwd->num_workers; i++) {
         vwd->workers_pending |= 1 << i;
         qemu_thread_create(&vwd->workers[i].thread, "mcpx.voice_worker",
@@ -1842,6 +1878,12 @@ static void voice_work_init(MCPXAPUState *d)
 static void voice_work_finalize(MCPXAPUState *d)
 {
     VoiceWorkDispatch *vwd = &d->vp.voice_work_dispatch;
+
+    if (vwd->num_workers == 1) {
+        g_free(vwd->workers);
+        vwd->workers = NULL;
+        return;
+    }
 
     qemu_mutex_lock(&vwd->lock);
     vwd->workers_should_exit = true;

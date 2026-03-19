@@ -193,6 +193,11 @@ typedef struct PGRAPHGLState {
     bool download_dirty_surfaces_pending;
     QemuEvent dirty_surfaces_download_complete; // common
 
+#ifdef __ANDROID__
+    GLuint gl_download_pbo;
+    size_t gl_download_pbo_size;
+#endif
+
     TextureBinding *texture_binding[NV2A_MAX_TEXTURES];
     Lru texture_cache;
     TextureLruNode *texture_cache_entries;
