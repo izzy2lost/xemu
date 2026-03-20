@@ -47,6 +47,11 @@ static bool gl_extension_list_has(const char *exts, const char *ext)
     }
     return false;
 }
+
+static bool gl_extension_supported(const char *exts, const char *ext)
+{
+    return gl_extension_list_has(exts, ext) || glo_check_extension(ext);
+}
 #endif
 
 static void early_context_init(void)
@@ -102,9 +107,9 @@ static void pgraph_gl_init(NV2AState *d, Error **errp)
 
 #ifdef __ANDROID__
     const char *exts = (const char *)glGetString(GL_EXTENSIONS);
-    r->bgra_supported = gl_extension_list_has(exts, "GL_EXT_texture_format_BGRA8888") ||
-                        gl_extension_list_has(exts, "GL_OES_texture_format_BGRA8888") ||
-                        gl_extension_list_has(exts, "GL_EXT_texture_format_BGRA8888_OES");
+    r->bgra_supported = gl_extension_supported(exts, "GL_EXT_texture_format_BGRA8888") ||
+                        gl_extension_supported(exts, "GL_OES_texture_format_BGRA8888") ||
+                        gl_extension_supported(exts, "GL_EXT_texture_format_BGRA8888_OES");
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                         "pgraph_gl_init: bgra_supported=%s",
                         r->bgra_supported ? "yes" : "no");
@@ -148,7 +153,30 @@ static void pgraph_gl_init(NV2AState *d, Error **errp)
 
     r->supported_extensions.texture_filter_anisotropic =
         glo_check_extension("GL_EXT_texture_filter_anisotropic");
+    r->supported_extensions.texture_border_clamp = true;
+    r->supported_extensions.texture_lod_bias = true;
+    r->supported_extensions.occlusion_query_boolean = false;
     r->supported_extensions.max_texture_max_anisotropy = 1.0f;
+#ifdef __ANDROID__
+    r->supported_extensions.texture_border_clamp =
+        NV2A_GL_CLAMP_TO_BORDER != 0 &&
+        NV2A_GL_TEXTURE_BORDER_COLOR != 0 &&
+        (gl_extension_supported(exts, "GL_EXT_texture_border_clamp") ||
+         gl_extension_supported(exts, "GL_OES_texture_border_clamp") ||
+         gl_extension_supported(exts, "GL_NV_texture_border_clamp"));
+    r->supported_extensions.texture_lod_bias =
+        NV2A_GL_TEXTURE_LOD_BIAS != 0 &&
+        gl_extension_supported(exts, "GL_EXT_texture_lod_bias");
+    r->supported_extensions.occlusion_query_boolean =
+        NV2A_GL_ZPASS_QUERY_TARGET != 0 &&
+        (epoxy_gl_version() >= 30 ||
+         gl_extension_supported(exts, "GL_EXT_occlusion_query_boolean"));
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "pgraph_gl_init: texture_border_clamp=%s texture_lod_bias=%s occlusion_query_boolean=%s",
+                        r->supported_extensions.texture_border_clamp ? "yes" : "no",
+                        r->supported_extensions.texture_lod_bias ? "yes" : "no",
+                        r->supported_extensions.occlusion_query_boolean ? "yes" : "no");
+#endif
     if (r->supported_extensions.texture_filter_anisotropic) {
         glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT,
                     &r->supported_extensions.max_texture_max_anisotropy);

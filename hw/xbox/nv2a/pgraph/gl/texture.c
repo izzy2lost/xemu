@@ -506,22 +506,21 @@ static void apply_texture_parameters(PGRAPHGLState *r,
                         pgraph_texture_mag_filter_gl_map[mag_filter]);
         binding->mag_filter = mag_filter;
     }
-#ifndef __ANDROID__
     if (lod_bias != binding->lod_bias) {
         binding->lod_bias = lod_bias;
-        glTexParameterf(binding->gl_target, GL_TEXTURE_LOD_BIAS,
-                        pgraph_convert_lod_bias_to_float(lod_bias));
+        if (r->supported_extensions.texture_lod_bias) {
+            glTexParameterf(binding->gl_target, NV2A_GL_TEXTURE_LOD_BIAS,
+                            pgraph_convert_lod_bias_to_float(lod_bias));
+        }
     }
-#else
-    binding->lod_bias = lod_bias;
-#endif
 
     /* Texture wrapping */
     assert(addru < ARRAY_SIZE(pgraph_texture_addr_gl_map));
     if (addru != binding->addru) {
         GLenum wrap_s = pgraph_texture_addr_gl_map[addru];
 #ifdef __ANDROID__
-        if (wrap_s == GL_CLAMP_TO_BORDER) {
+        if (!r->supported_extensions.texture_border_clamp &&
+            wrap_s == NV2A_GL_CLAMP_TO_BORDER) {
             wrap_s = GL_CLAMP_TO_EDGE;
         }
 #endif
@@ -535,7 +534,8 @@ static void apply_texture_parameters(PGRAPHGLState *r,
             assert(addrv < ARRAY_SIZE(pgraph_texture_addr_gl_map));
             GLenum wrap_t = pgraph_texture_addr_gl_map[addrv];
 #ifdef __ANDROID__
-            if (wrap_t == GL_CLAMP_TO_BORDER) {
+            if (!r->supported_extensions.texture_border_clamp &&
+                wrap_t == NV2A_GL_CLAMP_TO_BORDER) {
                 wrap_t = GL_CLAMP_TO_EDGE;
             }
 #endif
@@ -550,7 +550,8 @@ static void apply_texture_parameters(PGRAPHGLState *r,
             assert(addrp < ARRAY_SIZE(pgraph_texture_addr_gl_map));
             GLenum wrap_r = pgraph_texture_addr_gl_map[addrp];
 #ifdef __ANDROID__
-            if (wrap_r == GL_CLAMP_TO_BORDER) {
+            if (!r->supported_extensions.texture_border_clamp &&
+                wrap_r == NV2A_GL_CLAMP_TO_BORDER) {
                 wrap_r = GL_CLAMP_TO_EDGE;
             }
 #endif
@@ -572,15 +573,19 @@ static void apply_texture_parameters(PGRAPHGLState *r,
                         clamped_anisotropy);
     }
 
+    if (!is_bordered && needs_border_color) {
 #ifdef __ANDROID__
-    needs_border_color = false;
+        if (!r->supported_extensions.texture_border_clamp) {
+            needs_border_color = false;
+        }
 #endif
+    }
     if (!is_bordered && needs_border_color) {
         if (!binding->border_color_set || binding->border_color != border_color) {
             /* FIXME: Color channels might be wrong order */
             GLfloat gl_border_color[4];
             pgraph_argb_pack32_to_rgba_float(border_color, gl_border_color);
-            glTexParameterfv(binding->gl_target, GL_TEXTURE_BORDER_COLOR,
+            glTexParameterfv(binding->gl_target, NV2A_GL_TEXTURE_BORDER_COLOR,
                              gl_border_color);
 
             binding->border_color_set = true;

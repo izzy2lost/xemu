@@ -789,12 +789,18 @@ static bool render_surface_to(NV2AState *d, SurfaceBinding *surface,
     float color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
     glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
 #ifdef __ANDROID__
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (r->supported_extensions.texture_border_clamp) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, NV2A_GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, NV2A_GL_CLAMP_TO_BORDER);
+        glTexParameterfv(GL_TEXTURE_2D, NV2A_GL_TEXTURE_BORDER_COLOR, color);
+    } else {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
 #else
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, color);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, NV2A_GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, NV2A_GL_CLAMP_TO_BORDER);
+    glTexParameterfv(GL_TEXTURE_2D, NV2A_GL_TEXTURE_BORDER_COLOR, color);
 #endif
 
     glBindVertexArray(r->s2t_rndr.vao);

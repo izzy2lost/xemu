@@ -350,10 +350,12 @@ void pgraph_gl_draw_begin(NV2AState *d)
     glScissor(xmin, ymin, scissor_width, scissor_height);
 
     /* Visibility testing */
-    /* GL_SAMPLES_PASSED is desktop-only; GLES has GL_ANY_SAMPLES_PASSED but
-     * only returns boolean. Skip occlusion queries entirely on Android. */
-#ifndef __ANDROID__
-    if (pg->zpass_pixel_count_enable) {
+    bool zpass_query_enabled = pg->zpass_pixel_count_enable;
+#ifdef __ANDROID__
+    zpass_query_enabled = zpass_query_enabled &&
+                          r->supported_extensions.occlusion_query_boolean;
+#endif
+    if (zpass_query_enabled) {
         r->gl_zpass_pixel_count_query_count++;
         r->gl_zpass_pixel_count_queries = (GLuint*)g_realloc(
             r->gl_zpass_pixel_count_queries,
@@ -363,9 +365,8 @@ void pgraph_gl_draw_begin(NV2AState *d)
         glGenQueries(1, &gl_query);
         r->gl_zpass_pixel_count_queries[
             r->gl_zpass_pixel_count_query_count - 1] = gl_query;
-        glBeginQuery(GL_SAMPLES_PASSED, gl_query);
+        glBeginQuery(NV2A_GL_ZPASS_QUERY_TARGET, gl_query);
     }
-#endif
 
     android_log_gl_errors("pgraph_gl_draw_begin");
 }
@@ -401,12 +402,15 @@ void pgraph_gl_draw_end(NV2AState *d)
     pgraph_gl_flush_draw(d);
 
     /* End of visibility testing */
-#ifndef __ANDROID__
-    if (pg->zpass_pixel_count_enable) {
-        nv2a_profile_inc_counter(NV2A_PROF_QUERY);
-        glEndQuery(GL_SAMPLES_PASSED);
-    }
+    bool zpass_query_enabled = pg->zpass_pixel_count_enable;
+#ifdef __ANDROID__
+    zpass_query_enabled = zpass_query_enabled &&
+                          r->supported_extensions.occlusion_query_boolean;
 #endif
+    if (zpass_query_enabled) {
+        nv2a_profile_inc_counter(NV2A_PROF_QUERY);
+        glEndQuery(NV2A_GL_ZPASS_QUERY_TARGET);
+    }
 
     pg->draw_time++;
 #ifdef __ANDROID__

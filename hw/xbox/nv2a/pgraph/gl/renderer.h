@@ -259,6 +259,9 @@ typedef struct PGRAPHGLState {
 
     struct supported_extensions {
         GLboolean texture_filter_anisotropic;
+        GLboolean texture_border_clamp;
+        GLboolean texture_lod_bias;
+        GLboolean occlusion_query_boolean;
         GLfloat max_texture_max_anisotropy;
     } supported_extensions;
 
