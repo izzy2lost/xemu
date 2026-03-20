@@ -1155,15 +1155,30 @@ static SetupFiles SyncSetupFiles() {
   int displayMode = GetPrefInt(env, activity, "setting_display_mode", 0);
   xemu_android_set_display_mode_setting(displayMode);
 
-  const std::string vulkanDriverUri = GetPrefString(env, activity, "setting_vulkan_driver_uri");
-  if (!vulkanDriverUri.empty()) {
-    std::string driverPath = base + "/vulkan_driver.so";
-    if (CopyUriToPath(env, activity, vulkanDriverUri, driverPath)) {
-      chmod(driverPath.c_str(), 0755);
-      setenv("XEMU_VULKAN_DRIVER", driverPath.c_str(), 1);
-      LogInfoFmt("Custom Vulkan driver staged: %s", driverPath.c_str());
-    } else {
-      LogError("Failed to copy custom Vulkan driver; using system default");
+  unsetenv("XEMU_VULKAN_DRIVER");
+  const std::string vulkanDriverPath =
+      GetPrefString(env, activity, "setting_vulkan_driver_path");
+  if (!vulkanDriverPath.empty() && FileExists(vulkanDriverPath)) {
+    chmod(vulkanDriverPath.c_str(), 0755);
+    setenv("XEMU_VULKAN_DRIVER", vulkanDriverPath.c_str(), 1);
+    LogInfoFmt("Custom Vulkan driver staged: %s", vulkanDriverPath.c_str());
+  } else {
+    if (!vulkanDriverPath.empty()) {
+      LogErrorFmt("Configured Vulkan driver not found: %s",
+                  vulkanDriverPath.c_str());
+    }
+
+    const std::string vulkanDriverUri =
+        GetPrefString(env, activity, "setting_vulkan_driver_uri");
+    if (!vulkanDriverUri.empty()) {
+      std::string driverPath = base + "/vulkan_driver.so";
+      if (CopyUriToPath(env, activity, vulkanDriverUri, driverPath)) {
+        chmod(driverPath.c_str(), 0755);
+        setenv("XEMU_VULKAN_DRIVER", driverPath.c_str(), 1);
+        LogInfoFmt("Custom Vulkan driver staged: %s", driverPath.c_str());
+      } else {
+        LogError("Failed to copy custom Vulkan driver; using system default");
+      }
     }
   }
 

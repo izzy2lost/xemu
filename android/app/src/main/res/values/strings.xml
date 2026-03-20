@@ -115,7 +115,9 @@
   <string name="settings_vulkan_driver_none">System Default</string>
   <string name="settings_vulkan_driver_browse">Browse…</string>
   <string name="settings_vulkan_driver_clear">Clear</string>
-  <string name="settings_vulkan_driver_hint">For Adreno GPUs with Turnip/Mesa. Restart required.</string>
+  <string name="settings_vulkan_driver_hint">For Adreno GPUs with Turnip/Mesa. Pick a driver .so or .zip package. Restart required.</string>
+  <string name="settings_vulkan_driver_pick_error">Pick a Vulkan driver .so or .zip file.</string>
+  <string name="settings_vulkan_driver_import_failed">Failed to import the custom Vulkan driver: %1$s</string>
   <string name="settings_display_mode">Aspect Ratio</string>
   <string name="settings_display_mode_stretch">Stretch</string>
   <string name="settings_display_mode_4_3">4:3</string>
