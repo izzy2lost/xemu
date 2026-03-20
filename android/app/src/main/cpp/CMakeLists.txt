@@ -112,6 +112,24 @@ else()
   unset(BUILD_TESTING CACHE)
 endif()
 
+# --- xxHash ---
+FetchContent_Declare(
+  xxhash
+  URL "https://github.com/Cyan4973/xxHash/archive/v0.8.3.tar.gz"
+  URL_HASH "SHA256=aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80"
+)
+FetchContent_GetProperties(xxhash)
+if(NOT xxhash_POPULATED)
+  if(POLICY CMP0169)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0169 OLD)
+  endif()
+  FetchContent_Populate(xxhash)
+  if(POLICY CMP0169)
+    cmake_policy(POP)
+  endif()
+endif()
+
 # --- nv2a_vsh_cpu ---
 set(NV2A_VSH_CPU_GIT_REV "1115255708c10c4841b65dcd2223262e7a316598")
 set(nv2a_vsh_cpu_UNIT_TEST OFF CACHE BOOL "" FORCE)
@@ -648,7 +666,6 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]coroutine-windows\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]cpuinfo-loongarch\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]cpuinfo-ppc\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]cpuinfo-riscv\\.c$")
-list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]fast-hash\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]event_notifier-win32\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]fdmon-epoll\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]fdmon-io_uring\\.c$")
@@ -761,7 +778,6 @@ list(APPEND XEMU_CORE_SOURCES
   "${REPO_ROOT}/ui/vnc-stubs.c"
   "${REPO_ROOT}/target/i386/kvm/hyperv-stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/kvmclock_stub.c"
-  "${CMAKE_CURRENT_LIST_DIR}/fast_hash_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/libintl_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/qmp_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/monitor_stub.c"
@@ -778,6 +794,7 @@ list(APPEND XEMU_CORE_SOURCES
   "${CMAKE_CURRENT_LIST_DIR}/xemu_os_utils_android.c"
   "${CMAKE_CURRENT_LIST_DIR}/qcrypto_random_android.c"
   "${CMAKE_CURRENT_LIST_DIR}/xemu_settings_android.cc"
+  "${xxhash_SOURCE_DIR}/xxhash.c"
 )
 
 # --- QAPI/Trace generation ---
@@ -1012,6 +1029,7 @@ target_compile_options(xemu_core PRIVATE -g0
 
 target_include_directories(xemu_core PRIVATE
   "${nv2a_vsh_cpu_SOURCE_DIR}/src"
+  "${xxhash_SOURCE_DIR}"
   "${REPO_ROOT}"
   "${REPO_ROOT}/include"
   "${REPO_ROOT}/ui"
