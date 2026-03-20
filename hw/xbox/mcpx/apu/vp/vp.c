@@ -1140,6 +1140,7 @@ static long voice_resample_callback(void *cb_data, float **data)
     uint16_t v = filter->voice;
     assert(v < MCPX_HW_MAX_VOICES);
     MCPXAPUState *d = container_of(filter, MCPXAPUState, vp.filters[v]);
+    int channels = filter->resampler_channels ?: 2;
 
     int sample_count = 0;
     while (sample_count < NUM_SAMPLES_PER_FRAME) {
@@ -1148,9 +1149,20 @@ static long voice_resample_callback(void *cb_data, float **data)
         if (!active) {
             break;
         }
-        int count = voice_get_samples(
-            d, v, (float(*)[2]) & filter->resample_buf[2 * sample_count],
-            NUM_SAMPLES_PER_FRAME - sample_count);
+        int count;
+        if (channels == 1) {
+            count = voice_get_samples(
+                d, v, (float(*)[2]) filter->resample_buf,
+                NUM_SAMPLES_PER_FRAME - sample_count);
+            for (int i = 0; i < count; i++) {
+                filter->mono_resample_buf[sample_count + i] =
+                    filter->resample_buf[i * 2];
+            }
+        } else {
+            count = voice_get_samples(
+                d, v, (float(*)[2]) &filter->resample_buf[2 * sample_count],
+                NUM_SAMPLES_PER_FRAME - sample_count);
+        }
         if (count < 0) {
             break;
         }
@@ -1159,41 +1171,76 @@ static long voice_resample_callback(void *cb_data, float **data)
 
     if (sample_count < NUM_SAMPLES_PER_FRAME) {
         /* Starvation causes SRC hang on repeated calls. Provide silence. */
-        memset(&filter->resample_buf[2*sample_count], 0,
-            2*(NUM_SAMPLES_PER_FRAME-sample_count)*sizeof(float));
+        if (channels == 1) {
+            memset(&filter->mono_resample_buf[sample_count], 0,
+                   (NUM_SAMPLES_PER_FRAME - sample_count) * sizeof(float));
+        } else {
+            memset(&filter->resample_buf[2 * sample_count], 0,
+                   2 * (NUM_SAMPLES_PER_FRAME - sample_count) * sizeof(float));
+        }
         sample_count = NUM_SAMPLES_PER_FRAME;
     }
 
-    *data = filter->resample_buf;
+    *data = channels == 1 ? filter->mono_resample_buf : filter->resample_buf;
     return sample_count;
 }
 
+static int voice_resampler_converter_type(void)
+{
+#ifdef __ANDROID__
+    /* The desktop sinc converter is expensive enough to drag mobile
+     * frametimes, which in turn makes voice playback sound slow/raspy.
+     * Use libsamplerate's linear converter on Android to keep the ratio
+     * correction from the real library without the full sinc cost.
+     */
+    return SRC_LINEAR;
+#else
+    return SRC_SINC_FASTEST;
+#endif
+}
+
 static int voice_resample(MCPXAPUState *d, uint16_t v, float samples[][2],
-                          int requested_num, float rate)
+                          int requested_num, float rate, int channels)
 {
     assert(v < MCPX_HW_MAX_VOICES);
     MCPXAPUVoiceFilter *filter = &d->vp.filters[v];
 
+    if (filter->resampler && filter->resampler_channels != channels) {
+        src_delete(filter->resampler);
+        filter->resampler = NULL;
+    }
+
     if (filter->resampler == NULL) {
         filter->voice = v;
+        filter->resampler_channels = channels;
         int err;
 
-        /* Note: Using a sinc based resampler for quality. Unsure about
-         * hardware's actual interpolation method; it could just be linear, in
-         * which case using this resampler is overkill, but quality is good
-         * so use it for now.
+        /* Unsure about the hardware's exact interpolation method. Desktop uses
+         * libsamplerate's faster sinc mode for quality; Android uses the
+         * lighter linear converter to keep mobile frametimes stable.
          */
-        // FIXME: Don't do 2ch resampling if this is a mono voice
         filter->resampler = src_callback_new(&voice_resample_callback,
-                                           SRC_SINC_FASTEST, 2, &err, filter);
+                                           voice_resampler_converter_type(),
+                                           channels, &err, filter);
         if (filter->resampler == NULL) {
             fprintf(stderr, "src error: %s\n", src_strerror(err));
             assert(0);
         }
     }
 
-    int count = src_callback_read(filter->resampler, rate, requested_num,
+    int count;
+    if (channels == 1) {
+        float mono_samples[NUM_SAMPLES_PER_FRAME];
+        count = src_callback_read(filter->resampler, rate, requested_num,
+                                  mono_samples);
+        for (int i = 0; i < count; i++) {
+            samples[i][0] = mono_samples[i];
+            samples[i][1] = mono_samples[i];
+        }
+    } else {
+        count = src_callback_read(filter->resampler, rate, requested_num,
                                   (float *)samples);
+    }
     if (count == -1) {
         DPRINTF("resample error\n");
     }
@@ -1359,7 +1406,8 @@ static void voice_process(MCPXAPUState *d,
             }
             int count =
                 voice_resample(d, v, &samples[sample_count],
-                               NUM_SAMPLES_PER_FRAME - sample_count, rate);
+                               NUM_SAMPLES_PER_FRAME - sample_count, rate,
+                               channels);
             if (count < 0) {
                 break;
             }
@@ -1819,9 +1867,8 @@ static int mcpx_apu_default_vp_worker_count(void)
 #ifdef __ANDROID__
     /*
      * Mobile SoCs are often oversubscribed already (TCG + render + I/O).
-     * Keep VP worker defaults very conservative to reduce thread contention and
-     * leave more CPU time for the emulation threads that gate frametime.
-     * Allow explicit override via env.
+     * Stay under the desktop default, but give the VP path enough parallelism
+     * for libsamplerate-backed voice mixing. Allow explicit override via env.
      */
     const char *value = getenv("XEMU_ANDROID_VP_WORKERS");
     if (value && value[0] != '\0') {
@@ -1832,10 +1879,16 @@ static int mcpx_apu_default_vp_worker_count(void)
         }
     }
 
-    if (cpu_count <= 6) {
+    if (cpu_count <= 2) {
         return 1;
     }
-    return 2;
+    if (cpu_count <= 4) {
+        return 2;
+    }
+    if (cpu_count <= 6) {
+        return 3;
+    }
+    return 4;
 #else
     return cpu_count;
 #endif

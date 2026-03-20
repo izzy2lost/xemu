@@ -134,6 +134,16 @@ static void throttle(MCPXAPUState *d)
         queued_bytes = monitor_num_used_bytes(d);
     }
 
+#ifdef __ANDROID__
+    /* Android scheduler granularity is often too coarse for the extra
+     * low-watermark pacing below and can make speech sound dragged out.
+     * Keep FIFO backpressure, but let the output callback set the pace.
+     */
+    d->next_frame_time_us = 0;
+    d->sleep_acc_us += qemu_clock_get_us(QEMU_CLOCK_REALTIME) - start_us;
+    return;
+#endif
+
     if (queued_bytes > d->monitor.queued_bytes_low) {
         int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
         if (d->next_frame_time_us == 0 ||
@@ -264,14 +274,49 @@ static int getenv_int_clamped(const char *name, int min_value, int max_value,
     return (int)parsed;
 }
 
-static void monitor_hold_last_sample(MCPXAPUState *s, uint8_t *stream, int len)
+static void monitor_apply_fade_in(uint8_t *stream, int len)
 {
-    int frame_bytes = sizeof(s->monitor.last_output_sample);
+    int frame_bytes = sizeof(int16_t[2]);
+    int frames = len / frame_bytes;
+
+    if (frames <= 1) {
+        return;
+    }
+
+    int fade_frames = MIN(frames, 64);
+    int16_t *samples = (int16_t *)stream;
+    for (int i = 0; i < fade_frames; i++) {
+        int gain_num = i;
+        int gain_den = fade_frames - 1;
+        samples[i * 2 + 0] = (int16_t)((samples[i * 2 + 0] * gain_num) / gain_den);
+        samples[i * 2 + 1] = (int16_t)((samples[i * 2 + 1] * gain_num) / gain_den);
+    }
+}
+
+static void monitor_fill_underrun(const int16_t start_sample[2], uint8_t *stream,
+                                  int len)
+{
+    int frame_bytes = sizeof(int16_t[2]);
     int frames = len / frame_bytes;
     int16_t *out = (int16_t *)stream;
-    for (int i = 0; i < frames; i++) {
-        out[i * 2 + 0] = s->monitor.last_output_sample[0];
-        out[i * 2 + 1] = s->monitor.last_output_sample[1];
+
+    if (frames == 1) {
+        out[0] = 0;
+        out[1] = 0;
+    } else if (frames > 1) {
+        int fade_frames = MIN(frames, 64);
+        for (int i = 0; i < fade_frames; i++) {
+            int gain_num = fade_frames - 1 - i;
+            int gain_den = fade_frames - 1;
+            out[i * 2 + 0] =
+                (int16_t)((start_sample[0] * gain_num) / gain_den);
+            out[i * 2 + 1] =
+                (int16_t)((start_sample[1] * gain_num) / gain_den);
+        }
+        if (fade_frames < frames) {
+            memset(stream + (fade_frames * frame_bytes), 0,
+                   (frames - fade_frames) * frame_bytes);
+        }
     }
 
     int tail_bytes = len - (frames * frame_bytes);
@@ -290,11 +335,7 @@ static void monitor_sink_cb(void *opaque, uint8_t *stream, int free_b)
     }
 
     int avail = 0;
-#ifdef __ANDROID__
-    int wait_attempts = 24;
-#else
     int wait_attempts = 10;
-#endif
     for (int i = 0; i < wait_attempts; i++) {
         qemu_spin_lock(&s->monitor.fifo_lock);
         avail = fifo8_num_used(&s->monitor.fifo);
@@ -324,8 +365,22 @@ static void monitor_sink_cb(void *opaque, uint8_t *stream, int free_b)
         copied += chunk_len;
     }
 
+    if (copied > 0 && s->monitor.resume_fade_pending) {
+        monitor_apply_fade_in(stream, copied);
+        s->monitor.resume_fade_pending = false;
+    }
+
     if (copied < free_b) {
-        monitor_hold_last_sample(s, stream + copied, free_b - copied);
+        int16_t fill_from[2] = {
+            s->monitor.last_output_sample[0],
+            s->monitor.last_output_sample[1],
+        };
+        if (copied >= sizeof(fill_from)) {
+            memcpy(fill_from, stream + copied - sizeof(fill_from),
+                   sizeof(fill_from));
+        }
+        monitor_fill_underrun(fill_from, stream + copied, free_b - copied);
+        s->monitor.resume_fade_pending = true;
     }
 
     if (free_b >= sizeof(s->monitor.last_output_sample)) {
@@ -347,15 +402,17 @@ static void monitor_init(MCPXAPUState *d)
     d->monitor.queued_bytes_high = 0;
     d->monitor.last_output_sample[0] = 0;
     d->monitor.last_output_sample[1] = 0;
+    d->monitor.resume_fade_pending = false;
 
     int fifo_frames = 3;
     int audio_samples = 512;
 #ifdef __ANDROID__
-    /* Give Android a little more audio headroom to ride out short stalls
-     * without increasing the device callback size again.
+    /* Keep Android closer to the desktop callback size now that voice
+     * resampling is handled by libsamplerate instead of the old stub. The
+     * FIFO still provides extra headroom for short scheduling stalls.
      */
-    fifo_frames = 24;
-    audio_samples = 2048;
+    fifo_frames = 16;
+    audio_samples = 512;
     fifo_frames = getenv_int_clamped("XEMU_ANDROID_AUDIO_FIFO_FRAMES", 3, 32,
                                      fifo_frames);
     audio_samples = getenv_int_clamped("XEMU_ANDROID_AUDIO_SAMPLES", 256, 4096,
@@ -409,8 +466,17 @@ static void monitor_init(MCPXAPUState *d)
     int max_high = MAX(fifo_capacity_bytes - frame_bytes, frame_bytes);
     d->monitor.fifo_capacity_bytes = fifo_capacity_bytes;
     d->monitor.device_buffer_bytes = device_buffer_bytes;
+#ifdef __ANDROID__
+    /* Keep the Android queue short enough to avoid noticeable drift/latency,
+     * but still allow about two callback drains of headroom for scheduler
+     * jitter before backpressuring the APU.
+     */
+    d->monitor.queued_bytes_high = MIN(2 * drain_bytes, max_high);
+    d->monitor.queued_bytes_low = 0;
+#else
     d->monitor.queued_bytes_high = MIN(3 * drain_bytes, max_high);
     d->monitor.queued_bytes_low = MIN(drain_bytes, d->monitor.queued_bytes_high);
+#endif
 
     SDL_PauseAudioDevice(sdl_audio_dev, 0);
 }

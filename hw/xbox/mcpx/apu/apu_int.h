@@ -103,6 +103,7 @@ typedef struct MCPXAPUState {
         McpxApuDebugMonitorPoint point;
         int16_t frame_buf[256][2]; // 1 EP frame (0x400 bytes), 8 buffered
         int16_t last_output_sample[2];
+        bool resume_fade_pending;
         QemuSpin fifo_lock;
         Fifo8 fifo;
         int fifo_capacity_bytes;

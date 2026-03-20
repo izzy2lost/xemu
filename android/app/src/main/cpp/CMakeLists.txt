@@ -78,6 +78,40 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
+# --- libsamplerate ---
+set(LIBSAMPLERATE_GIT_REV "c96f5e3de9c4488f4e6c97f59f5245f22fda22f7")
+set(_xemu_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+set(_xemu_had_build_shared_libs FALSE)
+if(DEFINED BUILD_SHARED_LIBS)
+  set(_xemu_had_build_shared_libs TRUE)
+endif()
+set(_xemu_saved_build_testing "${BUILD_TESTING}")
+set(_xemu_had_build_testing FALSE)
+if(DEFINED BUILD_TESTING)
+  set(_xemu_had_build_testing TRUE)
+endif()
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(LIBSAMPLERATE_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LIBSAMPLERATE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  libsamplerate
+  GIT_REPOSITORY "https://github.com/libsndfile/libsamplerate.git"
+  GIT_TAG "${LIBSAMPLERATE_GIT_REV}"
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(libsamplerate)
+if(_xemu_had_build_shared_libs)
+  set(BUILD_SHARED_LIBS "${_xemu_saved_build_shared_libs}" CACHE BOOL "" FORCE)
+else()
+  unset(BUILD_SHARED_LIBS CACHE)
+endif()
+if(_xemu_had_build_testing)
+  set(BUILD_TESTING "${_xemu_saved_build_testing}" CACHE BOOL "" FORCE)
+else()
+  unset(BUILD_TESTING CACHE)
+endif()
+
 # --- nv2a_vsh_cpu ---
 set(NV2A_VSH_CPU_GIT_REV "1115255708c10c4841b65dcd2223262e7a316598")
 set(nv2a_vsh_cpu_UNIT_TEST OFF CACHE BOOL "" FORCE)
@@ -727,7 +761,6 @@ list(APPEND XEMU_CORE_SOURCES
   "${REPO_ROOT}/ui/vnc-stubs.c"
   "${REPO_ROOT}/target/i386/kvm/hyperv-stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/kvmclock_stub.c"
-  "${CMAKE_CURRENT_LIST_DIR}/samplerate_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/fast_hash_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/libintl_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/qmp_stub.c"
@@ -1006,6 +1039,7 @@ target_include_directories(xemu_core PRIVATE
 add_dependencies(xemu_core glib_ep)
 
 target_link_libraries(xemu_core PRIVATE
+  SampleRate::samplerate
   nv2a_vsh_emulator
   nv2a_vsh_cpu
   nv2a_vsh_disassembler
