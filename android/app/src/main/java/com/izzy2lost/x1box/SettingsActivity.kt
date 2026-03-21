@@ -266,6 +266,7 @@ class SettingsActivity : AppCompatActivity() {
     val btnRedoSetup      = findViewById<MaterialButton>(R.id.btn_redo_setup_wizard)
     val btnClearCache     = findViewById<MaterialButton>(R.id.btn_clear_system_cache)
     val btnExportDebugLog = findViewById<MaterialButton>(R.id.btn_export_debug_log)
+    val btnClearDebugLog  = findViewById<MaterialButton>(R.id.btn_clear_debug_log)
     val btnInitializeRetailHdd = findViewById<MaterialButton>(R.id.btn_initialize_retail_hdd)
     switchNetworkEnable  = findViewById(R.id.switch_network_enable)
     tvInsigniaStatus     = findViewById(R.id.tv_insignia_status)
@@ -493,7 +494,7 @@ class SettingsActivity : AppCompatActivity() {
       DebugLog.setEnabled(
         context = this@SettingsActivity,
         value = enableDebugLogs,
-        resetLogs = enableDebugLogs && !wasDebugLoggingEnabled
+        resetLogs = enableDebugLogs != wasDebugLoggingEnabled
       )
 
       return applyEepromEdits()
@@ -508,6 +509,14 @@ class SettingsActivity : AppCompatActivity() {
         return@setOnClickListener
       }
       exportDebugLogDocument.launch(DebugLog.exportDefaultFileName())
+    }
+    btnClearDebugLog.setOnClickListener {
+      if (!DebugLog.hasAnyLog(this)) {
+        Toast.makeText(this, R.string.settings_clear_debug_log_empty, Toast.LENGTH_SHORT).show()
+        return@setOnClickListener
+      }
+      DebugLog.resetLogs(this)
+      Toast.makeText(this, R.string.settings_clear_debug_log_success, Toast.LENGTH_SHORT).show()
     }
 
     btnInitializeRetailHdd.setOnClickListener {

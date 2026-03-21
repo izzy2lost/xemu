@@ -132,6 +132,15 @@ object DebugLog {
     xemuLogcatFile(context).delete()
   }
 
+  fun resetLogs(context: Context? = appContext) {
+    context ?: return
+    val shouldResumeCapture = enabled
+    clearLogs(context)
+    if (shouldResumeCapture) {
+      ensureLogcatCaptureState(context.applicationContext)
+    }
+  }
+
   inline fun d(tag: String, message: () -> String) {
     if (!enabled) {
       return

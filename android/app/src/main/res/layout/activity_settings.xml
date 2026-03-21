@@ -823,6 +823,14 @@
             android:text="@string/settings_export_debug_log_action" />
 
           <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_clear_debug_log"
+            style="@style/Widget.Xemu.Button.Outlined.Pill"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="@string/settings_clear_debug_log_action" />
+
+          <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_clear_system_cache"
             style="@style/Widget.Xemu.Button.Outlined.Pill"
             android:layout_width="match_parent"

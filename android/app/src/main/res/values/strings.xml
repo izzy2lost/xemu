@@ -276,6 +276,9 @@
   <string name="settings_export_debug_log_empty">No debug log has been captured yet.</string>
   <string name="settings_export_debug_log_success">Debug log exported</string>
   <string name="settings_export_debug_log_failed">Failed to export debug log: %1$s</string>
+  <string name="settings_clear_debug_log_action">Clear Debug Log</string>
+  <string name="settings_clear_debug_log_success">Debug log cleared</string>
+  <string name="settings_clear_debug_log_empty">Debug log is already clear.</string>
   <string name="settings_clear_cache_title">Clear Cache</string>
   <string name="settings_clear_cache_message">Clear emulator cache files now? This removes shader and app cache data, but keeps your games, saves, and HDD image.</string>
   <string name="settings_clear_cache_action">Clear Cache</string>
