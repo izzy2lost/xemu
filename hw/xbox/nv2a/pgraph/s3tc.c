@@ -23,6 +23,11 @@
  */
 
 #include "qemu/osdep.h"
+
+#ifdef __aarch64__
+#include <arm_neon.h>
+#endif
+
 #include "s3tc.h"
 
 static void decode_bc1_colors(uint16_t c0, uint16_t c1, uint8_t r[4],
@@ -62,6 +67,88 @@ static void decode_bc1_colors(uint16_t c0, uint16_t c1, uint8_t r[4],
     }
 }
 
+#ifdef __aarch64__
+static inline uint8x8_t s3tc_make_lookup_table(uint8_t v0, uint8_t v1,
+                                               uint8_t v2, uint8_t v3)
+{
+    uint32_t packed = v0 | ((uint32_t)v1 << 8) | ((uint32_t)v2 << 16) |
+                      ((uint32_t)v3 << 24);
+    return vreinterpret_u8_u32(vdup_n_u32(packed));
+}
+
+static inline uint8x8_t s3tc_make_index_vector(uint8_t packed_indices)
+{
+    uint64_t indices = (packed_indices & 0x03) |
+                       (((uint64_t)((packed_indices >> 2) & 0x03)) << 8) |
+                       (((uint64_t)((packed_indices >> 4) & 0x03)) << 16) |
+                       (((uint64_t)((packed_indices >> 6) & 0x03)) << 24);
+    return vcreate_u8(indices);
+}
+
+static inline uint8x8_t s3tc_load_alpha_row(const uint8_t *alpha_row)
+{
+    uint32_t packed = alpha_row[0] | ((uint32_t)alpha_row[1] << 8) |
+                      ((uint32_t)alpha_row[2] << 16) |
+                      ((uint32_t)alpha_row[3] << 24);
+    return vreinterpret_u8_u32(vdup_n_u32(packed));
+}
+
+static inline void s3tc_store_rgba_row(uint8_t *dst, uint8x8_t r,
+                                       uint8x8_t g, uint8x8_t b, uint8x8_t a)
+{
+    uint8x8_t rg = vzip1_u8(r, g);
+    uint8x8_t ba = vzip1_u8(b, a);
+    uint16x4_t rgba_lo =
+        vzip1_u16(vreinterpret_u16_u8(rg), vreinterpret_u16_u8(ba));
+    uint16x4_t rgba_hi =
+        vzip2_u16(vreinterpret_u16_u8(rg), vreinterpret_u16_u8(ba));
+
+    vst1q_u8(dst, vcombine_u8(vreinterpret_u8_u16(rgba_lo),
+                              vreinterpret_u8_u16(rgba_hi)));
+}
+
+static bool write_block_to_texture_neon(uint8_t *converted_data, uint32_t indices,
+                                        int i, int j, int width, int height,
+                                        int z_pos_factor, const uint8_t r[4],
+                                        const uint8_t g[4], const uint8_t b[4],
+                                        const uint8_t a[16],
+                                        bool separate_alpha)
+{
+    int x0 = i * 4;
+    int y0 = j * 4;
+    uint8x8_t r_table;
+    uint8x8_t g_table;
+    uint8x8_t b_table;
+    uint8x8_t a_table;
+
+    if (x0 + 4 > width || y0 + 4 > height) {
+        return false;
+    }
+
+    r_table = s3tc_make_lookup_table(r[0], r[1], r[2], r[3]);
+    g_table = s3tc_make_lookup_table(g[0], g[1], g[2], g[3]);
+    b_table = s3tc_make_lookup_table(b[0], b[1], b[2], b[3]);
+    a_table = s3tc_make_lookup_table(a[0], a[1], a[2], a[3]);
+
+    for (int row = 0; row < 4; row++) {
+        uint8_t packed_row_indices = (indices >> (row * 8)) & 0xFF;
+        uint8x8_t row_indices = s3tc_make_index_vector(packed_row_indices);
+        uint8x8_t row_r = vtbl1_u8(r_table, row_indices);
+        uint8x8_t row_g = vtbl1_u8(g_table, row_indices);
+        uint8x8_t row_b = vtbl1_u8(b_table, row_indices);
+        uint8x8_t row_a = separate_alpha
+                              ? s3tc_load_alpha_row(a + row * 4)
+                              : vtbl1_u8(a_table, row_indices);
+        uint8_t *dst = converted_data +
+                       (z_pos_factor + (y0 + row) * width + x0) * 4;
+
+        s3tc_store_rgba_row(dst, row_r, row_g, row_b, row_a);
+    }
+
+    return true;
+}
+#endif
+
 static void write_block_to_texture(uint8_t *converted_data, uint32_t indices,
                                    int i, int j, int width, int height,
                                    int z_pos_factor, uint8_t r[4],
@@ -73,6 +160,14 @@ static void write_block_to_texture(uint8_t *converted_data, uint32_t indices,
 
     int x1 = x0 + 4,
         y1 = y0 + 4;
+
+#ifdef __aarch64__
+    if (write_block_to_texture_neon(converted_data, indices, i, j, width,
+                                    height, z_pos_factor, r, g, b, a,
+                                    separate_alpha)) {
+        return;
+    }
+#endif
 
     for (int y = y0; y < y1 && y < height; y++) {
         int y_index = 4 * (y - y0);
