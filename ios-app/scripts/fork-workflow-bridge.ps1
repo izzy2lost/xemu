@@ -46,6 +46,14 @@ function Get-GitHubToken {
   if ($env:GH_TOKEN) {
     return $env:GH_TOKEN
   }
+  $userGitHubToken = [Environment]::GetEnvironmentVariable("GITHUB_TOKEN", "User")
+  if (-not [string]::IsNullOrWhiteSpace($userGitHubToken)) {
+    return $userGitHubToken
+  }
+  $userGhToken = [Environment]::GetEnvironmentVariable("GH_TOKEN", "User")
+  if (-not [string]::IsNullOrWhiteSpace($userGhToken)) {
+    return $userGhToken
+  }
   throw "Set GITHUB_TOKEN or GH_TOKEN with repo/actions permissions before using this bridge."
 }
 

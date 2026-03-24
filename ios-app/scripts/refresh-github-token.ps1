@@ -48,6 +48,22 @@ function Resolve-Token {
     }
   }
 
+  $userGitHubToken = [Environment]::GetEnvironmentVariable("GITHUB_TOKEN", "User")
+  if (-not [string]::IsNullOrWhiteSpace($userGitHubToken)) {
+    return @{
+      Value = $userGitHubToken
+      Source = "user:GITHUB_TOKEN"
+    }
+  }
+
+  $userGhToken = [Environment]::GetEnvironmentVariable("GH_TOKEN", "User")
+  if (-not [string]::IsNullOrWhiteSpace($userGhToken)) {
+    return @{
+      Value = $userGhToken
+      Source = "user:GH_TOKEN"
+    }
+  }
+
   throw "Provide -Token or set GITHUB_TOKEN / GH_TOKEN before running this script."
 }
 

@@ -90,6 +90,14 @@ $env:GITHUB_TOKEN = "YOUR_TOKEN"
 .\ios-app\scripts\fork-workflow-bridge.ps1 -Mode Full -Repo "alejomazabuel/xemu" -Ref "your-branch"
 ```
 
+If PowerShell script execution is blocked on Windows, use the `.cmd` wrappers instead:
+
+```powershell
+.\ios-app\scripts\set-github-token.cmd -Scope User -SetGhTokenAlso
+.\ios-app\scripts\refresh-github-token.cmd -Repo "alejomazabuel/xemu" -PersistScope Process -SetGhTokenAlso
+.\ios-app\scripts\fork-workflow-bridge.cmd -Mode Full -Repo "alejomazabuel/xemu" -Ref "your-branch"
+```
+
 Useful modes:
 
 - `dispatch`: trigger the workflow only
