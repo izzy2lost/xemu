@@ -1,3 +1,9 @@
+set(x1box_libslirp_patches)
+if(VCPKG_TARGET_IS_IOS)
+    list(APPEND x1box_libslirp_patches
+        disable-ios-test-binaries.patch)
+endif()
+
 vcpkg_from_gitlab(
     GITLAB_URL https://gitlab.freedesktop.org/
     OUT_SOURCE_PATH SOURCE_PATH
@@ -5,6 +11,8 @@ vcpkg_from_gitlab(
     REF "v${VERSION}"
     SHA512 cdb66f6280a9982de3c32269aee352bdf225db918590255abaed9bcd0aee4e996d2d8c2c3f62473f57485603ec29fd35723b0649d3ec3c41cc28b22ce913f63b
     HEAD_REF master
+    PATCHES
+        ${x1box_libslirp_patches}
 )
 
 if(VCPKG_HOST_IS_WINDOWS)
@@ -12,15 +20,8 @@ if(VCPKG_HOST_IS_WINDOWS)
     vcpkg_add_to_path("${MSYS_ROOT}/usr/bin")
 endif()
 
-set(x1box_libslirp_options)
-if(VCPKG_TARGET_IS_IOS)
-    list(APPEND x1box_libslirp_options -Dtests=false)
-endif()
-
 vcpkg_configure_meson(
     SOURCE_PATH "${SOURCE_PATH}"
-    OPTIONS
-        ${x1box_libslirp_options}
 )
 
 vcpkg_install_meson(ADD_BIN_TO_PATH)
