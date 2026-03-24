@@ -50,12 +50,6 @@ function Get-GitHubToken {
     return ([regex]::Replace($Value, "\s+", "")).Trim()
   }
 
-  if ($env:GITHUB_TOKEN) {
-    return (Normalize-TokenValue -Value $env:GITHUB_TOKEN)
-  }
-  if ($env:GH_TOKEN) {
-    return (Normalize-TokenValue -Value $env:GH_TOKEN)
-  }
   $userGitHubToken = [Environment]::GetEnvironmentVariable("GITHUB_TOKEN", "User")
   if (-not [string]::IsNullOrWhiteSpace($userGitHubToken)) {
     return (Normalize-TokenValue -Value $userGitHubToken)
@@ -63,6 +57,12 @@ function Get-GitHubToken {
   $userGhToken = [Environment]::GetEnvironmentVariable("GH_TOKEN", "User")
   if (-not [string]::IsNullOrWhiteSpace($userGhToken)) {
     return (Normalize-TokenValue -Value $userGhToken)
+  }
+  if ($env:GITHUB_TOKEN) {
+    return (Normalize-TokenValue -Value $env:GITHUB_TOKEN)
+  }
+  if ($env:GH_TOKEN) {
+    return (Normalize-TokenValue -Value $env:GH_TOKEN)
   }
   throw "Set GITHUB_TOKEN or GH_TOKEN with repo/actions permissions before using this bridge."
 }
@@ -196,12 +196,29 @@ function Get-LatestWorkflowRun {
   )
 
   $repoParts = Get-RepositoryParts -Repository $Repository
-  $runsUri = "https://api.github.com/repos/$($repoParts.Owner)/$($repoParts.Name)/actions/workflows/$WorkflowFile/runs?branch=$([uri]::EscapeDataString($BranchRef))&per_page=20"
-  $response = Invoke-GitHubApi -Method GET -Uri $runsUri
+  $candidate = $null
 
-  $candidate = $response.workflow_runs |
-    Sort-Object created_at -Descending |
-    Select-Object -First 1
+  try {
+    $runsUri = "https://api.github.com/repos/$($repoParts.Owner)/$($repoParts.Name)/actions/workflows/$WorkflowFile/runs?branch=$([uri]::EscapeDataString($BranchRef))&per_page=20"
+    $response = Invoke-GitHubApi -Method GET -Uri $runsUri
+    $candidate = $response.workflow_runs |
+      Sort-Object created_at -Descending |
+      Select-Object -First 1
+  } catch {
+    $candidate = $null
+  }
+
+  if (-not $candidate) {
+    $allRunsUri = "https://api.github.com/repos/$($repoParts.Owner)/$($repoParts.Name)/actions/runs?branch=$([uri]::EscapeDataString($BranchRef))&per_page=50"
+    $allRunsResponse = Invoke-GitHubApi -Method GET -Uri $allRunsUri
+    $candidate = $allRunsResponse.workflow_runs |
+      Where-Object {
+        ($_.path -like "*$WorkflowFile*") -or
+        ($WorkflowFile -eq "build-ios-full-stack.yml" -and $_.name -eq "Build iOS Full Stack")
+      } |
+      Sort-Object created_at -Descending |
+      Select-Object -First 1
+  }
 
   if (-not $candidate) {
     throw "No workflow run was found yet for $Repository / $WorkflowFile on ref '$BranchRef'."
@@ -345,8 +362,9 @@ function Save-WorkflowArtifacts {
   foreach ($artifact in $artifactResponse.artifacts) {
     $matchesExpectedName = -not $ExpectedArtifactName -or $artifact.name -eq $ExpectedArtifactName
     $matchesFollowUpArtifact = $artifact.name -like "x1box-ios-followup-*"
+    $matchesKnownIosArtifact = $artifact.name -in @("x1box-ios-deps", "x1box-ios-embedded-core", "x1box-ios-ci")
 
-    if (-not ($matchesExpectedName -or $matchesFollowUpArtifact)) {
+    if (-not ($matchesExpectedName -or $matchesFollowUpArtifact -or $matchesKnownIosArtifact)) {
       continue
     }
 

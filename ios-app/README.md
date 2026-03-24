@@ -75,6 +75,7 @@ From this Windows workspace, the most reliable way to validate the iOS project i
 - `build-ios-embedded-core.yml` can now react to `Build iOS Dependencies` via `workflow_run`, download `x1box-ios-deps`, and produce `x1box-ios-embedded-core`.
 - `build-ios-app.yml` can now optionally download a prior `x1box-ios-embedded-core` artifact and stage it into `ios-app/EmbeddedCore/` before the Xcode build starts.
 - After this lands on a default branch, `build-ios-app.yml` can also react to `Build iOS Embedded Core` via `workflow_run`, download that run's default `x1box-ios-embedded-core` artifact, and validate the shell against the packaged core automatically.
+- For feature branches where GitHub cannot dispatch new workflow files by API yet, `.github/workflows/build-ios-full-stack.yml` chains `deps -> embedded core -> app` in one push-driven macOS pipeline.
 - The bridge script `ios-app/scripts/fork-workflow-bridge.ps1` can dispatch the workflow on your fork, wait for completion, and download both the main iOS CI artifact and the follow-up summary artifact back into this workspace.
 - `ios-app/scripts/refresh-github-token.ps1` can validate a newly created GitHub token against your fork, confirm workflow visibility, and load it into the current process or user environment without writing the secret into repo files.
 - The follow-up workflow publishes a compact summary artifact for every run, includes failed jobs and failing steps, and updates the related pull request comment when the run belongs to a PR.
@@ -121,6 +122,7 @@ The bridge now understands the three iOS workflow layers directly:
 - `build-ios-deps.yml`
 - `build-ios-embedded-core.yml`
 - `build-ios-app.yml`
+- `build-ios-full-stack.yml`
 
 Examples:
 
