@@ -13,7 +13,7 @@ $tokenPtr = [IntPtr]::Zero
 
 try {
   $tokenPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
-  $plainToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPtr).Trim()
+  $plainToken = ([regex]::Replace([Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPtr), "\s+", "")).Trim()
 
   if ([string]::IsNullOrWhiteSpace($plainToken)) {
     throw "No token was entered."

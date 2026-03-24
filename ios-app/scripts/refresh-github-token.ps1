@@ -27,18 +27,29 @@ function Resolve-RepositoryParts {
 function Resolve-Token {
   param([string]$ExplicitToken)
 
+  function Normalize-TokenValue {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+      return ""
+    }
+
+    return ([regex]::Replace($Value, "\s+", "")).Trim()
+  }
+
   function New-TokenInfo {
     param(
       [string]$Value,
       [string]$Source
     )
 
-    if ([string]::IsNullOrWhiteSpace($Value)) {
+    $normalizedValue = Normalize-TokenValue -Value $Value
+    if ([string]::IsNullOrWhiteSpace($normalizedValue)) {
       return $null
     }
 
     return @{
-      Value = $Value.Trim()
+      Value = $normalizedValue
       Source = $Source
     }
   }
