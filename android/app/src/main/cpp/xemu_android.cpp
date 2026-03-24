@@ -55,6 +55,7 @@ static JNIEnv* GetEnv();
 static jobject GetActivity(JNIEnv* env);
 static bool HasException(JNIEnv* env, const char* context);
 static std::string GetFilesDirPath(JNIEnv* env, jobject activity);
+static std::string GetPrefString(JNIEnv* env, jobject activity, const char* key);
 static void ConfigureNativeDebugLogging(JNIEnv* env, jobject activity);
 static void ApplyHrtfDefaultOffMigration(JNIEnv* env, jobject activity);
 static bool NativeDebugLoggingEnabled();
@@ -339,6 +340,22 @@ static std::string ResolveAndroidAudioDriverHint() {
     return "dummy";
   }
   return raw;
+}
+
+static std::string ResolveAndroidOrientationHint(JNIEnv* env, jobject activity) {
+  constexpr const char* kDefaultOrientationHint = "LandscapeLeft LandscapeRight";
+  if (!env || !activity) {
+    return kDefaultOrientationHint;
+  }
+
+  std::string value = ToLowerAscii(GetPrefString(env, activity, "setting_game_orientation"));
+  if (value == "landscape") {
+    return "LandscapeLeft";
+  }
+  if (value == "reverse_landscape") {
+    return "LandscapeRight";
+  }
+  return kDefaultOrientationHint;
 }
 
 static JNIEnv* GetEnv() {
@@ -1390,11 +1407,15 @@ extern "C" int SDL_main(int argc, char* argv[]) {
 
   ConfigureNativeDebugLogging(GetEnv(), GetActivity(GetEnv()));
   LogInfo("SDL_main: start");
+  JNIEnv* env = GetEnv();
+  jobject activity = GetActivity(env);
   std::string audio_driver_hint = ResolveAndroidAudioDriverHint();
   SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, audio_driver_hint.c_str(),
                           SDL_HINT_OVERRIDE);
   LogInfoFmt("SDL_HINT_AUDIODRIVER=%s", audio_driver_hint.c_str());
-  SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+  std::string orientation_hint = ResolveAndroidOrientationHint(env, activity);
+  SDL_SetHint(SDL_HINT_ORIENTATIONS, orientation_hint.c_str());
+  LogInfoFmt("SDL_HINT_ORIENTATIONS=%s", orientation_hint.c_str());
   SDL_DisableScreenSaver();
 
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {

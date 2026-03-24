@@ -43,8 +43,6 @@ import java.util.concurrent.ConcurrentHashMap
 class GameLibraryActivity : AppCompatActivity() {
   companion object {
     const val EXTRA_RESTART_LAST_GAME = "com.izzy2lost.x1box.extra.RESTART_LAST_GAME"
-    const val EXTRA_INITIAL_ORIENTATION =
-      "com.izzy2lost.x1box.extra.INITIAL_ORIENTATION"
     private const val SNAPSHOT_PREVIEW_HEADER_SIZE = 12
     private const val TOTAL_SNAPSHOT_SLOTS = 10
     private const val XDVDFS_SECTOR_SIZE = 2048L
@@ -155,7 +153,6 @@ class GameLibraryActivity : AppCompatActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    applyInitialOrientationFromIntent()
     OrientationLocker(this).enable()
     setContentView(R.layout.activity_game_library)
     EdgeToEdgeHelper.enable(this)
@@ -196,11 +193,7 @@ class GameLibraryActivity : AppCompatActivity() {
       launchDashboard()
     }
     btnSettings.setOnClickListener {
-      startActivity(
-        Intent(this, SettingsActivity::class.java).apply {
-          putExtra(SettingsActivity.EXTRA_INITIAL_ORIENTATION, requestedOrientation)
-        }
-      )
+      startActivity(Intent(this, SettingsActivity::class.java))
     }
     btnSnapshots.setOnClickListener {
       showSnapshotStartupPicker()
@@ -231,13 +224,9 @@ class GameLibraryActivity : AppCompatActivity() {
     loadGames()
   }
 
-  private fun applyInitialOrientationFromIntent() {
-    val initialOrientation = intent.getIntExtra(EXTRA_INITIAL_ORIENTATION, Int.MIN_VALUE)
-    if (initialOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT ||
-      initialOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-    ) {
-      requestedOrientation = initialOrientation
-    }
+  override fun onResume() {
+    super.onResume()
+    OrientationLocker(this).enable()
   }
 
   private fun tryRestartLastGameFromIntent(): Boolean {

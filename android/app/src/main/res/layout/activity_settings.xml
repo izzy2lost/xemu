@@ -218,6 +218,46 @@
 
           </com.google.android.material.button.MaterialButtonToggleGroup>
 
+          <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/input_app_orientation"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:hint="@string/settings_app_orientation">
+
+            <AutoCompleteTextView
+              android:id="@+id/dropdown_app_orientation"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:inputType="none" />
+
+          </com.google.android.material.textfield.TextInputLayout>
+
+          <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/input_game_orientation"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:hint="@string/settings_in_game_orientation">
+
+            <AutoCompleteTextView
+              android:id="@+id/dropdown_game_orientation"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:inputType="none" />
+
+          </com.google.android.material.textfield.TextInputLayout>
+
+          <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:text="@string/settings_in_game_orientation_hint"
+            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+            android:textColor="@color/xemu_text_muted" />
+
           <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

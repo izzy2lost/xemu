@@ -122,6 +122,14 @@
   <string name="settings_display_mode_stretch">Stretch</string>
   <string name="settings_display_mode_4_3">4:3</string>
   <string name="settings_display_mode_16_9">16:9</string>
+  <string name="settings_app_orientation">App Orientation</string>
+  <string name="settings_in_game_orientation">In-Game Orientation</string>
+  <string name="settings_in_game_orientation_hint">In-game rotation only uses the two landscape directions, so you can keep the charging port on the side that works best for you.</string>
+  <string name="settings_orientation_follow_device">Follow Device</string>
+  <string name="settings_orientation_portrait">Portrait</string>
+  <string name="settings_orientation_reverse_portrait">Portrait (Upside Down)</string>
+  <string name="settings_orientation_landscape">Landscape</string>
+  <string name="settings_orientation_reverse_landscape">Landscape (Flipped)</string>
   <string name="settings_system_memory">System Memory</string>
   <string name="settings_system_memory_64">64 MiB (Default)</string>
   <string name="settings_system_memory_128">128 MiB (Debug/Homebrew)</string>

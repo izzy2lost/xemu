@@ -204,6 +204,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   override fun onResume() {
     super.onResume()
+    OrientationLocker(this, landscapeOnly = true).enable()
     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     mLayout?.keepScreenOn = true
     
@@ -805,7 +806,6 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private fun exitToGameLibrary() {
     val intent = Intent(this, GameLibraryActivity::class.java).apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-      putExtra(GameLibraryActivity.EXTRA_INITIAL_ORIENTATION, requestedOrientation)
     }
     startActivity(intent)
     terminateXemuProcessSoon("exit to library")

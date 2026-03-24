@@ -31,8 +31,6 @@ import java.util.zip.ZipInputStream
 
 class SettingsActivity : AppCompatActivity() {
   companion object {
-    const val EXTRA_INITIAL_ORIENTATION =
-      "com.izzy2lost.x1box.extra.INITIAL_ORIENTATION"
     private const val PREFS_NAME = "x1box_prefs"
     private const val PREF_ADVANCED_EXPERIMENTAL_EXPANDED = "settings_advanced_experimental_expanded"
     private const val PREF_HRTF = "setting_hrtf"
@@ -66,6 +64,16 @@ class SettingsActivity : AppCompatActivity() {
 
   private data class EepromRefreshRateOption(
     val value: XboxEepromEditor.RefreshRate,
+    val labelRes: Int,
+  )
+
+  private data class UiOrientationOption(
+    val value: OrientationPreferences.UiOrientation,
+    val labelRes: Int,
+  )
+
+  private data class GameOrientationOption(
+    val value: OrientationPreferences.GameOrientation,
     val labelRes: Int,
   )
 
@@ -136,6 +144,20 @@ class SettingsActivity : AppCompatActivity() {
     EepromRefreshRateOption(XboxEepromEditor.RefreshRate.HZ_50, R.string.settings_eeprom_refresh_rate_50),
   )
 
+  private val uiOrientationOptions = listOf(
+    UiOrientationOption(OrientationPreferences.UiOrientation.FOLLOW_DEVICE, R.string.settings_orientation_follow_device),
+    UiOrientationOption(OrientationPreferences.UiOrientation.PORTRAIT, R.string.settings_orientation_portrait),
+    UiOrientationOption(OrientationPreferences.UiOrientation.REVERSE_PORTRAIT, R.string.settings_orientation_reverse_portrait),
+    UiOrientationOption(OrientationPreferences.UiOrientation.LANDSCAPE, R.string.settings_orientation_landscape),
+    UiOrientationOption(OrientationPreferences.UiOrientation.REVERSE_LANDSCAPE, R.string.settings_orientation_reverse_landscape),
+  )
+
+  private val gameOrientationOptions = listOf(
+    GameOrientationOption(OrientationPreferences.GameOrientation.FOLLOW_DEVICE, R.string.settings_orientation_follow_device),
+    GameOrientationOption(OrientationPreferences.GameOrientation.LANDSCAPE, R.string.settings_orientation_landscape),
+    GameOrientationOption(OrientationPreferences.GameOrientation.REVERSE_LANDSCAPE, R.string.settings_orientation_reverse_landscape),
+  )
+
   private var pendingVulkanUri: String? = null
   private var pendingVulkanName: String? = null
   private var clearVulkan = false
@@ -156,6 +178,8 @@ class SettingsActivity : AppCompatActivity() {
   private lateinit var btnRegisterInsignia: MaterialButton
   private lateinit var btnImportDashboard: MaterialButton
   private lateinit var layoutAdvancedExperimentalContent: LinearLayout
+  private lateinit var dropdownUiOrientation: AutoCompleteTextView
+  private lateinit var dropdownGameOrientation: AutoCompleteTextView
   private lateinit var inputEepromLanguage: TextInputLayout
   private lateinit var inputEepromVideoStandard: TextInputLayout
   private lateinit var inputEepromAspectRatio: TextInputLayout
@@ -172,6 +196,8 @@ class SettingsActivity : AppCompatActivity() {
   private var selectedEepromVideoStandard = XboxEepromEditor.VideoStandard.NTSC_M
   private var selectedEepromAspectRatio = XboxEepromEditor.AspectRatio.NORMAL
   private var selectedEepromRefreshRate = XboxEepromEditor.RefreshRate.DEFAULT
+  private var selectedUiOrientation = OrientationPreferences.UiOrientation.FOLLOW_DEVICE
+  private var selectedGameOrientation = OrientationPreferences.GameOrientation.FOLLOW_DEVICE
   private var eepromEditable = false
   private var eepromMissing = false
   private var eepromError = false
@@ -234,7 +260,6 @@ class SettingsActivity : AppCompatActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    applyInitialOrientationFromIntent()
     OrientationLocker(this).enable()
     DebugLog.initialize(this)
     applyHrtfDefaultOffMigration()
@@ -276,6 +301,8 @@ class SettingsActivity : AppCompatActivity() {
     btnRegisterInsignia  = findViewById(R.id.btn_register_insignia)
     btnImportDashboard   = findViewById(R.id.btn_import_dashboard)
     layoutAdvancedExperimentalContent = findViewById(R.id.layout_advanced_experimental_content)
+    dropdownUiOrientation = findViewById(R.id.dropdown_app_orientation)
+    dropdownGameOrientation = findViewById(R.id.dropdown_game_orientation)
     tvVulkanDriverName    = findViewById(R.id.tv_vulkan_driver_name)
     val btnVulkanBrowse   = findViewById<MaterialButton>(R.id.btn_vulkan_browse)
     val btnVulkanClear    = findViewById<MaterialButton>(R.id.btn_vulkan_clear)
@@ -321,6 +348,10 @@ class SettingsActivity : AppCompatActivity() {
       2    -> toggleDisplayMode.check(R.id.btn_display_16_9)
       else -> toggleDisplayMode.check(R.id.btn_display_stretch)
     }
+
+    setupOrientationControls()
+    setUiOrientationSelection(OrientationPreferences.getUiOrientation(this))
+    setGameOrientationSelection(OrientationPreferences.getGameOrientation(this))
 
     if (prefs.getInt("setting_frame_rate_limit", 60) != 60) {
       prefs.edit().putInt("setting_frame_rate_limit", 60).apply()
@@ -458,6 +489,8 @@ class SettingsActivity : AppCompatActivity() {
         .putInt("setting_surface_scale", selectedScale)
         .putInt("setting_frame_rate_limit", 60)
         .putInt("setting_system_memory_mib", selectedSystemMemoryMiB)
+        .putString(OrientationPreferences.PREF_UI_ORIENTATION, selectedUiOrientation.prefValue)
+        .putString(OrientationPreferences.PREF_GAME_ORIENTATION, selectedGameOrientation.prefValue)
         .putString("setting_tcg_thread", selectedThread)
         .putBoolean("setting_use_dsp", switchDsp.isChecked)
         .putBoolean(PREF_HRTF, switchHrtf.isChecked)
@@ -542,15 +575,6 @@ class SettingsActivity : AppCompatActivity() {
       .putBoolean(PREF_HRTF, false)
       .putBoolean(PREF_HRTF_DEFAULT_OFF_MIGRATED, true)
       .apply()
-  }
-
-  private fun applyInitialOrientationFromIntent() {
-    val initialOrientation = intent.getIntExtra(EXTRA_INITIAL_ORIENTATION, Int.MIN_VALUE)
-    if (initialOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT ||
-      initialOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-    ) {
-      requestedOrientation = initialOrientation
-    }
   }
 
   private fun importCustomVulkanDriver(
@@ -1064,6 +1088,39 @@ class SettingsActivity : AppCompatActivity() {
         eepromFile.absolutePath,
       )
     }
+  }
+
+  private fun setupOrientationControls() {
+    val uiOrientationLabels = uiOrientationOptions.map { getString(it.labelRes) }
+    val gameOrientationLabels = gameOrientationOptions.map { getString(it.labelRes) }
+
+    dropdownUiOrientation.setAdapter(
+      ArrayAdapter(this, android.R.layout.simple_list_item_1, uiOrientationLabels)
+    )
+    dropdownGameOrientation.setAdapter(
+      ArrayAdapter(this, android.R.layout.simple_list_item_1, gameOrientationLabels)
+    )
+
+    dropdownUiOrientation.setOnItemClickListener { _, _, position, _ ->
+      selectedUiOrientation = uiOrientationOptions[position].value
+    }
+    dropdownGameOrientation.setOnItemClickListener { _, _, position, _ ->
+      selectedGameOrientation = gameOrientationOptions[position].value
+    }
+  }
+
+  private fun setUiOrientationSelection(orientation: OrientationPreferences.UiOrientation) {
+    selectedUiOrientation = orientation
+    val option = uiOrientationOptions.firstOrNull { it.value == orientation }
+      ?: uiOrientationOptions.first()
+    dropdownUiOrientation.setText(getString(option.labelRes), false)
+  }
+
+  private fun setGameOrientationSelection(orientation: OrientationPreferences.GameOrientation) {
+    selectedGameOrientation = orientation
+    val option = gameOrientationOptions.firstOrNull { it.value == orientation }
+      ?: gameOrientationOptions.first()
+    dropdownGameOrientation.setText(getString(option.labelRes), false)
   }
 
   private fun applyEepromEdits(): Pair<Int, Int> {
