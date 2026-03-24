@@ -41,18 +41,18 @@ function Get-RepositoryParts {
 
 function Get-GitHubToken {
   if ($env:GITHUB_TOKEN) {
-    return $env:GITHUB_TOKEN
+    return $env:GITHUB_TOKEN.Trim()
   }
   if ($env:GH_TOKEN) {
-    return $env:GH_TOKEN
+    return $env:GH_TOKEN.Trim()
   }
   $userGitHubToken = [Environment]::GetEnvironmentVariable("GITHUB_TOKEN", "User")
   if (-not [string]::IsNullOrWhiteSpace($userGitHubToken)) {
-    return $userGitHubToken
+    return $userGitHubToken.Trim()
   }
   $userGhToken = [Environment]::GetEnvironmentVariable("GH_TOKEN", "User")
   if (-not [string]::IsNullOrWhiteSpace($userGhToken)) {
-    return $userGhToken
+    return $userGhToken.Trim()
   }
   throw "Set GITHUB_TOKEN or GH_TOKEN with repo/actions permissions before using this bridge."
 }

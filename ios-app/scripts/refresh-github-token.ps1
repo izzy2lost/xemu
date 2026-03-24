@@ -27,41 +27,42 @@ function Resolve-RepositoryParts {
 function Resolve-Token {
   param([string]$ExplicitToken)
 
-  if (-not [string]::IsNullOrWhiteSpace($ExplicitToken)) {
-    return @{
-      Value = $ExplicitToken
-      Source = "argument"
+  function New-TokenInfo {
+    param(
+      [string]$Value,
+      [string]$Source
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+      return $null
     }
+
+    return @{
+      Value = $Value.Trim()
+      Source = $Source
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($ExplicitToken)) {
+    return (New-TokenInfo -Value $ExplicitToken -Source "argument")
   }
 
   if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
-    return @{
-      Value = $env:GITHUB_TOKEN
-      Source = "env:GITHUB_TOKEN"
-    }
+    return (New-TokenInfo -Value $env:GITHUB_TOKEN -Source "env:GITHUB_TOKEN")
   }
 
   if (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
-    return @{
-      Value = $env:GH_TOKEN
-      Source = "env:GH_TOKEN"
-    }
+    return (New-TokenInfo -Value $env:GH_TOKEN -Source "env:GH_TOKEN")
   }
 
   $userGitHubToken = [Environment]::GetEnvironmentVariable("GITHUB_TOKEN", "User")
   if (-not [string]::IsNullOrWhiteSpace($userGitHubToken)) {
-    return @{
-      Value = $userGitHubToken
-      Source = "user:GITHUB_TOKEN"
-    }
+    return (New-TokenInfo -Value $userGitHubToken -Source "user:GITHUB_TOKEN")
   }
 
   $userGhToken = [Environment]::GetEnvironmentVariable("GH_TOKEN", "User")
   if (-not [string]::IsNullOrWhiteSpace($userGhToken)) {
-    return @{
-      Value = $userGhToken
-      Source = "user:GH_TOKEN"
-    }
+    return (New-TokenInfo -Value $userGhToken -Source "user:GH_TOKEN")
   }
 
   throw "Provide -Token or set GITHUB_TOKEN / GH_TOKEN before running this script."
