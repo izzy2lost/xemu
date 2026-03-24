@@ -26,6 +26,7 @@ SIMULATOR_ARCH="${X1BOX_IOS_SIMULATOR_ARCH:-auto}"
 ARTIFACT_NAME="${X1BOX_IOS_DEPS_ARTIFACT_NAME:-x1box-ios-deps}"
 VCPKG_ROOT="${X1BOX_VCPKG_ROOT:-${BUILD_ROOT}/vcpkg}"
 OVERLAY_TRIPLETS="${IOS_ROOT}/vcpkg-triplets"
+OVERLAY_PORTS="${X1BOX_VCPKG_OVERLAY_PORTS:-${IOS_ROOT}/vcpkg-ports}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -162,6 +163,7 @@ EOF
     --triplet="${triplet}" \
     --host-triplet="${HOST_TRIPLET}" \
     --overlay-triplets="${OVERLAY_TRIPLETS}" \
+    --overlay-ports="${OVERLAY_PORTS}" \
     --x-install-root="${INSTALL_ROOT}" \
     --clean-after-build \
     >"${LOG_DIR}/${log_name}.log" 2>&1
