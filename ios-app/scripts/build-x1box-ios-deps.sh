@@ -120,6 +120,20 @@ install_triplet() {
   local triplet="$1"
   local log_name="$2"
   local manifest_dir="${BUILD_ROOT}/manifest-${triplet}"
+  local effective_keep_env_vars="${VCPKG_KEEP_ENV_VARS:-}"
+  local effective_ldflags="${LDFLAGS:-}"
+
+  if [[ -n "${effective_keep_env_vars}" ]]; then
+    effective_keep_env_vars="${effective_keep_env_vars};LDFLAGS"
+  else
+    effective_keep_env_vars="LDFLAGS"
+  fi
+
+  if [[ -n "${effective_ldflags}" ]]; then
+    effective_ldflags="${effective_ldflags} -framework CoreFoundation"
+  else
+    effective_ldflags="-framework CoreFoundation"
+  fi
 
   mkdir -p "${manifest_dir}"
   cat > "${manifest_dir}/vcpkg.json" <<'EOF'
@@ -141,6 +155,8 @@ EOF
 
   VCPKG_OVERLAY_TRIPLETS="${OVERLAY_TRIPLETS}" \
   VCPKG_FORCE_SYSTEM_BINARIES=1 \
+  VCPKG_KEEP_ENV_VARS="${effective_keep_env_vars}" \
+  LDFLAGS="${effective_ldflags}" \
   "${VCPKG_ROOT}/vcpkg" install \
     --x-manifest-root="${manifest_dir}" \
     --triplet="${triplet}" \
