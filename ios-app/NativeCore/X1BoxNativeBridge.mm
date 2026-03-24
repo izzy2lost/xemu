@@ -593,16 +593,10 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
 }
 
 - (void)launchRawEmbeddedCoreWithConfigPath:(NSString *)configPath {
-  __weak X1BoxNativeBridge *weakSelf = self;
   NSString *pathCopy = [configPath copy];
 
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     @autoreleasepool {
-      X1BoxNativeBridge *strongSelf = weakSelf;
-      if (strongSelf == nil) {
-        return;
-      }
-
       int exitCode = 1;
       if (qemu_init != nullptr && qemu_main != nullptr) {
         std::vector<std::string> argStorage;
@@ -621,14 +615,16 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
         exitCode = qemu_main();
       }
 
+      [pathCopy release];
+
       dispatch_async(dispatch_get_main_queue(), ^{
-        strongSelf->_state.bootThreadActive = false;
-        strongSelf->_state.running = false;
-        strongSelf->_state.statusLine =
+        self->_state.bootThreadActive = false;
+        self->_state.running = false;
+        self->_state.statusLine =
           exitCode == 0
             ? "Raw embedded xemu core exited cleanly."
             : "Raw embedded xemu core returned control to iOS. Inspect the linked backend if video or SDL host setup is still incomplete.";
-        [strongSelf syncController];
+        [self syncController];
       });
     }
   });
