@@ -25,11 +25,20 @@ final class AppModel: ObservableObject {
   private let scanner = LibraryScanner()
   private var cancellables = Set<AnyCancellable>()
 
+  init() {
+    self.setupStore = SetupAssetStore()
+    self.settingsStore = SettingsStore()
+    self.controllerMonitor = GameControllerMonitor()
+    self.emulatorSession = EmulatorSession()
+    bindChildObjects()
+    refreshRoute()
+  }
+
   init(
-    setupStore: SetupAssetStore = SetupAssetStore(),
-    settingsStore: SettingsStore = SettingsStore(),
-    controllerMonitor: GameControllerMonitor = GameControllerMonitor(),
-    emulatorSession: EmulatorSession = EmulatorSession()
+    setupStore: SetupAssetStore,
+    settingsStore: SettingsStore,
+    controllerMonitor: GameControllerMonitor,
+    emulatorSession: EmulatorSession
   ) {
     self.setupStore = setupStore
     self.settingsStore = settingsStore

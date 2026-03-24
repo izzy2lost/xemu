@@ -18,7 +18,7 @@ bool xemu_embedded_is_active(void) __attribute__((weak_import));
 const char *xemu_embedded_get_last_error(void) __attribute__((weak_import));
 
 void qemu_init(int argc, char **argv) __attribute__((weak_import));
-int (*qemu_main)(void) __attribute__((weak_import));
+int qemu_main(void) __attribute__((weak_import));
 void xemu_settings_set_path(const char *path) __attribute__((weak_import));
 bool xemu_settings_load(void) __attribute__((weak_import));
 const char *xemu_settings_get_error_message(void) __attribute__((weak_import));
@@ -242,6 +242,11 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
 
 - (void)dealloc {
   [_displayLink invalidate];
+  [_displayLink release];
+  [_detailLabel release];
+  [_titleLabel release];
+  [_panelView release];
+  [super dealloc];
 }
 
 - (void)viewDidLayoutSubviews {
