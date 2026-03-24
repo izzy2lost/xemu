@@ -2,37 +2,137 @@
 
 #import <QuartzCore/QuartzCore.h>
 
+#include <dlfcn.h>
 #include <map>
 #include <sstream>
 #include <string>
 #include <vector>
 
-extern "C" {
 struct Error;
 struct strList;
-
-bool xemu_embedded_boot(const char *config_path, const char **error_out) __attribute__((weak_import));
-void xemu_embedded_pump_frame(void) __attribute__((weak_import));
-void xemu_embedded_request_shutdown(void) __attribute__((weak_import));
-bool xemu_embedded_is_active(void) __attribute__((weak_import));
-const char *xemu_embedded_get_last_error(void) __attribute__((weak_import));
-
-void qemu_init(int argc, char **argv) __attribute__((weak_import));
-int qemu_main(void) __attribute__((weak_import));
-void xemu_settings_set_path(const char *path) __attribute__((weak_import));
-bool xemu_settings_load(void) __attribute__((weak_import));
-const char *xemu_settings_get_error_message(void) __attribute__((weak_import));
-void qemu_system_powerdown_request(void) __attribute__((weak_import));
-bool save_snapshot(const char *name, bool overwrite, const char *vmstate, bool has_devices, strList *devices, Error **errp) __attribute__((weak_import));
-bool load_snapshot(const char *name, const char *vmstate, bool has_devices, strList *devices, Error **errp) __attribute__((weak_import));
-bool delete_snapshot(const char *name, bool has_devices, strList *devices, Error **errp) __attribute__((weak_import));
-const char *error_get_pretty(const Error *err) __attribute__((weak_import));
-void error_free(Error *err) __attribute__((weak_import));
-}
 
 namespace {
 
 NSString *const X1BoxNativeBridgeErrorDomain = @"X1Box.NativeBridge";
+
+using EmbeddedBootFn = bool (*)(const char *, const char **);
+using EmbeddedPumpFrameFn = void (*)(void);
+using EmbeddedRequestShutdownFn = void (*)(void);
+using EmbeddedIsActiveFn = bool (*)(void);
+using EmbeddedGetLastErrorFn = const char *(*)(void);
+using QemuInitFn = void (*)(int, char **);
+using QemuMainFn = int (*)(void);
+using XemuSettingsSetPathFn = void (*)(const char *);
+using XemuSettingsLoadFn = bool (*)(void);
+using XemuSettingsGetErrorMessageFn = const char *(*)(void);
+using QemuSystemPowerdownRequestFn = void (*)(void);
+using SaveSnapshotFn = bool (*)(const char *, bool, const char *, bool, strList *, Error **);
+using LoadSnapshotFn = bool (*)(const char *, const char *, bool, strList *, Error **);
+using DeleteSnapshotFn = bool (*)(const char *, bool, strList *, Error **);
+using ErrorGetPrettyFn = const char *(*)(const Error *);
+using ErrorFreeFn = void (*)(Error *);
+
+template <typename T>
+static T ResolveOptionalSymbol(const char *name)
+{
+  return reinterpret_cast<T>(dlsym(RTLD_DEFAULT, name));
+}
+
+static EmbeddedBootFn EmbeddedBootSymbol(void)
+{
+  static EmbeddedBootFn symbol = ResolveOptionalSymbol<EmbeddedBootFn>("xemu_embedded_boot");
+  return symbol;
+}
+
+static EmbeddedPumpFrameFn EmbeddedPumpFrameSymbol(void)
+{
+  static EmbeddedPumpFrameFn symbol = ResolveOptionalSymbol<EmbeddedPumpFrameFn>("xemu_embedded_pump_frame");
+  return symbol;
+}
+
+static EmbeddedRequestShutdownFn EmbeddedRequestShutdownSymbol(void)
+{
+  static EmbeddedRequestShutdownFn symbol = ResolveOptionalSymbol<EmbeddedRequestShutdownFn>("xemu_embedded_request_shutdown");
+  return symbol;
+}
+
+static EmbeddedIsActiveFn EmbeddedIsActiveSymbol(void)
+{
+  static EmbeddedIsActiveFn symbol = ResolveOptionalSymbol<EmbeddedIsActiveFn>("xemu_embedded_is_active");
+  return symbol;
+}
+
+static EmbeddedGetLastErrorFn EmbeddedGetLastErrorSymbol(void)
+{
+  static EmbeddedGetLastErrorFn symbol = ResolveOptionalSymbol<EmbeddedGetLastErrorFn>("xemu_embedded_get_last_error");
+  return symbol;
+}
+
+static QemuInitFn QemuInitSymbol(void)
+{
+  static QemuInitFn symbol = ResolveOptionalSymbol<QemuInitFn>("qemu_init");
+  return symbol;
+}
+
+static QemuMainFn QemuMainSymbol(void)
+{
+  static QemuMainFn symbol = ResolveOptionalSymbol<QemuMainFn>("qemu_main");
+  return symbol;
+}
+
+static XemuSettingsSetPathFn XemuSettingsSetPathSymbol(void)
+{
+  static XemuSettingsSetPathFn symbol = ResolveOptionalSymbol<XemuSettingsSetPathFn>("xemu_settings_set_path");
+  return symbol;
+}
+
+static XemuSettingsLoadFn XemuSettingsLoadSymbol(void)
+{
+  static XemuSettingsLoadFn symbol = ResolveOptionalSymbol<XemuSettingsLoadFn>("xemu_settings_load");
+  return symbol;
+}
+
+static XemuSettingsGetErrorMessageFn XemuSettingsGetErrorMessageSymbol(void)
+{
+  static XemuSettingsGetErrorMessageFn symbol = ResolveOptionalSymbol<XemuSettingsGetErrorMessageFn>("xemu_settings_get_error_message");
+  return symbol;
+}
+
+static QemuSystemPowerdownRequestFn QemuSystemPowerdownRequestSymbol(void)
+{
+  static QemuSystemPowerdownRequestFn symbol = ResolveOptionalSymbol<QemuSystemPowerdownRequestFn>("qemu_system_powerdown_request");
+  return symbol;
+}
+
+static SaveSnapshotFn SaveSnapshotSymbol(void)
+{
+  static SaveSnapshotFn symbol = ResolveOptionalSymbol<SaveSnapshotFn>("save_snapshot");
+  return symbol;
+}
+
+static LoadSnapshotFn LoadSnapshotSymbol(void)
+{
+  static LoadSnapshotFn symbol = ResolveOptionalSymbol<LoadSnapshotFn>("load_snapshot");
+  return symbol;
+}
+
+static DeleteSnapshotFn DeleteSnapshotSymbol(void)
+{
+  static DeleteSnapshotFn symbol = ResolveOptionalSymbol<DeleteSnapshotFn>("delete_snapshot");
+  return symbol;
+}
+
+static ErrorGetPrettyFn ErrorGetPrettySymbol(void)
+{
+  static ErrorGetPrettyFn symbol = ResolveOptionalSymbol<ErrorGetPrettyFn>("error_get_pretty");
+  return symbol;
+}
+
+static ErrorFreeFn ErrorFreeSymbol(void)
+{
+  static ErrorFreeFn symbol = ResolveOptionalSymbol<ErrorFreeFn>("error_free");
+  return symbol;
+}
 
 struct VirtualAxisState {
   float x = 0.0f;
@@ -53,23 +153,23 @@ struct SessionRuntimeState {
 
 static bool EmbeddedHostAPIIsLinked(void)
 {
-  return xemu_embedded_boot != nullptr &&
-         xemu_embedded_pump_frame != nullptr &&
-         xemu_embedded_request_shutdown != nullptr;
+  return EmbeddedBootSymbol() != nullptr &&
+         EmbeddedPumpFrameSymbol() != nullptr &&
+         EmbeddedRequestShutdownSymbol() != nullptr;
 }
 
 static bool EmbeddedCoreIsLinked(void)
 {
-  return EmbeddedHostAPIIsLinked() || (qemu_init != nullptr && qemu_main != nullptr);
+  return EmbeddedHostAPIIsLinked() || (QemuInitSymbol() != nullptr && QemuMainSymbol() != nullptr);
 }
 
 static bool NativeSnapshotAPIIsLinked(void)
 {
-  return save_snapshot != nullptr &&
-         load_snapshot != nullptr &&
-         delete_snapshot != nullptr &&
-         error_get_pretty != nullptr &&
-         error_free != nullptr;
+  return SaveSnapshotSymbol() != nullptr &&
+         LoadSnapshotSymbol() != nullptr &&
+         DeleteSnapshotSymbol() != nullptr &&
+         ErrorGetPrettySymbol() != nullptr &&
+         ErrorFreeSymbol() != nullptr;
 }
 
 static NSString *NSStringFromStd(const std::string &value)
@@ -90,15 +190,17 @@ static std::string StdStringFromNSString(NSString *value)
 
 static NSError *SnapshotNSError(NSInteger code, const char *fallbackMessage, Error *snapshotError)
 {
+  ErrorGetPrettyFn errorGetPretty = ErrorGetPrettySymbol();
+  ErrorFreeFn errorFree = ErrorFreeSymbol();
   NSString *message = fallbackMessage ? [NSString stringWithUTF8String:fallbackMessage] : @"Native snapshot operation failed.";
-  if (snapshotError != nullptr && error_get_pretty != nullptr) {
-    const char *pretty = error_get_pretty(snapshotError);
+  if (snapshotError != nullptr && errorGetPretty != nullptr) {
+    const char *pretty = errorGetPretty(snapshotError);
     if (pretty != nullptr && pretty[0] != '\0') {
       message = [NSString stringWithUTF8String:pretty];
     }
   }
-  if (snapshotError != nullptr && error_free != nullptr) {
-    error_free(snapshotError);
+  if (snapshotError != nullptr && errorFree != nullptr) {
+    errorFree(snapshotError);
   }
   return [NSError errorWithDomain:X1BoxNativeBridgeErrorDomain
                              code:code
@@ -284,9 +386,11 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
     return;
   }
 
-  if (xemu_embedded_pump_frame != nullptr) {
-    xemu_embedded_pump_frame();
-    if (xemu_embedded_is_active != nullptr && !xemu_embedded_is_active()) {
+  EmbeddedPumpFrameFn pumpFrame = EmbeddedPumpFrameSymbol();
+  EmbeddedIsActiveFn isActive = EmbeddedIsActiveSymbol();
+  if (pumpFrame != nullptr) {
+    pumpFrame();
+    if (isActive != nullptr && !isActive()) {
       [self setFramePumpEnabled:NO];
     }
   }
@@ -402,9 +506,10 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
   _state.bootThreadActive = false;
   _state.configPath = StdStringFromNSString(configPath);
 
-  if (_state.embeddedHostAPILinked) {
+  EmbeddedBootFn embeddedBoot = EmbeddedBootSymbol();
+  if (_state.embeddedHostAPILinked && embeddedBoot != nullptr) {
     const char *bootError = NULL;
-    if (!xemu_embedded_boot(configPath.UTF8String, &bootError)) {
+    if (!embeddedBoot(configPath.UTF8String, &bootError)) {
       _state.running = false;
       _state.statusLine = bootError ? std::string(bootError) : std::string("The embedded iOS host failed to start.");
       [self.controller setFramePumpEnabled:NO];
@@ -434,12 +539,15 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
     return YES;
   }
 
-  if (xemu_settings_set_path != nullptr) {
-    xemu_settings_set_path(configPath.UTF8String);
+  XemuSettingsSetPathFn setSettingsPath = XemuSettingsSetPathSymbol();
+  if (setSettingsPath != nullptr) {
+    setSettingsPath(configPath.UTF8String);
   }
-  if (xemu_settings_load != nullptr && !xemu_settings_load()) {
-    const char *message = xemu_settings_get_error_message != nullptr
-      ? xemu_settings_get_error_message()
+  XemuSettingsLoadFn loadSettings = XemuSettingsLoadSymbol();
+  XemuSettingsGetErrorMessageFn settingsErrorMessage = XemuSettingsGetErrorMessageSymbol();
+  if (loadSettings != nullptr && !loadSettings()) {
+    const char *message = settingsErrorMessage != nullptr
+      ? settingsErrorMessage()
       : "Failed to load the xemu settings file.";
     _state.running = false;
     _state.statusLine = message ? std::string(message) : std::string("Failed to load the xemu settings file.");
@@ -464,12 +572,14 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
 - (void)stopSession {
   [self.controller setFramePumpEnabled:NO];
 
-  if (_state.embeddedHostAPILinked && xemu_embedded_request_shutdown != nullptr) {
-    xemu_embedded_request_shutdown();
+  EmbeddedRequestShutdownFn embeddedShutdown = EmbeddedRequestShutdownSymbol();
+  QemuSystemPowerdownRequestFn powerdownRequest = QemuSystemPowerdownRequestSymbol();
+  if (_state.embeddedHostAPILinked && embeddedShutdown != nullptr) {
+    embeddedShutdown();
     _state.statusLine =
       "Embedded iOS guest shutdown requested. Restart the app before a new embedded launch.";
-  } else if (_state.embeddedCoreLinked && qemu_system_powerdown_request != nullptr) {
-    qemu_system_powerdown_request();
+  } else if (_state.embeddedCoreLinked && powerdownRequest != nullptr) {
+    powerdownRequest();
     _state.statusLine =
       "Guest powerdown requested. Because qemu_init cannot be safely re-run in the same process, restart the app before a new embedded launch.";
   } else {
@@ -507,7 +617,8 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
   }
 
   Error *snapshotError = nullptr;
-  if (!save_snapshot(name.UTF8String, true, nullptr, false, nullptr, &snapshotError)) {
+  SaveSnapshotFn saveSnapshot = SaveSnapshotSymbol();
+  if (saveSnapshot == nullptr || !saveSnapshot(name.UTF8String, true, nullptr, false, nullptr, &snapshotError)) {
     _state.statusLine = "Native snapshot save failed.";
     [self syncController];
     if (error != nil) {
@@ -541,7 +652,8 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
   }
 
   Error *snapshotError = nullptr;
-  if (!load_snapshot(name.UTF8String, nullptr, false, nullptr, &snapshotError)) {
+  LoadSnapshotFn loadSnapshot = LoadSnapshotSymbol();
+  if (loadSnapshot == nullptr || !loadSnapshot(name.UTF8String, nullptr, false, nullptr, &snapshotError)) {
     _state.statusLine = "Native snapshot load failed.";
     [self syncController];
     if (error != nil) {
@@ -575,7 +687,8 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
   }
 
   Error *snapshotError = nullptr;
-  if (!delete_snapshot(name.UTF8String, false, nullptr, &snapshotError)) {
+  DeleteSnapshotFn deleteSnapshot = DeleteSnapshotSymbol();
+  if (deleteSnapshot == nullptr || !deleteSnapshot(name.UTF8String, false, nullptr, &snapshotError)) {
     _state.statusLine = "Native snapshot delete failed.";
     [self syncController];
     if (error != nil) {
@@ -603,7 +716,9 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     @autoreleasepool {
       int exitCode = 1;
-      if (qemu_init != nullptr && qemu_main != nullptr) {
+      QemuInitFn qemuInit = QemuInitSymbol();
+      QemuMainFn qemuMain = QemuMainSymbol();
+      if (qemuInit != nullptr && qemuMain != nullptr) {
         std::vector<std::string> argStorage;
         argStorage.emplace_back("xemu");
         argStorage.emplace_back("-config_path");
@@ -616,8 +731,8 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
         }
         argv.push_back(nullptr);
 
-        qemu_init((int)argStorage.size(), argv.data());
-        exitCode = qemu_main();
+        qemuInit((int)argStorage.size(), argv.data());
+        exitCode = qemuMain();
       }
 
       [pathCopy release];
@@ -639,8 +754,9 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
   _state.embeddedCoreLinked = EmbeddedCoreIsLinked();
   _state.embeddedHostAPILinked = EmbeddedHostAPIIsLinked();
 
-  if (_state.embeddedHostAPILinked && xemu_embedded_get_last_error != nullptr) {
-    const char *lastError = xemu_embedded_get_last_error();
+  EmbeddedGetLastErrorFn lastErrorSymbol = EmbeddedGetLastErrorSymbol();
+  if (_state.embeddedHostAPILinked && lastErrorSymbol != nullptr) {
+    const char *lastError = lastErrorSymbol();
     if (lastError != nullptr && lastError[0] != '\0' && !_state.running) {
       _state.statusLine = lastError;
     }

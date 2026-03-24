@@ -549,6 +549,13 @@
         INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
         IPHONEOS_DEPLOYMENT_TARGET = 17.0;
         MACH_O_TYPE = mh_dylib;
+        OTHER_LDFLAGS = (
+          "$(inherited)",
+          "-framework",
+          UIKit,
+          "-framework",
+          QuartzCore,
+        );
         PRODUCT_BUNDLE_IDENTIFIER = com.alejomazabuel.x1boxnativecore;
         PRODUCT_NAME = "$(TARGET_NAME)";
         PUBLIC_HEADERS_FOLDER_PATH = Headers;
@@ -572,6 +579,13 @@
         INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
         IPHONEOS_DEPLOYMENT_TARGET = 17.0;
         MACH_O_TYPE = mh_dylib;
+        OTHER_LDFLAGS = (
+          "$(inherited)",
+          "-framework",
+          UIKit,
+          "-framework",
+          QuartzCore,
+        );
         PRODUCT_BUNDLE_IDENTIFIER = com.alejomazabuel.x1boxnativecore;
         PRODUCT_NAME = "$(TARGET_NAME)";
         PUBLIC_HEADERS_FOLDER_PATH = Headers;
