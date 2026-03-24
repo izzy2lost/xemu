@@ -1,0 +1,44 @@
+diff --git a/meson.build b/meson.build
+index 5de3cff..bcd0e47 100644
+--- a/meson.build
++++ b/meson.build
+@@ -142,16 +142,18 @@ else
+   )
+ endif
+ 
+-pingtest = executable('pingtest', 'test/pingtest.c',
+-link_with: [ lib ],
+-c_args : cargs,
+-link_args : vflag,
+-include_directories: [ 'src' ],
+-dependencies : libslirp_deps
+-)
+-
+-test('ping', pingtest)
+-
+-ncsitest = executable('ncsitest', 'test/ncsitest.c',
++if host_system != 'ios'
++pingtest = executable('pingtest', 'test/pingtest.c',
++link_with: [ lib ],
++c_args : cargs,
++link_args : vflag,
++include_directories: [ 'src' ],
++dependencies : libslirp_deps
++)
++
++test('ping', pingtest)
++
++ncsitest = executable('ncsitest', 'test/ncsitest.c',
+ link_with: [lib],
+ c_args : cargs,
+ link_args : vflag,
+@@ -159,6 +161,7 @@ include_directories: ['src'],
+ dependencies: libslirp_deps
+ )
+ 
+-test('ncsi', ncsitest)
++test('ncsi', ncsitest)
++endif
+ 
+ if install_devel
+ install_headers(['src/libslirp.h'], subdir : 'slirp')
