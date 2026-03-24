@@ -179,11 +179,15 @@ configure_and_build() {
   local cflags
   local ldflags
   local dylib_path
+  local native_clang
+  local native_clangxx
 
   configure_cpu_name="$(configure_cpu "$(echo "${triple}" | cut -d- -f1)")"
   sdkroot="$(xcrun --sdk "${sdk}" --show-sdk-path)"
   clang="$(xcrun --sdk "${sdk}" --find clang)"
   clangxx="$(xcrun --sdk "${sdk}" --find clang++)"
+  native_clang="$(xcrun --sdk macosx --find clang)"
+  native_clangxx="$(xcrun --sdk macosx --find clang++)"
   ar="$(xcrun --sdk "${sdk}" --find ar)"
   nm="$(xcrun --sdk "${sdk}" --find nm)"
   ranlib="$(xcrun --sdk "${sdk}" --find ranlib)"
@@ -212,6 +216,8 @@ configure_and_build() {
   "${REPO_ROOT}/configure" \
     --cross-prefix= \
     --cpu="${configure_cpu_name}" \
+    --host-cc="${native_clang}" \
+    --host-cxx="${native_clangxx}" \
     --target-list=i386-softmmu \
     --disable-docs \
     --disable-tools \
