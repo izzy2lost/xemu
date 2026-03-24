@@ -68,7 +68,7 @@ final class SetupAssetStore: ObservableObject {
     var stale = false
     let folderURL = try URL(
       resolvingBookmarkData: bookmarkData,
-      options: .withSecurityScope,
+      options: [],
       relativeTo: nil,
       bookmarkDataIsStale: &stale
     )
@@ -123,7 +123,7 @@ final class SetupAssetStore: ObservableObject {
     }
 
     let bookmarkData = try sourceURL.bookmarkData(
-      options: .withSecurityScope,
+      options: [],
       includingResourceValuesForKeys: nil,
       relativeTo: nil
     )
