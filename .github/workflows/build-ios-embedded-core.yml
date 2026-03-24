@@ -54,7 +54,12 @@ jobs:
         run: xcodebuild -version
 
       - name: Set up Python tooling
-        run: python3 -m pip install --upgrade meson ninja
+        run: |
+          python3 -m venv "$RUNNER_TEMP/x1box-ios-python"
+          source "$RUNNER_TEMP/x1box-ios-python/bin/activate"
+          python -m pip install --upgrade pip
+          python -m pip install meson ninja
+          echo "$RUNNER_TEMP/x1box-ios-python/bin" >> "$GITHUB_PATH"
 
       - name: Resolve dependency bundle source
         id: deps
