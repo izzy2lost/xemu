@@ -4,7 +4,11 @@ if host_os == 'linux'
 elif host_os == 'windows'
   noc_ss.add(files('noc_file_dialog/noc_file_dialog_win32.cc'))
 elif host_os == 'darwin'
-  noc_ss.add(files('noc_file_dialog/noc_file_dialog_macos.m'))
+  if get_option('x1box_ios_embedded_core')
+    noc_ss.add(files('noc_file_dialog/noc_file_dialog_stub.c'))
+  else
+    noc_ss.add(files('noc_file_dialog/noc_file_dialog_macos.m'))
+  endif
 endif
 noc_ss = noc_ss.apply(config_target, strict: false)
 noclib = static_library('noc',
