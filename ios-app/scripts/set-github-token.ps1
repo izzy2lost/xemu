@@ -8,6 +8,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$plainToken = $null
 
 function Read-MaskedToken {
   param([string]$Prompt)
@@ -45,7 +46,10 @@ function Read-MaskedToken {
 try {
   if ($FromClipboard) {
     $clipboardValue = Get-Clipboard -Raw
-    $plainToken = ([regex]::Replace(($clipboardValue ?? ""), "\s+", "")).Trim()
+    if ($null -eq $clipboardValue) {
+      $clipboardValue = ""
+    }
+    $plainToken = ([regex]::Replace($clipboardValue, "\s+", "")).Trim()
   } else {
     $plainToken = ([regex]::Replace((Read-MaskedToken -Prompt "Paste the GitHub token"), "\s+", "")).Trim()
   }
