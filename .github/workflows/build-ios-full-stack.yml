@@ -92,7 +92,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/x1box-ios-python"
           source "$RUNNER_TEMP/x1box-ios-python/bin/activate"
           python -m pip install --upgrade pip
-          python -m pip install meson ninja
+          python -m pip install meson ninja pyyaml
           echo "$RUNNER_TEMP/x1box-ios-python/bin" >> "$GITHUB_PATH"
 
       - name: Download dependency artifact
