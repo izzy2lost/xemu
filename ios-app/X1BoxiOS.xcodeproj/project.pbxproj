@@ -489,6 +489,7 @@
         CODE_SIGN_ENTITLEMENTS = Support/X1BoxiOS.entitlements;
         CODE_SIGN_STYLE = Automatic;
         CURRENT_PROJECT_VERSION = 1;
+        ENABLE_TESTABILITY = YES;
         ENABLE_PREVIEWS = YES;
         GENERATE_INFOPLIST_FILE = NO;
         INFOPLIST_FILE = Support/Info.plist;
