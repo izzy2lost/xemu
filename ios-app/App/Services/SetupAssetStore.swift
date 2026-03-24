@@ -29,6 +29,26 @@ final class SetupAssetStore: ObservableObject {
     }
   }
 
+  func removeSelection(for kind: SetupAssetKind) throws {
+    guard let record = summary.record(for: kind) else {
+      return
+    }
+
+    if let bookmarkKey = record.bookmarkKey {
+      defaults.removeObject(forKey: bookmarkKey)
+    }
+
+    if let localPath = record.localPath {
+      let url = URL(fileURLWithPath: localPath)
+      if FileManager.default.fileExists(atPath: url.path) {
+        try FileManager.default.removeItem(at: url)
+      }
+    }
+
+    summary.assets.removeValue(forKey: kind)
+    saveMetadata()
+  }
+
   func localURL(for kind: SetupAssetKind) -> URL? {
     guard let path = summary.record(for: kind)?.localPath else {
       return nil

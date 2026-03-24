@@ -118,6 +118,20 @@ final class AppModel: ObservableObject {
 
     syncLaunchOutcome()
     if emulatorErrorMessage == nil {
+      do {
+        _ = try emulatorSession.restoreNativeSnapshotIfAvailable(for: slot)
+      } catch {
+        emulatorErrorMessage = error.localizedDescription
+      }
+
+      if emulatorErrorMessage == nil {
+        emulatorNoticeMessage = "Resumed slot \(slot.slotNumber) by restoring the saved boot target. Full memory-state resume will be connected when the native snapshot API is available."
+      }
+    }
+
+    if emulatorErrorMessage == nil && slot.nativeSnapshotName != nil {
+      emulatorNoticeMessage = "Resumed slot \(slot.slotNumber) and requested native snapshot restore when available."
+    } else if emulatorErrorMessage == nil {
       emulatorNoticeMessage = "Resumed slot \(slot.slotNumber) by restoring the saved boot target. Full memory-state resume will be connected when the native snapshot API is available."
     }
   }

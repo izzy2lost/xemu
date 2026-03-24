@@ -20,7 +20,7 @@ struct GameLibraryView: View {
       }
       .navigationBarHidden(true)
       .sheet(isPresented: $model.isShowingSettings) {
-        SettingsView(store: model.settingsStore) {
+        SettingsView(store: model.settingsStore, setupStore: model.setupStore) {
           model.isShowingSettings = false
         }
       }

@@ -8,6 +8,9 @@
 #include <vector>
 
 extern "C" {
+struct Error;
+struct strList;
+
 bool xemu_embedded_boot(const char *config_path, const char **error_out) __attribute__((weak_import));
 void xemu_embedded_pump_frame(void) __attribute__((weak_import));
 void xemu_embedded_request_shutdown(void) __attribute__((weak_import));
@@ -20,6 +23,11 @@ void xemu_settings_set_path(const char *path) __attribute__((weak_import));
 bool xemu_settings_load(void) __attribute__((weak_import));
 const char *xemu_settings_get_error_message(void) __attribute__((weak_import));
 void qemu_system_powerdown_request(void) __attribute__((weak_import));
+bool save_snapshot(const char *name, bool overwrite, const char *vmstate, bool has_devices, strList *devices, Error **errp) __attribute__((weak_import));
+bool load_snapshot(const char *name, const char *vmstate, bool has_devices, strList *devices, Error **errp) __attribute__((weak_import));
+bool delete_snapshot(const char *name, bool has_devices, strList *devices, Error **errp) __attribute__((weak_import));
+const char *error_get_pretty(const Error *err) __attribute__((weak_import));
+void error_free(Error *err) __attribute__((weak_import));
 }
 
 namespace {
@@ -55,6 +63,15 @@ static bool EmbeddedCoreIsLinked(void)
   return EmbeddedHostAPIIsLinked() || (qemu_init != nullptr && qemu_main != nullptr);
 }
 
+static bool NativeSnapshotAPIIsLinked(void)
+{
+  return save_snapshot != nullptr &&
+         load_snapshot != nullptr &&
+         delete_snapshot != nullptr &&
+         error_get_pretty != nullptr &&
+         error_free != nullptr;
+}
+
 static NSString *NSStringFromStd(const std::string &value)
 {
   if (value.empty()) {
@@ -69,6 +86,23 @@ static std::string StdStringFromNSString(NSString *value)
     return std::string();
   }
   return std::string(value.UTF8String ? value.UTF8String : "");
+}
+
+static NSError *SnapshotNSError(NSInteger code, const char *fallbackMessage, Error *snapshotError)
+{
+  NSString *message = fallbackMessage ? [NSString stringWithUTF8String:fallbackMessage] : @"Native snapshot operation failed.";
+  if (snapshotError != nullptr && error_get_pretty != nullptr) {
+    const char *pretty = error_get_pretty(snapshotError);
+    if (pretty != nullptr && pretty[0] != '\0') {
+      message = [NSString stringWithUTF8String:pretty];
+    }
+  }
+  if (snapshotError != nullptr && error_free != nullptr) {
+    error_free(snapshotError);
+  }
+  return [NSError errorWithDomain:X1BoxNativeBridgeErrorDomain
+                             code:code
+                         userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
 static NSString *SummaryFromState(const SessionRuntimeState &state)
@@ -442,6 +476,112 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
   _state.pressedButtons.clear();
   _state.axes.clear();
   [self syncController];
+}
+
+- (BOOL)canUseNativeSnapshots {
+  return NativeSnapshotAPIIsLinked() && _state.running;
+}
+
+- (BOOL)saveNativeSnapshotNamed:(NSString *)name error:(NSError * _Nullable __autoreleasing *)error {
+  if (name.length == 0) {
+    if (error != nil) {
+      *error = [NSError errorWithDomain:X1BoxNativeBridgeErrorDomain
+                                   code:30
+                               userInfo:@{NSLocalizedDescriptionKey: @"Snapshot name is empty."}];
+    }
+    return NO;
+  }
+
+  if (!NativeSnapshotAPIIsLinked()) {
+    if (error != nil) {
+      *error = [NSError errorWithDomain:X1BoxNativeBridgeErrorDomain
+                                   code:31
+                               userInfo:@{NSLocalizedDescriptionKey: @"Native snapshot APIs are not linked into the current core build yet."}];
+    }
+    return NO;
+  }
+
+  Error *snapshotError = nullptr;
+  if (!save_snapshot(name.UTF8String, true, nullptr, false, nullptr, &snapshotError)) {
+    _state.statusLine = "Native snapshot save failed.";
+    [self syncController];
+    if (error != nil) {
+      *error = SnapshotNSError(32, "Failed to save native snapshot.", snapshotError);
+    }
+    return NO;
+  }
+
+  _state.statusLine = "Native snapshot saved through the core snapshot API.";
+  [self syncController];
+  return YES;
+}
+
+- (BOOL)loadNativeSnapshotNamed:(NSString *)name error:(NSError * _Nullable __autoreleasing *)error {
+  if (name.length == 0) {
+    if (error != nil) {
+      *error = [NSError errorWithDomain:X1BoxNativeBridgeErrorDomain
+                                   code:33
+                               userInfo:@{NSLocalizedDescriptionKey: @"Snapshot name is empty."}];
+    }
+    return NO;
+  }
+
+  if (!NativeSnapshotAPIIsLinked()) {
+    if (error != nil) {
+      *error = [NSError errorWithDomain:X1BoxNativeBridgeErrorDomain
+                                   code:34
+                               userInfo:@{NSLocalizedDescriptionKey: @"Native snapshot APIs are not linked into the current core build yet."}];
+    }
+    return NO;
+  }
+
+  Error *snapshotError = nullptr;
+  if (!load_snapshot(name.UTF8String, nullptr, false, nullptr, &snapshotError)) {
+    _state.statusLine = "Native snapshot load failed.";
+    [self syncController];
+    if (error != nil) {
+      *error = SnapshotNSError(35, "Failed to load native snapshot.", snapshotError);
+    }
+    return NO;
+  }
+
+  _state.statusLine = "Native snapshot restored through the core snapshot API.";
+  [self syncController];
+  return YES;
+}
+
+- (BOOL)deleteNativeSnapshotNamed:(NSString *)name error:(NSError * _Nullable __autoreleasing *)error {
+  if (name.length == 0) {
+    if (error != nil) {
+      *error = [NSError errorWithDomain:X1BoxNativeBridgeErrorDomain
+                                   code:36
+                               userInfo:@{NSLocalizedDescriptionKey: @"Snapshot name is empty."}];
+    }
+    return NO;
+  }
+
+  if (!NativeSnapshotAPIIsLinked()) {
+    if (error != nil) {
+      *error = [NSError errorWithDomain:X1BoxNativeBridgeErrorDomain
+                                   code:37
+                               userInfo:@{NSLocalizedDescriptionKey: @"Native snapshot APIs are not linked into the current core build yet."}];
+    }
+    return NO;
+  }
+
+  Error *snapshotError = nullptr;
+  if (!delete_snapshot(name.UTF8String, false, nullptr, &snapshotError)) {
+    _state.statusLine = "Native snapshot delete failed.";
+    [self syncController];
+    if (error != nil) {
+      *error = SnapshotNSError(38, "Failed to delete native snapshot.", snapshotError);
+    }
+    return NO;
+  }
+
+  _state.statusLine = "Native snapshot removed through the core snapshot API.";
+  [self syncController];
+  return YES;
 }
 
 - (void)updateVirtualButton:(NSString *)name pressed:(BOOL)pressed {

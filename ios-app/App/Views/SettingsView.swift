@@ -2,12 +2,16 @@ import SwiftUI
 
 struct SettingsView: View {
   @ObservedObject var store: SettingsStore
+  @ObservedObject var setupStore: SetupAssetStore
   let onDismiss: () -> Void
 
   @State private var draft: EmulatorSettings
+  @State private var isImportingEEPROM = false
+  @State private var assetErrorMessage: String?
 
-  init(store: SettingsStore, onDismiss: @escaping () -> Void) {
+  init(store: SettingsStore, setupStore: SetupAssetStore, onDismiss: @escaping () -> Void) {
     self.store = store
+    self.setupStore = setupStore
     self.onDismiss = onDismiss
     _draft = State(initialValue: store.settings)
   }
@@ -155,6 +159,10 @@ struct SettingsView: View {
         }
 
         Section("EEPROM") {
+          Text(setupStore.summary.record(for: .eeprom)?.displayName ?? "No EEPROM imported yet.")
+            .font(.footnote)
+            .foregroundStyle(XboxTheme.muted)
+
           Picker("Language", selection: $draft.eeprom.language) {
             ForEach(XboxEepromEditor.Language.allCases, id: \.rawValue) { language in
               Text(language.rawValue.capitalized).tag(language.rawValue)
@@ -164,6 +172,28 @@ struct SettingsView: View {
             ForEach(XboxEepromEditor.VideoStandard.allCases, id: \.rawValue) { standard in
               Text(standard.rawValue.uppercased()).tag(standard.rawValue)
             }
+          }
+
+          Button("Import EEPROM") {
+            isImportingEEPROM = true
+          }
+
+          if setupStore.summary.record(for: .eeprom) != nil {
+            Button("Clear EEPROM") {
+              do {
+                try setupStore.removeSelection(for: .eeprom)
+                assetErrorMessage = nil
+              } catch {
+                assetErrorMessage = error.localizedDescription
+              }
+            }
+            .foregroundStyle(.red)
+          }
+
+          if let assetErrorMessage {
+            Text(assetErrorMessage)
+              .font(.footnote)
+              .foregroundStyle(.red)
           }
         }
       }
@@ -185,5 +215,23 @@ struct SettingsView: View {
       }
     }
     .preferredColorScheme(.dark)
+    .fileImporter(
+      isPresented: $isImportingEEPROM,
+      allowedContentTypes: [.data, .item],
+      allowsMultipleSelection: false
+    ) { result in
+      switch result {
+      case .success(let urls):
+        guard let url = urls.first else { return }
+        do {
+          try setupStore.importSelection(from: url, kind: .eeprom)
+          assetErrorMessage = nil
+        } catch {
+          assetErrorMessage = error.localizedDescription
+        }
+      case .failure(let error):
+        assetErrorMessage = error.localizedDescription
+      }
+    }
   }
 }

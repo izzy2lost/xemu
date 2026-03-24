@@ -13,6 +13,7 @@ final class EmulatorSession: ObservableObject {
     var launchKind: String?
     var relativePath: String?
     var storedConfigPath: String?
+    var nativeSnapshotName: String?
 
     var id: Int { slotNumber }
     var isOccupied: Bool { launchKind != nil }
@@ -26,7 +27,8 @@ final class EmulatorSession: ObservableObject {
           createdAt: nil,
           launchKind: nil,
           relativePath: nil,
-          storedConfigPath: nil
+          storedConfigPath: nil,
+          nativeSnapshotName: nil
         )
       }
     }
@@ -142,6 +144,7 @@ final class EmulatorSession: ObservableObject {
     var slot = slots[slotIndex]
     slot.createdAt = Date()
     slot.storedConfigPath = configCopyPath
+    let nativeSnapshotName = "ios-slot-\(slotNumber)"
 
     switch target {
     case .dashboard:
@@ -154,6 +157,18 @@ final class EmulatorSession: ObservableObject {
       slot.detail = "Relaunches \(title) from the last saved shell slot."
       slot.launchKind = "game"
       slot.relativePath = relativePath
+    }
+
+    if bridge.canUseNativeSnapshots() {
+      var snapshotError: NSError?
+      if bridge.saveNativeSnapshotNamed(nativeSnapshotName, error: &snapshotError) {
+        slot.nativeSnapshotName = nativeSnapshotName
+        slot.detail += " Native memory-state snapshot is available for this slot."
+      } else if let snapshotError {
+        throw snapshotError
+      }
+    } else {
+      slot.nativeSnapshotName = nil
     }
 
     slots[slotIndex] = slot
@@ -171,8 +186,18 @@ final class EmulatorSession: ObservableObject {
       ])
     }
 
+    let nativeSnapshotName = slots[slotIndex].nativeSnapshotName
     slots[slotIndex] = SnapshotSlot.emptySlots()[slotNumber - 1]
     snapshotSlots = slots
+
+    if let nativeSnapshotName,
+       bridge.canUseNativeSnapshots() {
+      var snapshotError: NSError?
+      if !bridge.deleteNativeSnapshotNamed(nativeSnapshotName, error: &snapshotError),
+         let snapshotError {
+        throw snapshotError
+      }
+    }
 
     let configURL = try AppPaths.snapshotConfigURL(slotNumber: slotNumber)
     if FileManager.default.fileExists(atPath: configURL.path) {
@@ -262,6 +287,29 @@ final class EmulatorSession: ObservableObject {
     encoder.dateEncodingStrategy = .iso8601
     let data = try encoder.encode(snapshotSlots)
     try data.write(to: manifestURL, options: .atomic)
+  }
+
+  func restoreNativeSnapshotIfAvailable(for slot: SnapshotSlot) throws -> Bool {
+    guard let nativeSnapshotName = slot.nativeSnapshotName else {
+      return false
+    }
+
+    guard bridge.canUseNativeSnapshots() else {
+      return false
+    }
+
+    var snapshotError: NSError?
+    if bridge.loadNativeSnapshotNamed(nativeSnapshotName, error: &snapshotError) {
+      snapshotActionMessage = "Loaded native snapshot for slot \(slot.slotNumber)."
+      snapshotActionError = nil
+      return true
+    }
+
+    if let snapshotError {
+      throw snapshotError
+    }
+
+    return false
   }
 
   private func applyEEPROMOverridesIfNeeded(setup: SetupSummary, settings: EmulatorSettings) throws {
