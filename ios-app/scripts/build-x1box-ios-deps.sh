@@ -147,6 +147,7 @@ install_triplet() {
     "glib",
     "libffi",
     "libpng",
+    "libsamplerate",
     "libslirp",
     "pcre2",
     "pixman",
