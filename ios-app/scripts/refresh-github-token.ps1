@@ -84,8 +84,10 @@ function Assert-TokenLooksValid {
     [Parameter(Mandatory = $true)][hashtable]$TokenInfo
   )
 
-  if ($TokenInfo.Value.Length -lt 20) {
-    throw "The GitHub token loaded from $($TokenInfo.Source) looks invalid. Re-run set-github-token.cmd and paste the full PAT again."
+  $looksLikeGitHubToken = $TokenInfo.Value -match '^(github_pat_|gh[pousr]_)'
+  if ($TokenInfo.Value.Length -lt 20 -or -not $looksLikeGitHubToken) {
+    $prefix = $TokenInfo.Value.Substring(0, [Math]::Min(8, $TokenInfo.Value.Length))
+    throw "The value loaded from $($TokenInfo.Source) does not look like a GitHub token. Current prefix: '$prefix'. Re-run set-github-token.cmd and copy only the PAT."
   }
 }
 

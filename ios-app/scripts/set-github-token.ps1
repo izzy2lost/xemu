@@ -10,6 +10,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $plainToken = $null
 
+function Test-LooksLikeGitHubToken {
+  param([string]$Value)
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    return $false
+  }
+
+  return $Value -match '^(github_pat_|gh[pousr]_)'
+}
+
 function Read-MaskedToken {
   param([string]$Prompt)
 
@@ -54,8 +64,8 @@ try {
     $plainToken = ([regex]::Replace((Read-MaskedToken -Prompt "Paste the GitHub token"), "\s+", "")).Trim()
   }
 
-  if ([string]::IsNullOrWhiteSpace($plainToken) -or $plainToken.Length -lt 20) {
-    throw "The entered token looks invalid. Paste the full GitHub token and try again."
+  if ([string]::IsNullOrWhiteSpace($plainToken) -or $plainToken.Length -lt 20 -or -not (Test-LooksLikeGitHubToken -Value $plainToken)) {
+    throw "The entered value does not look like a GitHub token. Copy the PAT itself from GitHub and try again."
   }
 
   switch ($Scope) {

@@ -70,8 +70,9 @@ function Get-GitHubToken {
 function Assert-GitHubTokenLooksValid {
   param([Parameter(Mandatory = $true)][string]$Token)
 
-  if ($Token.Length -lt 20) {
-    throw "The stored GitHub token looks invalid. Re-run set-github-token.cmd and paste the full PAT again."
+  if ($Token.Length -lt 20 -or -not ($Token -match '^(github_pat_|gh[pousr]_)')) {
+    $prefix = $Token.Substring(0, [Math]::Min(8, $Token.Length))
+    throw "The stored GitHub token does not look valid. Current prefix: '$prefix'. Re-run set-github-token.cmd and copy only the PAT."
   }
 }
 
