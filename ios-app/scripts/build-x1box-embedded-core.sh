@@ -26,6 +26,27 @@ BUILD_ROOT="${X1BOX_IOS_EMBEDDED_CORE_BUILD_ROOT:-${REPO_ROOT}/build/ios-embedde
 MIN_IOS_VERSION="${X1BOX_IOS_MIN_VERSION:-17.0}"
 SIMULATOR_ARCH="${X1BOX_IOS_SIMULATOR_ARCH:-auto}"
 
+resolve_deps_root() {
+  local candidate_root="$1"
+  local nested_root
+
+  if [[ -d "${candidate_root}/device" && -d "${candidate_root}/simulator" ]]; then
+    printf '%s\n' "${candidate_root}"
+    return 0
+  fi
+
+  if [[ -d "${candidate_root}/artifacts" ]]; then
+    while IFS= read -r -d '' nested_root; do
+      if [[ -d "${nested_root}/device" && -d "${nested_root}/simulator" ]]; then
+        printf '%s\n' "${nested_root}"
+        return 0
+      fi
+    done < <(find "${candidate_root}/artifacts" -mindepth 1 -maxdepth 1 -type d -print0)
+  fi
+
+  printf '%s\n' "${candidate_root}"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --deps-root)
@@ -60,6 +81,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -n "${DEPS_ROOT}" ]]; then
+  DEPS_ROOT="$(resolve_deps_root "${DEPS_ROOT}")"
   : "${DEVICE_DEPS:=${DEPS_ROOT}/device}"
   : "${SIMULATOR_DEPS:=${DEPS_ROOT}/simulator}"
 fi
