@@ -181,6 +181,8 @@ configure_and_build() {
   local dylib_path
   local native_clang
   local native_clangxx
+  local native_sdkroot
+  local native_cflags
 
   configure_cpu_name="$(configure_cpu "$(echo "${triple}" | cut -d- -f1)")"
   sdkroot="$(xcrun --sdk "${sdk}" --show-sdk-path)"
@@ -188,6 +190,7 @@ configure_and_build() {
   clangxx="$(xcrun --sdk "${sdk}" --find clang++)"
   native_clang="$(xcrun --sdk macosx --find clang)"
   native_clangxx="$(xcrun --sdk macosx --find clang++)"
+  native_sdkroot="$(xcrun --sdk macosx --show-sdk-path)"
   ar="$(xcrun --sdk "${sdk}" --find ar)"
   nm="$(xcrun --sdk "${sdk}" --find nm)"
   ranlib="$(xcrun --sdk "${sdk}" --find ranlib)"
@@ -195,6 +198,7 @@ configure_and_build() {
 
   cflags="--target=${triple} -isysroot ${sdkroot} ${min_flag}"
   ldflags="--target=${triple} -isysroot ${sdkroot} ${min_flag}"
+  native_cflags="-isysroot ${native_sdkroot}"
 
   mkdir -p "${build_dir}"
   pushd "${build_dir}" >/dev/null
@@ -217,6 +221,9 @@ configure_and_build() {
     --cpu="${configure_cpu_name}" \
     --host-cc="${native_clang}" \
     --host-cxx="${native_clangxx}" \
+    --host-cflags="${native_cflags}" \
+    --host-cxxflags="${native_cflags}" \
+    --host-ldflags="${native_cflags}" \
     --target-list=i386-softmmu \
     --disable-docs \
     --disable-tools \

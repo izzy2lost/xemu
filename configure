@@ -178,6 +178,9 @@ cross_compile="no"
 cross_prefix=""
 host_cc="cc"
 host_cxx="c++"
+host_cflags=""
+host_cxxflags=""
+host_ldflags=""
 EXTRA_CFLAGS=""
 EXTRA_CXXFLAGS=""
 EXTRA_OBJCFLAGS=""
@@ -643,6 +646,12 @@ for opt do
   ;;
   --host-cxx=*) host_cxx="$optarg"
   ;;
+  --host-cflags=*) host_cflags="$optarg"
+  ;;
+  --host-cxxflags=*) host_cxxflags="$optarg"
+  ;;
+  --host-ldflags=*) host_ldflags="$optarg"
+  ;;
   --cxx=*)
   ;;
   --objcc=*)
@@ -880,6 +889,9 @@ Advanced options (experts only):
                            at build time [$host_cc]
   --host-cxx=CXX          when cross compiling, use C++ compiler CXX for code run
                            at build time [$host_cxx]
+  --host-cflags=CFLAGS     extra C compiler flags for build-machine tools [$host_cflags]
+  --host-cxxflags=CXXFLAGS extra C++ compiler flags for build-machine tools [$host_cxxflags]
+  --host-ldflags=LDFLAGS   extra linker flags for build-machine tools [$host_ldflags]
   --cxx=CXX                use C++ compiler CXX [$cxx]
   --objcc=OBJCC            use Objective-C compiler OBJCC [$objcc]
   --rustc=RUSTC            use Rust compiler RUSTC [$rustc]
@@ -1970,6 +1982,12 @@ if test "$skip_meson" = no; then
     if test "$rust" != disabled; then
       echo "rust = [$(meson_quote $rustc)]" >> $native
     fi
+    echo >> $native
+    echo "[built-in options]" >> $native
+    echo "c_args = [$(meson_quote $host_cflags)]" >> $native
+    echo "cpp_args = [$(meson_quote $host_cxxflags)]" >> $native
+    echo "c_link_args = [$(meson_quote $host_cflags $host_ldflags)]" >> $native
+    echo "cpp_link_args = [$(meson_quote $host_cxxflags $host_ldflags)]" >> $native
     mv $native config-meson.native
     meson_option_add --native-file
     meson_option_add config-meson.native
