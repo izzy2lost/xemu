@@ -30,7 +30,17 @@
 #define GLOFFSCREEN_H_
 
 #include <stdbool.h>
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#include <OpenGLES/ES3/gl.h>
+#include <OpenGLES/ES3/glext.h>
+#else
 #include <epoxy/gl.h>
+#endif
 
 /* Used to hold data for the OpenGL context */
 struct _GloContext;

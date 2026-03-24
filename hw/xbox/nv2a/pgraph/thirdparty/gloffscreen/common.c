@@ -69,5 +69,34 @@ void glo_readpixels(GLenum gl_format, GLenum gl_type,
 
 bool glo_check_extension(const char* ext_name)
 {
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    size_t ext_name_len;
+    const char *extensions;
+    const char *match;
+
+    if (!ext_name || !*ext_name) {
+        return false;
+    }
+
+    extensions = (const char *)glGetString(GL_EXTENSIONS);
+    if (!extensions) {
+        return false;
+    }
+
+    ext_name_len = strlen(ext_name);
+    match = extensions;
+    while ((match = strstr(match, ext_name)) != NULL) {
+        bool at_word_start = (match == extensions) || (match[-1] == ' ');
+        bool at_word_end = (match[ext_name_len] == '\0') ||
+                           (match[ext_name_len] == ' ');
+        if (at_word_start && at_word_end) {
+            return true;
+        }
+        match += ext_name_len;
+    }
+
+    return false;
+#else
     return epoxy_has_gl_extension(ext_name);
+#endif
 }
