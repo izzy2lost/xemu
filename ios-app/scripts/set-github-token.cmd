@@ -1,3 +1,5 @@
 @echo off
 setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0set-github-token.ps1" %*
+set "SCRIPT_DIR=%~dp0"
+if /I "%SCRIPT_DIR:~0,4%"=="\\?\" set "SCRIPT_DIR=%SCRIPT_DIR:~4%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%set-github-token.ps1" %*
