@@ -32,6 +32,11 @@ on:
         required: false
         default: x1box-ios-embedded-core
         type: string
+  workflow_run:
+    workflows:
+      - Build iOS Dependencies
+    types:
+      - completed
 
 permissions:
   actions: read
@@ -40,6 +45,7 @@ permissions:
 jobs:
   build_embedded_core:
     name: Build embedded iOS core
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: macos-15
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
@@ -50,14 +56,38 @@ jobs:
       - name: Set up Python tooling
         run: python3 -m pip install --upgrade meson ninja
 
+      - name: Resolve dependency bundle source
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          run_id="${{ inputs.deps_run_id }}"
+          artifact_name="${{ inputs.deps_artifact_name || 'x1box-ios-deps' }}"
+          source_label="manual input"
+
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            run_id="${{ github.event.workflow_run.id }}"
+            artifact_name="x1box-ios-deps"
+            source_label="workflow_run"
+          elif [[ -z "${run_id}" ]]; then
+            source_label="not provided"
+          fi
+
+          {
+            echo "run_id=${run_id}"
+            echo "artifact_name=${artifact_name}"
+            echo "source_label=${source_label}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Download dependency bundle
-        if: ${{ inputs.deps_run_id != '' }}
+        if: ${{ steps.deps.outputs.run_id != '' }}
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
         with:
-          name: ${{ inputs.deps_artifact_name || 'x1box-ios-deps' }}
+          name: ${{ steps.deps.outputs.artifact_name }}
           path: build/ios-core-deps
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.deps_run_id }}
+          run-id: ${{ steps.deps.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build embedded core xcframework
@@ -74,8 +104,10 @@ jobs:
           {
             echo "## X1 BOX Embedded iOS Core"
             echo
-            echo "- Dependency run id: \`${{ inputs.deps_run_id || 'local workspace' }}\`"
-            echo "- Dependency artifact: \`${{ inputs.deps_artifact_name || 'x1box-ios-deps' }}\`"
+            echo "- Trigger event: \`${{ github.event_name }}\`"
+            echo "- Dependency source: \`${{ steps.deps.outputs.source_label }}\`"
+            echo "- Dependency run id: \`${{ steps.deps.outputs.run_id || 'local workspace' }}\`"
+            echo "- Dependency artifact: \`${{ steps.deps.outputs.artifact_name || 'x1box-ios-deps' }}\`"
             echo "- Minimum iOS: \`${{ inputs.min_ios_version || '17.0' }}\`"
             echo "- Simulator arch: \`${{ inputs.simulator_arch || 'auto' }}\`"
             echo "- Output artifact: \`${{ inputs.artifact_name || 'x1box-ios-embedded-core' }}\`"

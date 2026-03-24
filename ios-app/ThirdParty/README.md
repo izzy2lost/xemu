@@ -11,13 +11,21 @@ Each prefix should contain the pkg-config metadata and libraries needed by the
 upstream Meson build when `-Dx1box_ios_embedded_core=true`, such as:
 
 - SDL2
-- libepoxy
 - pixman-1
 - glib-2.0
 - gio-2.0
 - gobject-2.0
 - libslirp
 - libpng
+- zlib
+- pcre2
+- libffi
+
+The recommended path is now automated:
+
+- [build-ios-deps.yml](C:\Users\AlejandroMazabuel\Documents\New project\.github\workflows\build-ios-deps.yml) builds the dependency bundle on macOS.
+- [build-x1box-ios-deps.sh](C:\Users\AlejandroMazabuel\Documents\New project\ios-app\scripts\build-x1box-ios-deps.sh) uses repo-owned overlay triplets under [vcpkg-triplets](C:\Users\AlejandroMazabuel\Documents\New project\ios-app\vcpkg-triplets) to generate the `x1box-ios-deps` artifact.
+- [build-ios-embedded-core.yml](C:\Users\AlejandroMazabuel\Documents\New project\.github\workflows\build-ios-embedded-core.yml) can then consume that artifact directly.
 
 The script [build-x1box-embedded-core.sh](C:\Users\AlejandroMazabuel\Documents\New project\ios-app\scripts\build-x1box-embedded-core.sh) accepts either:
 

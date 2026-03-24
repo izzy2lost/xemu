@@ -1,0 +1,67 @@
+name: Build iOS Dependencies
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_ios_version:
+        description: Minimum iOS version used for the dependency prefixes
+        required: false
+        default: "17.0"
+        type: string
+      simulator_arch:
+        description: Simulator architecture
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - arm64
+          - x86_64
+      artifact_name:
+        description: Artifact name used when uploading the dependency bundle
+        required: false
+        default: x1box-ios-deps
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build_ios_deps:
+    name: Build iOS dependency bundle
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build dependency prefixes
+        env:
+          X1BOX_IOS_MIN_VERSION: ${{ inputs.min_ios_version || '17.0' }}
+          X1BOX_IOS_SIMULATOR_ARCH: ${{ inputs.simulator_arch || 'auto' }}
+          X1BOX_IOS_DEPS_ARTIFACT_NAME: ${{ inputs.artifact_name || 'x1box-ios-deps' }}
+          X1BOX_IOS_DEPS_BUILD_ROOT: ${{ github.workspace }}/build/ios-deps
+        run: bash ios-app/scripts/build-x1box-ios-deps.sh
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## X1 BOX iOS Dependency Bundle"
+            echo
+            echo "- Minimum iOS: \`${{ inputs.min_ios_version || '17.0' }}\`"
+            echo "- Simulator arch: \`${{ inputs.simulator_arch || 'auto' }}\`"
+            echo "- Output artifact: \`${{ inputs.artifact_name || 'x1box-ios-deps' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload dependency artifact
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
+        with:
+          name: ${{ inputs.artifact_name || 'x1box-ios-deps' }}
+          path: |
+            build/ios-deps/artifacts/${{ inputs.artifact_name || 'x1box-ios-deps' }}
+            build/ios-deps/logs
+          if-no-files-found: warn
+          compression-level: 0

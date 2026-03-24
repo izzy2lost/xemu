@@ -8,6 +8,13 @@ param(
   [string]$Ref = "master",
   [string]$SimDestination = "platform=iOS Simulator,name=iPhone 16,OS=latest",
   [bool]$RunDeviceBuild = $true,
+  [string]$MinIosVersion = "17.0",
+  [ValidateSet("auto", "arm64", "x86_64")]
+  [string]$SimulatorArch = "auto",
+  [Nullable[int64]]$DepsRunId = $null,
+  [string]$DepsArtifactName = "x1box-ios-deps",
+  [Nullable[int64]]$EmbeddedCoreRunId = $null,
+  [string]$EmbeddedCoreArtifactName = "x1box-ios-embedded-core",
   [string]$ArtifactName = "x1box-ios-ci",
   [string]$OutputDirectory = "build/fork-ios-ci",
   [string]$StatusFileName = "latest-status.json",
@@ -100,19 +107,52 @@ function Start-WorkflowRun {
     [string]$BranchRef,
     [string]$SimulatorDestination,
     [bool]$ShouldRunDeviceBuild,
+    [string]$MinimumIosVersion,
+    [string]$SimulatorArchitecture,
+    [Nullable[int64]]$DependencyRunId,
+    [string]$DependencyArtifactName,
+    [Nullable[int64]]$EmbeddedCoreWorkflowRunId,
+    [string]$EmbeddedCoreArtifactLabel,
     [string]$ArtifactLabel
   )
 
   $repoParts = Get-RepositoryParts -Repository $Repository
   $dispatchUri = "https://api.github.com/repos/$($repoParts.Owner)/$($repoParts.Name)/actions/workflows/$WorkflowFile/dispatches"
 
+  $inputs = @{}
+
+  switch ($WorkflowFile) {
+    "build-ios-app.yml" {
+      $inputs.sim_destination = $SimulatorDestination
+      $inputs.run_device_build = if ($ShouldRunDeviceBuild) { "true" } else { "false" }
+      $inputs.artifact_name = $ArtifactLabel
+      if ($EmbeddedCoreWorkflowRunId) {
+        $inputs.embedded_core_run_id = [string]$EmbeddedCoreWorkflowRunId
+        $inputs.embedded_core_artifact_name = $EmbeddedCoreArtifactLabel
+      }
+    }
+    "build-ios-embedded-core.yml" {
+      $inputs.min_ios_version = $MinimumIosVersion
+      $inputs.simulator_arch = $SimulatorArchitecture
+      $inputs.artifact_name = $ArtifactLabel
+      if ($DependencyRunId) {
+        $inputs.deps_run_id = [string]$DependencyRunId
+        $inputs.deps_artifact_name = $DependencyArtifactName
+      }
+    }
+    "build-ios-deps.yml" {
+      $inputs.min_ios_version = $MinimumIosVersion
+      $inputs.simulator_arch = $SimulatorArchitecture
+      $inputs.artifact_name = $ArtifactLabel
+    }
+    default {
+      throw "Unsupported workflow file for dispatch automation: $WorkflowFile"
+    }
+  }
+
   $body = @{
     ref = $BranchRef
-    inputs = @{
-      sim_destination = $SimulatorDestination
-      run_device_build = if ($ShouldRunDeviceBuild) { "true" } else { "false" }
-      artifact_name = $ArtifactLabel
-    }
+    inputs = $inputs
   }
 
   Invoke-GitHubApi -Method POST -Uri $dispatchUri -Body $body | Out-Null
@@ -132,10 +172,6 @@ function Get-LatestWorkflowRun {
   $response = Invoke-GitHubApi -Method GET -Uri $runsUri
 
   $candidate = $response.workflow_runs |
-    Where-Object {
-      $_.name -eq "Build iOS App" -and
-      ($_.event -eq "workflow_dispatch" -or $_.event -eq "push" -or $_.event -eq "pull_request")
-    } |
     Sort-Object created_at -Descending |
     Select-Object -First 1
 
@@ -315,6 +351,12 @@ if ($Mode -eq "dispatch" -or $Mode -eq "full") {
     -BranchRef $Ref `
     -SimulatorDestination $SimDestination `
     -ShouldRunDeviceBuild $RunDeviceBuild `
+    -MinimumIosVersion $MinIosVersion `
+    -SimulatorArchitecture $SimulatorArch `
+    -DependencyRunId $DepsRunId `
+    -DependencyArtifactName $DepsArtifactName `
+    -EmbeddedCoreWorkflowRunId $EmbeddedCoreRunId `
+    -EmbeddedCoreArtifactLabel $EmbeddedCoreArtifactName `
     -ArtifactLabel $ArtifactName
 
   if (-not $RunId) {

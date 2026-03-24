@@ -120,9 +120,16 @@ DEVICE_BUILD_DIR="${BUILD_ROOT}/iphoneos"
 SIMULATOR_BUILD_DIR="${BUILD_ROOT}/iphonesimulator"
 LOG_DIR="${BUILD_ROOT}/logs"
 PKG_CONFIG_BIN="$(command -v pkg-config)"
+PKG_CONFIG_WRAPPER="${BUILD_ROOT}/pkg-config-static.sh"
 
 rm -rf "${BUILD_ROOT}"
 mkdir -p "${ARTIFACT_ROOT}" "${LOG_DIR}"
+
+cat > "${PKG_CONFIG_WRAPPER}" <<EOF
+#!/usr/bin/env bash
+exec "${PKG_CONFIG_BIN}" --static "\$@"
+EOF
+chmod +x "${PKG_CONFIG_WRAPPER}"
 
 configure_cpu() {
   case "$1" in
@@ -174,7 +181,7 @@ configure_and_build() {
   export NM="${nm}"
   export RANLIB="${ranlib}"
   export STRIP="${strip}"
-  export PKG_CONFIG="${PKG_CONFIG_BIN}"
+  export PKG_CONFIG="${PKG_CONFIG_WRAPPER}"
   export PKG_CONFIG_ALLOW_CROSS=1
   export PKG_CONFIG_PATH="${dep_prefix}/lib/pkgconfig"
   export PKG_CONFIG_LIBDIR="${dep_prefix}/lib/pkgconfig"

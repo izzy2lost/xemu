@@ -1849,7 +1849,11 @@ if not get_option('coreaudio').auto() or (host_os == 'darwin' and have_system)
                          required: get_option('coreaudio'))
 endif
 
-epoxy = dependency('epoxy', required: true)
+if host_os == 'darwin' and get_option('x1box_ios_embedded_core')
+  epoxy = declare_dependency()
+else
+  epoxy = dependency('epoxy', required: true)
+endif
 
 opengl = not_found
 if not get_option('opengl').auto() or have_system or have_vhost_user_gpu

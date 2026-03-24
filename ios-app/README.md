@@ -66,13 +66,17 @@ If you download the output of the embedded-core CI workflow, `ios-app/scripts/pr
 From this Windows workspace, the most reliable way to validate the iOS project is through GitHub Actions on macOS.
 
 - The repository now includes `.github/workflows/build-ios-app.yml`.
+- The repository now includes `.github/workflows/build-ios-deps.yml` to build the `x1box-ios-deps` artifact on macOS.
 - The repository now includes `.github/workflows/build-ios-embedded-core.yml` for the macOS-side `libxemu-ios-core.dylib` / `X1BoxEmbeddedCore.xcframework` packaging path.
 - The repository also includes `.github/workflows/ios-workflow-followup.yml` for default-branch `workflow_run` follow-up, while feature branches publish the same summary/comment artifact inline from `build-ios-app.yml`.
 - That workflow builds the app for iOS Simulator, runs the `X1BoxiOSTests` suite, and also performs a generic iOS device build with signing disabled.
 - The helper script `ios-app/scripts/ci-build-ios.sh` is the single source of truth for those `xcodebuild` commands, so the same flow can be reused locally on macOS.
+- `build-ios-deps.yml` now generates the dependency bundle using overlay triplets in `ios-app/vcpkg-triplets/`.
+- `build-ios-embedded-core.yml` can now react to `Build iOS Dependencies` via `workflow_run`, download `x1box-ios-deps`, and produce `x1box-ios-embedded-core`.
 - `build-ios-app.yml` can now optionally download a prior `x1box-ios-embedded-core` artifact and stage it into `ios-app/EmbeddedCore/` before the Xcode build starts.
 - After this lands on a default branch, `build-ios-app.yml` can also react to `Build iOS Embedded Core` via `workflow_run`, download that run's default `x1box-ios-embedded-core` artifact, and validate the shell against the packaged core automatically.
 - The bridge script `ios-app/scripts/fork-workflow-bridge.ps1` can dispatch the workflow on your fork, wait for completion, and download both the main iOS CI artifact and the follow-up summary artifact back into this workspace.
+- `ios-app/scripts/refresh-github-token.ps1` can validate a newly created GitHub token against your fork, confirm workflow visibility, and load it into the current process or user environment without writing the secret into repo files.
 - The follow-up workflow publishes a compact summary artifact for every run, includes failed jobs and failing steps, and updates the related pull request comment when the run belongs to a PR.
 
 This is the practical answer to "can we program this correctly from here?": yes, by pairing this Windows editing environment with remote macOS CI for every iOS iteration, and by letting GitHub itself react on every workflow use.
@@ -103,6 +107,20 @@ Examples:
 ```
 
 That makes the script suitable for automatic periodic checks: a scheduler can run `-Mode Sync` every hour, and the bridge will keep the latest JSON summary updated while only downloading artifacts for new successful runs.
+
+The bridge now understands the three iOS workflow layers directly:
+
+- `build-ios-deps.yml`
+- `build-ios-embedded-core.yml`
+- `build-ios-app.yml`
+
+Examples:
+
+```powershell
+.\ios-app\scripts\fork-workflow-bridge.ps1 -Workflow "build-ios-deps.yml" -ArtifactName "x1box-ios-deps"
+.\ios-app\scripts\fork-workflow-bridge.ps1 -Workflow "build-ios-embedded-core.yml" -ArtifactName "x1box-ios-embedded-core" -DepsRunId 123456789
+.\ios-app\scripts\fork-workflow-bridge.ps1 -Workflow "build-ios-app.yml" -ArtifactName "x1box-ios-ci" -EmbeddedCoreRunId 123456999
+```
 
 ## Official xemu linkage target
 
