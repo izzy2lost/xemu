@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include "noc_file_dialog.h"
 
 const char *noc_file_dialog_open(int flags,
