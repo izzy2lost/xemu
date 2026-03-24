@@ -199,7 +199,6 @@ configure_and_build() {
   mkdir -p "${build_dir}"
   pushd "${build_dir}" >/dev/null
 
-  export SDKROOT="${sdkroot}"
   export CC="${clang}"
   export CXX="${clangxx}"
   export OBJC="${clang}"
