@@ -1,4 +1,4 @@
-﻿--- a/meson.build
+--- a/meson.build
 +++ b/meson.build
 @@ -1,19 +1,21 @@
 -pingtest = executable('pingtest', 'test/pingtest.c',
@@ -41,3 +41,4 @@
 +
 +  test('ncsi', ncsitest)
 +endif
+
