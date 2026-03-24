@@ -2,7 +2,8 @@
 param(
   [ValidateSet("User", "Process")]
   [string]$Scope = "User",
-  [switch]$SetGhTokenAlso
+  [switch]$SetGhTokenAlso,
+  [switch]$FromClipboard
 )
 
 Set-StrictMode -Version Latest
@@ -42,7 +43,12 @@ function Read-MaskedToken {
 }
 
 try {
-  $plainToken = ([regex]::Replace((Read-MaskedToken -Prompt "Paste the GitHub token"), "\s+", "")).Trim()
+  if ($FromClipboard) {
+    $clipboardValue = Get-Clipboard -Raw
+    $plainToken = ([regex]::Replace(($clipboardValue ?? ""), "\s+", "")).Trim()
+  } else {
+    $plainToken = ([regex]::Replace((Read-MaskedToken -Prompt "Paste the GitHub token"), "\s+", "")).Trim()
+  }
 
   if ([string]::IsNullOrWhiteSpace($plainToken) -or $plainToken.Length -lt 20) {
     throw "The entered token looks invalid. Paste the full GitHub token and try again."
