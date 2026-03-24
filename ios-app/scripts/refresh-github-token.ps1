@@ -79,6 +79,16 @@ function Resolve-Token {
   throw "Provide -Token or set GITHUB_TOKEN / GH_TOKEN before running this script."
 }
 
+function Assert-TokenLooksValid {
+  param(
+    [Parameter(Mandatory = $true)][hashtable]$TokenInfo
+  )
+
+  if ($TokenInfo.Value.Length -lt 20) {
+    throw "The GitHub token loaded from $($TokenInfo.Source) looks invalid. Re-run set-github-token.cmd and paste the full PAT again."
+  }
+}
+
 function Invoke-GitHubApi {
   param(
     [Parameter(Mandatory = $true)][string]$Method,
@@ -126,6 +136,7 @@ function Persist-Token {
 }
 
 $tokenInfo = Resolve-Token -ExplicitToken $Token
+Assert-TokenLooksValid -TokenInfo $tokenInfo
 $repoParts = Resolve-RepositoryParts -Repository $Repo
 $repoApiRoot = "https://api.github.com/repos/$($repoParts.Owner)/$($repoParts.Name)"
 

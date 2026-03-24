@@ -67,6 +67,14 @@ function Get-GitHubToken {
   throw "Set GITHUB_TOKEN or GH_TOKEN with repo/actions permissions before using this bridge."
 }
 
+function Assert-GitHubTokenLooksValid {
+  param([Parameter(Mandatory = $true)][string]$Token)
+
+  if ($Token.Length -lt 20) {
+    throw "The stored GitHub token looks invalid. Re-run set-github-token.cmd and paste the full PAT again."
+  }
+}
+
 function Invoke-GitHubApi {
   param(
     [Parameter(Mandatory = $true)][string]$Method,
@@ -76,6 +84,7 @@ function Invoke-GitHubApi {
   )
 
   $token = Get-GitHubToken
+  Assert-GitHubTokenLooksValid -Token $token
   $headers = @{
     Authorization = "Bearer $token"
     Accept = "application/vnd.github+json"
