@@ -279,6 +279,7 @@
         A13000000000000000000001 /* Sources */,
         A13000000000000000000002 /* Frameworks */,
         A13000000000000000000003 /* Resources */,
+        A1300000000000000000000A /* Embed Optional Embedded Core */,
         A13000000000000000000004 /* Embed Frameworks */,
       );
       buildRules = (
@@ -378,6 +379,27 @@
       runOnlyForDeploymentPostprocessing = 0;
     };
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+    A1300000000000000000000A /* Embed Optional Embedded Core */ = {
+      isa = PBXShellScriptBuildPhase;
+      buildActionMask = 2147483647;
+      files = (
+      );
+      inputFileListPaths = (
+      );
+      inputPaths = (
+      );
+      name = "Embed Optional Embedded Core";
+      outputFileListPaths = (
+      );
+      outputPaths = (
+      );
+      runOnlyForDeploymentPostprocessing = 0;
+      shellPath = /bin/sh;
+      shellScript = "bash \"$SRCROOT/scripts/embed-x1box-core.sh\"\n";
+    };
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
     A13000000000000000000001 /* Sources */ = {

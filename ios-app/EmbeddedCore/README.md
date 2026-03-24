@@ -1,0 +1,28 @@
+# Embedded Core Drop-In
+
+This folder is the packaging hook for a real iOS embedded core image.
+
+Supported drop-in names:
+
+- `X1BoxEmbeddedCore.framework`
+- `libxemu-ios-core.dylib`
+
+How it works:
+
+1. Place a signed framework or dynamic library here before building in Xcode.
+2. The `X1BoxiOS` app target runs `scripts/embed-x1box-core.sh`.
+3. If a matching artifact exists, the build copies it into the app `Frameworks/` folder.
+4. `X1BoxNativeBridge` then tries to load it at runtime and resolve:
+   - `xemu_embedded_*`
+   - `qemu_init`
+   - `qemu_main`
+   - `xemu_settings_*`
+   - snapshot helpers
+
+Recommended path for real device testing:
+
+- Use `X1BoxEmbeddedCore.framework` signed with the same development identity as the app.
+
+Development fallback:
+
+- `libxemu-ios-core.dylib` is also supported by the bridge for experimentation, but a signed framework is the safer route for iPhone/iPad deployment.
