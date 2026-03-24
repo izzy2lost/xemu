@@ -130,7 +130,7 @@ jobs:
 
           artifact_count="$(jq '.total_count // 0' <<<"${artifact_response}")"
           artifact_names="$(jq -r 'if (.artifacts | length) == 0 then "none" else [.artifacts[].name] | join(", ") end' <<<"${artifact_response}")"
-          failed_jobs_json="$(jq -c '[.jobs[] | select((.conclusion // "pending") != "success") | {name, conclusion: (.conclusion // "pending"), steps: [(.steps // [])[] | select((.conclusion // "pending") != "success" and (.conclusion // "pending") != "skipped") | {name, conclusion: (.conclusion // "pending")}]}]' <<<"${jobs_response}")"
+          failed_jobs_json="$(jq -c '[.jobs[] | select((.status // "queued") == "completed" and (.conclusion // "pending") != "success") | {name, conclusion: (.conclusion // "pending"), steps: [(.steps // [])[] | select((.status // "queued") == "completed" and (.conclusion // "pending") != "success" and (.conclusion // "pending") != "skipped") | {name, conclusion: (.conclusion // "pending")}]}]' <<<"${jobs_response}")"
           failed_jobs_markdown="$(jq -r 'if length == 0 then "none" else map("- " + .name + " [" + .conclusion + "]" + (if (.steps | length) > 0 then ": " + ([.steps[] | .name + " [" + .conclusion + "]"] | join(", ")) else "" end)) | join("\n") end' <<<"${failed_jobs_json}")"
           pr_number="${PR_NUMBER_INPUT}"
 
