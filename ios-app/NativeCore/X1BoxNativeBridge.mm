@@ -1,9 +1,11 @@
 #import "X1BoxNativeBridge.h"
 
+#import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 
 #include <dlfcn.h>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -14,6 +16,12 @@ struct strList;
 namespace {
 
 NSString *const X1BoxNativeBridgeErrorDomain = @"X1Box.NativeBridge";
+
+std::mutex gEmbeddedCoreLoaderMutex;
+void *gEmbeddedCoreDynamicHandle = nullptr;
+bool gEmbeddedCoreLoadAttempted = false;
+std::string gEmbeddedCoreDynamicPath;
+std::string gEmbeddedCoreDynamicLoadError;
 
 using EmbeddedBootFn = bool (*)(const char *, const char **);
 using EmbeddedPumpFrameFn = void (*)(void);
@@ -35,103 +43,150 @@ using ErrorFreeFn = void (*)(Error *);
 template <typename T>
 static T ResolveOptionalSymbol(const char *name)
 {
+  std::lock_guard<std::mutex> lock(gEmbeddedCoreLoaderMutex);
+
+  if (!gEmbeddedCoreLoadAttempted && gEmbeddedCoreDynamicHandle == nullptr) {
+    gEmbeddedCoreLoadAttempted = true;
+
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+    NSBundle *mainBundle = [NSBundle mainBundle];
+    NSBundle *bridgeBundle = [NSBundle bundleForClass:[X1BoxNativeBridge class]];
+    NSArray<NSString *> *frameworkRoots = @[
+      mainBundle.privateFrameworksPath ?: @"",
+      bridgeBundle.privateFrameworksPath ?: @"",
+      [bridgeBundle.bundlePath stringByDeletingLastPathComponent]
+    ];
+
+    for (NSString *root in frameworkRoots) {
+      if (root.length == 0) {
+        continue;
+      }
+      [candidates addObject:[root stringByAppendingPathComponent:@"X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore"]];
+      [candidates addObject:[root stringByAppendingPathComponent:@"libxemu-ios-core.dylib"]];
+    }
+
+    NSArray<NSString *> *appSupportRoots = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
+    for (NSString *appSupportRoot in appSupportRoots) {
+      NSString *coreRoot = [appSupportRoot stringByAppendingPathComponent:@"X1Box/EmbeddedCore"];
+      [candidates addObject:[coreRoot stringByAppendingPathComponent:@"X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore"]];
+      [candidates addObject:[coreRoot stringByAppendingPathComponent:@"libxemu-ios-core.dylib"]];
+    }
+
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    for (NSString *candidate in candidates) {
+      if (![fileManager fileExistsAtPath:candidate]) {
+        continue;
+      }
+
+      void *handle = dlopen(candidate.fileSystemRepresentation, RTLD_NOW | RTLD_GLOBAL);
+      if (handle != nullptr) {
+        gEmbeddedCoreDynamicHandle = handle;
+        gEmbeddedCoreDynamicPath = std::string(candidate.UTF8String ? candidate.UTF8String : "");
+        gEmbeddedCoreDynamicLoadError.clear();
+        break;
+      }
+
+      const char *dlError = dlerror();
+      gEmbeddedCoreDynamicLoadError = dlError != nullptr
+        ? std::string(dlError)
+        : std::string("dlopen failed while loading the embedded core image.");
+    }
+
+    if (gEmbeddedCoreDynamicHandle == nullptr && gEmbeddedCoreDynamicLoadError.empty()) {
+      gEmbeddedCoreDynamicLoadError =
+        "No bundled or staged X1BoxEmbeddedCore image was found. Embed a signed "
+        "X1BoxEmbeddedCore.framework into the app bundle to enable real iOS core startup.";
+    }
+  }
+
+  if (gEmbeddedCoreDynamicHandle != nullptr) {
+    T dynamicSymbol = reinterpret_cast<T>(dlsym(gEmbeddedCoreDynamicHandle, name));
+    if (dynamicSymbol != nullptr) {
+      return dynamicSymbol;
+    }
+  }
+
   return reinterpret_cast<T>(dlsym(RTLD_DEFAULT, name));
 }
 
 static EmbeddedBootFn EmbeddedBootSymbol(void)
 {
-  static EmbeddedBootFn symbol = ResolveOptionalSymbol<EmbeddedBootFn>("xemu_embedded_boot");
-  return symbol;
+  return ResolveOptionalSymbol<EmbeddedBootFn>("xemu_embedded_boot");
 }
 
 static EmbeddedPumpFrameFn EmbeddedPumpFrameSymbol(void)
 {
-  static EmbeddedPumpFrameFn symbol = ResolveOptionalSymbol<EmbeddedPumpFrameFn>("xemu_embedded_pump_frame");
-  return symbol;
+  return ResolveOptionalSymbol<EmbeddedPumpFrameFn>("xemu_embedded_pump_frame");
 }
 
 static EmbeddedRequestShutdownFn EmbeddedRequestShutdownSymbol(void)
 {
-  static EmbeddedRequestShutdownFn symbol = ResolveOptionalSymbol<EmbeddedRequestShutdownFn>("xemu_embedded_request_shutdown");
-  return symbol;
+  return ResolveOptionalSymbol<EmbeddedRequestShutdownFn>("xemu_embedded_request_shutdown");
 }
 
 static EmbeddedIsActiveFn EmbeddedIsActiveSymbol(void)
 {
-  static EmbeddedIsActiveFn symbol = ResolveOptionalSymbol<EmbeddedIsActiveFn>("xemu_embedded_is_active");
-  return symbol;
+  return ResolveOptionalSymbol<EmbeddedIsActiveFn>("xemu_embedded_is_active");
 }
 
 static EmbeddedGetLastErrorFn EmbeddedGetLastErrorSymbol(void)
 {
-  static EmbeddedGetLastErrorFn symbol = ResolveOptionalSymbol<EmbeddedGetLastErrorFn>("xemu_embedded_get_last_error");
-  return symbol;
+  return ResolveOptionalSymbol<EmbeddedGetLastErrorFn>("xemu_embedded_get_last_error");
 }
 
 static QemuInitFn QemuInitSymbol(void)
 {
-  static QemuInitFn symbol = ResolveOptionalSymbol<QemuInitFn>("qemu_init");
-  return symbol;
+  return ResolveOptionalSymbol<QemuInitFn>("qemu_init");
 }
 
 static QemuMainFn QemuMainSymbol(void)
 {
-  static QemuMainFn symbol = ResolveOptionalSymbol<QemuMainFn>("qemu_main");
-  return symbol;
+  return ResolveOptionalSymbol<QemuMainFn>("qemu_main");
 }
 
 static XemuSettingsSetPathFn XemuSettingsSetPathSymbol(void)
 {
-  static XemuSettingsSetPathFn symbol = ResolveOptionalSymbol<XemuSettingsSetPathFn>("xemu_settings_set_path");
-  return symbol;
+  return ResolveOptionalSymbol<XemuSettingsSetPathFn>("xemu_settings_set_path");
 }
 
 static XemuSettingsLoadFn XemuSettingsLoadSymbol(void)
 {
-  static XemuSettingsLoadFn symbol = ResolveOptionalSymbol<XemuSettingsLoadFn>("xemu_settings_load");
-  return symbol;
+  return ResolveOptionalSymbol<XemuSettingsLoadFn>("xemu_settings_load");
 }
 
 static XemuSettingsGetErrorMessageFn XemuSettingsGetErrorMessageSymbol(void)
 {
-  static XemuSettingsGetErrorMessageFn symbol = ResolveOptionalSymbol<XemuSettingsGetErrorMessageFn>("xemu_settings_get_error_message");
-  return symbol;
+  return ResolveOptionalSymbol<XemuSettingsGetErrorMessageFn>("xemu_settings_get_error_message");
 }
 
 static QemuSystemPowerdownRequestFn QemuSystemPowerdownRequestSymbol(void)
 {
-  static QemuSystemPowerdownRequestFn symbol = ResolveOptionalSymbol<QemuSystemPowerdownRequestFn>("qemu_system_powerdown_request");
-  return symbol;
+  return ResolveOptionalSymbol<QemuSystemPowerdownRequestFn>("qemu_system_powerdown_request");
 }
 
 static SaveSnapshotFn SaveSnapshotSymbol(void)
 {
-  static SaveSnapshotFn symbol = ResolveOptionalSymbol<SaveSnapshotFn>("save_snapshot");
-  return symbol;
+  return ResolveOptionalSymbol<SaveSnapshotFn>("save_snapshot");
 }
 
 static LoadSnapshotFn LoadSnapshotSymbol(void)
 {
-  static LoadSnapshotFn symbol = ResolveOptionalSymbol<LoadSnapshotFn>("load_snapshot");
-  return symbol;
+  return ResolveOptionalSymbol<LoadSnapshotFn>("load_snapshot");
 }
 
 static DeleteSnapshotFn DeleteSnapshotSymbol(void)
 {
-  static DeleteSnapshotFn symbol = ResolveOptionalSymbol<DeleteSnapshotFn>("delete_snapshot");
-  return symbol;
+  return ResolveOptionalSymbol<DeleteSnapshotFn>("delete_snapshot");
 }
 
 static ErrorGetPrettyFn ErrorGetPrettySymbol(void)
 {
-  static ErrorGetPrettyFn symbol = ResolveOptionalSymbol<ErrorGetPrettyFn>("error_get_pretty");
-  return symbol;
+  return ResolveOptionalSymbol<ErrorGetPrettyFn>("error_get_pretty");
 }
 
 static ErrorFreeFn ErrorFreeSymbol(void)
 {
-  static ErrorFreeFn symbol = ResolveOptionalSymbol<ErrorFreeFn>("error_free");
-  return symbol;
+  return ResolveOptionalSymbol<ErrorFreeFn>("error_free");
 }
 
 struct VirtualAxisState {
@@ -172,6 +227,44 @@ static bool NativeSnapshotAPIIsLinked(void)
          ErrorFreeSymbol() != nullptr;
 }
 
+static void ResetEmbeddedCoreLoadState(void)
+{
+  std::lock_guard<std::mutex> lock(gEmbeddedCoreLoaderMutex);
+  if (gEmbeddedCoreDynamicHandle == nullptr) {
+    gEmbeddedCoreDynamicPath.clear();
+    gEmbeddedCoreDynamicLoadError.clear();
+    gEmbeddedCoreLoadAttempted = false;
+  }
+}
+
+static NSString *EmbeddedCoreDynamicPathString(void)
+{
+  std::lock_guard<std::mutex> lock(gEmbeddedCoreLoaderMutex);
+  return gEmbeddedCoreDynamicPath.empty()
+    ? nil
+    : [NSString stringWithUTF8String:gEmbeddedCoreDynamicPath.c_str()];
+}
+
+static NSString *EmbeddedCoreLoaderStatusString(void)
+{
+  ResolveOptionalSymbol<void *>("xemu_embedded_boot");
+
+  std::lock_guard<std::mutex> lock(gEmbeddedCoreLoaderMutex);
+  std::ostringstream stream;
+
+  if (!gEmbeddedCoreDynamicPath.empty()) {
+    stream << "Dynamic embedded core image loaded.\n";
+    stream << "Path: " << gEmbeddedCoreDynamicPath << "\n";
+    stream << "A bundled signed framework is the preferred path for real iPhone/iPad startup.";
+  } else if (!gEmbeddedCoreDynamicLoadError.empty()) {
+    stream << gEmbeddedCoreDynamicLoadError;
+  } else {
+    stream << "Embedded core loader has not attempted to resolve a dynamic image yet.";
+  }
+
+  return [NSString stringWithUTF8String:stream.str().c_str()];
+}
+
 static NSString *NSStringFromStd(const std::string &value)
 {
   if (value.empty()) {
@@ -209,6 +302,8 @@ static NSError *SnapshotNSError(NSInteger code, const char *fallbackMessage, Err
 
 static NSString *SummaryFromState(const SessionRuntimeState &state)
 {
+  NSString *dynamicCorePath = EmbeddedCoreDynamicPathString();
+  NSString *loaderStatus = EmbeddedCoreLoaderStatusString();
   std::ostringstream stream;
 
   if (!state.running) {
@@ -226,6 +321,11 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
     } else {
       stream << "Embedded xemu symbols are not linked yet.\n";
       stream << "The iOS shell stays usable while the framework waits for the real core link step.\n";
+    }
+    if (dynamicCorePath.length > 0) {
+      stream << "Dynamic core image: " << (dynamicCorePath.UTF8String ? dynamicCorePath.UTF8String : "") << "\n";
+    } else if (loaderStatus.length > 0) {
+      stream << loaderStatus.UTF8String << "\n";
     }
     return [NSString stringWithUTF8String:stream.str().c_str()];
   }
@@ -246,6 +346,10 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
 
   if (!state.statusLine.empty()) {
     stream << state.statusLine << "\n";
+  }
+
+  if (dynamicCorePath.length > 0) {
+    stream << "Dynamic core image: " << (dynamicCorePath.UTF8String ? dynamicCorePath.UTF8String : "") << "\n";
   }
 
   stream << "Buttons tracked: " << state.pressedButtons.size();
@@ -439,6 +543,21 @@ static NSString *SummaryFromState(const SessionRuntimeState &state)
   _state.embeddedHostAPILinked = EmbeddedHostAPIIsLinked();
   [self syncController];
   return self.controller;
+}
+
+- (void)refreshEmbeddedCoreAvailability {
+  ResetEmbeddedCoreLoadState();
+  _state.embeddedCoreLinked = EmbeddedCoreIsLinked();
+  _state.embeddedHostAPILinked = EmbeddedHostAPIIsLinked();
+  [self syncController];
+}
+
+- (NSString *)embeddedCoreStatusSummary {
+  return EmbeddedCoreLoaderStatusString();
+}
+
+- (NSString * _Nullable)resolvedEmbeddedCorePath {
+  return EmbeddedCoreDynamicPathString();
 }
 
 - (BOOL)startSessionWithConfigPath:(NSString *)configPath error:(NSError * _Nullable __autoreleasing *)error {

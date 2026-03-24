@@ -35,6 +35,10 @@ on:
       - "include/ui/xemu-embedded.h"
       - ".github/workflows/build-ios-app.yml"
 
+permissions:
+  actions: write
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -80,3 +84,62 @@ jobs:
             build/ios-ci/results
           if-no-files-found: warn
           compression-level: 0
+
+  dispatch_followup:
+    name: Dispatch iOS follow-up
+    if: ${{ always() && github.ref_name != 'master' }}
+    needs:
+      - build_ios
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch follow-up workflow
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.head_ref || github.ref_name }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_RUN_NUMBER: ${{ github.run_number }}
+          SOURCE_RUN_STATUS: completed
+          SOURCE_RUN_CONCLUSION: ${{ needs.build_ios.result }}
+          SOURCE_RUN_EVENT: ${{ github.event_name }}
+          SOURCE_RUN_NAME: ${{ github.workflow }}
+          SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SOURCE_HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
+          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SOURCE_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          payload="$(jq -n \
+            --arg ref "${REF_NAME}" \
+            --arg run_id "${SOURCE_RUN_ID}" \
+            --arg run_number "${SOURCE_RUN_NUMBER}" \
+            --arg run_status "${SOURCE_RUN_STATUS}" \
+            --arg run_conclusion "${SOURCE_RUN_CONCLUSION}" \
+            --arg run_event "${SOURCE_RUN_EVENT}" \
+            --arg run_name "${SOURCE_RUN_NAME}" \
+            --arg run_url "${SOURCE_RUN_URL}" \
+            --arg head_branch "${SOURCE_HEAD_BRANCH}" \
+            --arg head_sha "${SOURCE_HEAD_SHA}" \
+            --arg pr_number "${SOURCE_PR_NUMBER}" \
+            '{ref: $ref, inputs: {
+              source_run_id: $run_id,
+              source_run_number: $run_number,
+              source_run_status: $run_status,
+              source_run_conclusion: $run_conclusion,
+              source_run_event: $run_event,
+              source_run_name: $run_name,
+              source_run_url: $run_url,
+              source_head_branch: $head_branch,
+              source_head_sha: $head_sha,
+              source_pr_number: $pr_number
+            }}')"
+
+          curl -fsSL \
+            -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "${payload}" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/ios-workflow-followup.yml/dispatches" > /dev/null

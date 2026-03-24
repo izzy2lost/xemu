@@ -10,6 +10,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (UIViewController *)makeEmulatorViewController;
 - (BOOL)startSessionWithConfigPath:(NSString *)configPath error:(NSError * _Nullable * _Nullable)error;
 - (void)stopSession;
+- (void)refreshEmbeddedCoreAvailability;
+- (NSString *)embeddedCoreStatusSummary;
+- (NSString * _Nullable)resolvedEmbeddedCorePath;
 - (BOOL)canUseNativeSnapshots;
 - (BOOL)saveNativeSnapshotNamed:(NSString *)name error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)loadNativeSnapshotNamed:(NSString *)name error:(NSError * _Nullable * _Nullable)error;

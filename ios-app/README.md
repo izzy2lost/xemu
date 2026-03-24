@@ -25,6 +25,7 @@ The native bridge now does two things:
 
 - it keeps the iOS shell working even with no embedded core linked
 - it prefers a dedicated embedded iOS host API exported from `ui/xemu.c`, and falls back to raw `qemu_init` / `qemu_main` only when that API is not linked
+- it now also attempts to `dlopen()` a bundled `X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore` image before resolving symbols, so a signed embedded core can light up the real iOS boot path without changing the SwiftUI shell
 
 The remaining platform-specific handoff still lives inside:
 
@@ -35,6 +36,15 @@ The remaining platform-specific handoff still lives inside:
 Those files now expose the embedded boot and frame-pump seam for iPhone and iPad. The next platform-specific step is finishing the SDL/UIKit presentation details in a real Xcode/macOS build.
 
 Because `qemu_init()` is not safely repeatable in the same process, once the embedded core path has been initialized the app should be relaunched before starting a second full embedded session.
+
+### Dynamic embedded core contract
+
+The iOS bridge will look for these developer/runtime integration points:
+
+- a signed bundled framework at `X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore` inside the app's `Frameworks` area
+- a developer fallback image under `Library/Application Support/X1Box/EmbeddedCore/`
+
+When that image exports the same symbols already referenced by the bridge (`xemu_embedded_*`, `qemu_init`, `qemu_main`, `xemu_settings_*`, snapshot helpers), the app can move from shell fallback into the real embedded core path on iPhone and iPad.
 
 ## Build setup
 
@@ -49,7 +59,7 @@ Because `qemu_init()` is not safely repeatable in the same process, once the emb
 From this Windows workspace, the most reliable way to validate the iOS project is through GitHub Actions on macOS.
 
 - The repository now includes `.github/workflows/build-ios-app.yml`.
-- The repository also includes `.github/workflows/ios-workflow-followup.yml`, which reacts to every completed `Build iOS App` run.
+- The repository also includes `.github/workflows/ios-workflow-followup.yml`, which now reacts on feature branches by workflow dispatch from the build workflow, and can still react via `workflow_run` once it lives on the default branch.
 - That workflow builds the app for iOS Simulator, runs the `X1BoxiOSTests` suite, and also performs a generic iOS device build with signing disabled.
 - The helper script `ios-app/scripts/ci-build-ios.sh` is the single source of truth for those `xcodebuild` commands, so the same flow can be reused locally on macOS.
 - The bridge script `ios-app/scripts/fork-workflow-bridge.ps1` can dispatch the workflow on your fork, wait for completion, and download the uploaded artifacts back into this workspace.

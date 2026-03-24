@@ -1,6 +1,49 @@
 name: iOS Workflow Follow-up
 
 on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Source Build iOS App run id
+        required: true
+        type: string
+      source_run_number:
+        description: Source Build iOS App run number
+        required: true
+        type: string
+      source_run_status:
+        description: Source Build iOS App status
+        required: true
+        type: string
+      source_run_conclusion:
+        description: Source Build iOS App conclusion
+        required: true
+        type: string
+      source_run_event:
+        description: Source Build iOS App event
+        required: true
+        type: string
+      source_run_name:
+        description: Source Build iOS App workflow name
+        required: true
+        type: string
+      source_run_url:
+        description: Source Build iOS App run URL
+        required: true
+        type: string
+      source_head_branch:
+        description: Source head branch
+        required: true
+        type: string
+      source_head_sha:
+        description: Source head SHA
+        required: true
+        type: string
+      source_pr_number:
+        description: Related PR number when available
+        required: false
+        default: ""
+        type: string
   workflow_run:
     workflows:
       - Build iOS App
@@ -14,7 +57,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: ios-followup-${{ github.event.workflow_run.id }}
+  group: ios-followup-${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:
@@ -27,15 +70,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
-          RUN_STATUS: ${{ github.event.workflow_run.status }}
-          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          RUN_EVENT: ${{ github.event.workflow_run.event }}
-          RUN_NAME: ${{ github.event.workflow_run.name }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || github.event.workflow_run.id }}
+          RUN_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_number || github.event.workflow_run.run_number }}
+          RUN_STATUS: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_status || github.event.workflow_run.status }}
+          RUN_CONCLUSION: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_conclusion || github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_event || github.event.workflow_run.event }}
+          RUN_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_name || github.event.workflow_run.name }}
+          RUN_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_url || github.event.workflow_run.html_url }}
+          HEAD_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_head_branch || github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_head_sha || github.event.workflow_run.head_sha }}
+          PR_NUMBER_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.source_pr_number || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -59,7 +103,10 @@ jobs:
           artifact_names="$(jq -r 'if (.artifacts | length) == 0 then "none" else [.artifacts[].name] | join(", ") end' <<<"${artifact_response}")"
           failed_jobs_json="$(jq -c '[.jobs[] | select((.conclusion // "pending") != "success") | {name, conclusion: (.conclusion // "pending"), steps: [(.steps // [])[] | select((.conclusion // "pending") != "success" and (.conclusion // "pending") != "skipped") | {name, conclusion: (.conclusion // "pending")}]}]' <<<"${jobs_response}")"
           failed_jobs_markdown="$(jq -r 'if length == 0 then "none" else map("- " + .name + " [" + .conclusion + "]" + (if (.steps | length) > 0 then ": " + ([.steps[] | .name + " [" + .conclusion + "]"] | join(", ")) else "" end)) | join("\n") end' <<<"${failed_jobs_json}")"
-          pr_number="$(jq -r '.workflow_run.pull_requests[0].number // empty' "${GITHUB_EVENT_PATH}")"
+          pr_number="${PR_NUMBER_INPUT}"
+          if [[ -z "${pr_number}" ]]; then
+            pr_number="$(jq -r '.workflow_run.pull_requests[0].number // empty' "${GITHUB_EVENT_PATH}")"
+          fi
 
           {
             echo "## X1 BOX iOS Workflow Follow-up"

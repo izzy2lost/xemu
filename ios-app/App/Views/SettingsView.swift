@@ -1,4 +1,5 @@
 import SwiftUI
+import X1BoxNativeCore
 
 struct SettingsView: View {
   @ObservedObject var store: SettingsStore
@@ -8,6 +9,8 @@ struct SettingsView: View {
   @State private var draft: EmulatorSettings
   @State private var isImportingEEPROM = false
   @State private var assetErrorMessage: String?
+  @State private var embeddedCoreStatus: String = X1BoxNativeBridge.shared().embeddedCoreStatusSummary()
+  @State private var embeddedCorePath: String?
 
   init(store: SettingsStore, setupStore: SetupAssetStore, onDismiss: @escaping () -> Void) {
     self.store = store
@@ -24,6 +27,24 @@ struct SettingsView: View {
             Text("System").tag("system")
             Text("English").tag("en")
             Text("Spanish").tag("es")
+          }
+        }
+
+        Section("Native Core") {
+          Text(embeddedCoreStatus)
+            .font(.footnote)
+            .foregroundStyle(XboxTheme.muted)
+
+          if let embeddedCorePath,
+             !embeddedCorePath.isEmpty {
+            Text(embeddedCorePath)
+              .font(.footnote.monospaced())
+              .foregroundStyle(XboxTheme.accent)
+              .textSelection(.enabled)
+          }
+
+          Button("Refresh Embedded Core Detection") {
+            refreshEmbeddedCoreStatus()
           }
         }
 
@@ -215,6 +236,9 @@ struct SettingsView: View {
       }
     }
     .preferredColorScheme(.dark)
+    .onAppear {
+      refreshEmbeddedCoreStatus()
+    }
     .fileImporter(
       isPresented: $isImportingEEPROM,
       allowedContentTypes: [.data, .item],
@@ -233,5 +257,12 @@ struct SettingsView: View {
         assetErrorMessage = error.localizedDescription
       }
     }
+  }
+
+  private func refreshEmbeddedCoreStatus() {
+    let bridge = X1BoxNativeBridge.shared()
+    bridge.refreshEmbeddedCoreAvailability()
+    embeddedCoreStatus = bridge.embeddedCoreStatusSummary()
+    embeddedCorePath = bridge.resolvedEmbeddedCorePath()
   }
 }
