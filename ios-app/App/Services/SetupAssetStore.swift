@@ -180,10 +180,15 @@ final class SetupAssetStore: ObservableObject {
   private func clearExistingEmbeddedCoreArtifacts() throws {
     let fileManager = FileManager.default
     let frameworkURL = try AppPaths.embeddedCoreFrameworkURL()
+    let xcframeworkURL = try AppPaths.embeddedCoreXCFrameworkURL()
     let dylibURL = try AppPaths.embeddedCoreDylibURL()
 
     if fileManager.fileExists(atPath: frameworkURL.path) {
       try fileManager.removeItem(at: frameworkURL)
+    }
+
+    if fileManager.fileExists(atPath: xcframeworkURL.path) {
+      try fileManager.removeItem(at: xcframeworkURL)
     }
 
     if fileManager.fileExists(atPath: dylibURL.path) {
@@ -200,14 +205,19 @@ final class SetupAssetStore: ObservableObject {
       ])
     }
 
-    if isDirectory.boolValue || sourceURL.pathExtension.caseInsensitiveCompare("framework") == .orderedSame {
-      let expectedName = "X1BoxEmbeddedCore.framework"
+    let extensionName = sourceURL.pathExtension.lowercased()
+    if isDirectory.boolValue || extensionName == "framework" || extensionName == "xcframework" {
+      let expectedName = extensionName == "xcframework"
+        ? "X1BoxEmbeddedCore.xcframework"
+        : "X1BoxEmbeddedCore.framework"
       guard sourceURL.lastPathComponent.caseInsensitiveCompare(expectedName) == .orderedSame else {
         throw NSError(domain: "X1Box.SetupAssetStore", code: 3, userInfo: [
-          NSLocalizedDescriptionKey: "Select the full X1BoxEmbeddedCore.framework bundle."
+          NSLocalizedDescriptionKey: "Select the full X1BoxEmbeddedCore.framework or X1BoxEmbeddedCore.xcframework bundle."
         ])
       }
-      return try AppPaths.embeddedCoreFrameworkURL()
+      return extensionName == "xcframework"
+        ? try AppPaths.embeddedCoreXCFrameworkURL()
+        : try AppPaths.embeddedCoreFrameworkURL()
     }
 
     let fileName = sourceURL.lastPathComponent.lowercased()
@@ -216,7 +226,7 @@ final class SetupAssetStore: ObservableObject {
     }
 
     throw NSError(domain: "X1Box.SetupAssetStore", code: 4, userInfo: [
-      NSLocalizedDescriptionKey: "Select X1BoxEmbeddedCore.framework or libxemu-ios-core.dylib."
+      NSLocalizedDescriptionKey: "Select X1BoxEmbeddedCore.framework, X1BoxEmbeddedCore.xcframework, or libxemu-ios-core.dylib."
     ])
   }
 

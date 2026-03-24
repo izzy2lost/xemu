@@ -76,7 +76,7 @@ struct SettingsView: View {
             refreshEmbeddedCoreStatus()
           }
 
-          Text("Import a signed X1BoxEmbeddedCore.framework or libxemu-ios-core.dylib exported from the upstream iOS core build. If you replace a core that is already loaded, restart the app so iOS picks up the new image cleanly.")
+          Text("Import a signed X1BoxEmbeddedCore.framework, X1BoxEmbeddedCore.xcframework, or libxemu-ios-core.dylib exported from the upstream iOS core build. If you replace a core that is already loaded, restart the app so iOS picks up the new image cleanly.")
             .font(.footnote)
             .foregroundStyle(XboxTheme.muted)
         }

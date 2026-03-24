@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <TargetConditionals.h>
 #include <dlfcn.h>
 #include <map>
 #include <mutex>
@@ -57,19 +58,41 @@ static T ResolveOptionalSymbol(const char *name)
       [bridgeBundle.bundlePath stringByDeletingLastPathComponent]
     ];
 
+#if TARGET_OS_SIMULATOR
+    NSArray<NSString *> *relativeCandidates = @[
+      @"X1BoxEmbeddedCore.xcframework/ios-arm64_x86_64-simulator/X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore",
+      @"X1BoxEmbeddedCore.xcframework/ios-arm64-simulator/X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore",
+      @"X1BoxEmbeddedCore.xcframework/ios-x86_64-simulator/X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore",
+      @"X1BoxEmbeddedCore.xcframework/ios-arm64_x86_64-simulator/libxemu-ios-core.dylib",
+      @"X1BoxEmbeddedCore.xcframework/ios-arm64-simulator/libxemu-ios-core.dylib",
+      @"X1BoxEmbeddedCore.xcframework/ios-x86_64-simulator/libxemu-ios-core.dylib",
+      @"X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore",
+      @"libxemu-ios-core.dylib"
+    ];
+#else
+    NSArray<NSString *> *relativeCandidates = @[
+      @"X1BoxEmbeddedCore.xcframework/ios-arm64/X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore",
+      @"X1BoxEmbeddedCore.xcframework/ios-arm64/libxemu-ios-core.dylib",
+      @"X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore",
+      @"libxemu-ios-core.dylib"
+    ];
+#endif
+
     for (NSString *root in frameworkRoots) {
       if (root.length == 0) {
         continue;
       }
-      [candidates addObject:[root stringByAppendingPathComponent:@"X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore"]];
-      [candidates addObject:[root stringByAppendingPathComponent:@"libxemu-ios-core.dylib"]];
+      for (NSString *relativePath in relativeCandidates) {
+        [candidates addObject:[root stringByAppendingPathComponent:relativePath]];
+      }
     }
 
     NSArray<NSString *> *appSupportRoots = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
     for (NSString *appSupportRoot in appSupportRoots) {
       NSString *coreRoot = [appSupportRoot stringByAppendingPathComponent:@"X1Box/EmbeddedCore"];
-      [candidates addObject:[coreRoot stringByAppendingPathComponent:@"X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore"]];
-      [candidates addObject:[coreRoot stringByAppendingPathComponent:@"libxemu-ios-core.dylib"]];
+      for (NSString *relativePath in relativeCandidates) {
+        [candidates addObject:[coreRoot stringByAppendingPathComponent:relativePath]];
+      }
     }
 
     NSFileManager *fileManager = [NSFileManager defaultManager];

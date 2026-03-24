@@ -36,6 +36,10 @@ enum AppPaths {
     try embeddedCoreDirectory().appendingPathComponent("X1BoxEmbeddedCore.framework", isDirectory: true)
   }
 
+  static func embeddedCoreXCFrameworkURL() throws -> URL {
+    try embeddedCoreDirectory().appendingPathComponent("X1BoxEmbeddedCore.xcframework", isDirectory: true)
+  }
+
   static func embeddedCoreFrameworkBinaryURL() throws -> URL {
     try embeddedCoreFrameworkURL().appendingPathComponent("X1BoxEmbeddedCore")
   }

@@ -53,4 +53,33 @@ final class SetupAssetStoreTests: XCTestCase {
     XCTAssertEqual(record?.localPath, try AppPaths.embeddedCoreDylibURL().path)
     XCTAssertTrue(FileManager.default.fileExists(atPath: try AppPaths.embeddedCoreDylibURL().path))
   }
+
+  func testEmbeddedCoreXCFrameworkStagesIntoApplicationSupport() throws {
+    let suiteName = "SetupAssetStoreEmbeddedCoreXCFrameworkTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    let sourceRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let xcframeworkURL = sourceRoot.appendingPathComponent("X1BoxEmbeddedCore.xcframework", isDirectory: true)
+    let plistURL = xcframeworkURL.appendingPathComponent("Info.plist")
+    try FileManager.default.createDirectory(at: xcframeworkURL, withIntermediateDirectories: true)
+    try Data("test".utf8).write(to: plistURL)
+    defer {
+      try? FileManager.default.removeItem(at: sourceRoot)
+    }
+
+    let store = SetupAssetStore(defaults: defaults)
+    try store.importEmbeddedCoreArtifact(from: xcframeworkURL)
+    defer {
+      try? store.removeSelection(for: .embeddedCore)
+    }
+
+    let record = store.summary.record(for: .embeddedCore)
+    XCTAssertEqual(record?.displayName, "X1BoxEmbeddedCore.xcframework")
+    XCTAssertEqual(record?.localPath, try AppPaths.embeddedCoreXCFrameworkURL().path)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: try AppPaths.embeddedCoreXCFrameworkURL().path))
+  }
 }
