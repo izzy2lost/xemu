@@ -554,6 +554,8 @@
           "-framework",
           UIKit,
           "-framework",
+          CoreGraphics,
+          "-framework",
           QuartzCore,
         );
         PRODUCT_BUNDLE_IDENTIFIER = com.alejomazabuel.x1boxnativecore;
@@ -583,6 +585,8 @@
           "$(inherited)",
           "-framework",
           UIKit,
+          "-framework",
+          CoreGraphics,
           "-framework",
           QuartzCore,
         );
