@@ -10,7 +10,7 @@ set(VCPKG_CMAKE_SYSTEM_VERSION "${X1BOX_IOS_MIN_VERSION}")
 set(VCPKG_OSX_ARCHITECTURES arm64)
 set(VCPKG_OSX_SYSROOT iphonesimulator)
 set(VCPKG_MAKE_BUILD_TRIPLET
-    --host=aarch64-apple-darwin)
+    --host=aarch64-apple-ios)
 set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE static)
 set(VCPKG_BUILD_TYPE release)
