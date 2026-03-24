@@ -98,11 +98,12 @@ if [[ "$(uname -m)" == "arm64" ]]; then
   HOST_TRIPLET="arm64-osx"
 fi
 
-INSTALL_ROOT="${BUILD_ROOT}/installed"
+DEVICE_INSTALL_ROOT="${BUILD_ROOT}/installed-device"
+SIMULATOR_INSTALL_ROOT="${BUILD_ROOT}/installed-simulator"
 LOG_DIR="${BUILD_ROOT}/logs"
 ARTIFACT_ROOT="${BUILD_ROOT}/artifacts/${ARTIFACT_NAME}"
-DEVICE_PREFIX="${INSTALL_ROOT}/${DEVICE_TRIPLET}"
-SIMULATOR_PREFIX="${INSTALL_ROOT}/${SIMULATOR_TRIPLET}"
+DEVICE_PREFIX="${DEVICE_INSTALL_ROOT}/${DEVICE_TRIPLET}"
+SIMULATOR_PREFIX="${SIMULATOR_INSTALL_ROOT}/${SIMULATOR_TRIPLET}"
 
 rm -rf "${BUILD_ROOT}"
 mkdir -p "${LOG_DIR}" "${ARTIFACT_ROOT}"
@@ -120,6 +121,7 @@ bootstrap_vcpkg() {
 install_triplet() {
   local triplet="$1"
   local log_name="$2"
+  local install_root="$3"
   local manifest_dir="${BUILD_ROOT}/manifest-${triplet}"
   local effective_keep_env_vars="${VCPKG_KEEP_ENV_VARS:-}"
   local effective_ldflags="${LDFLAGS:-}"
@@ -164,7 +166,7 @@ EOF
     --host-triplet="${HOST_TRIPLET}" \
     --overlay-triplets="${OVERLAY_TRIPLETS}" \
     --overlay-ports="${OVERLAY_PORTS}" \
-    --x-install-root="${INSTALL_ROOT}" \
+    --x-install-root="${install_root}" \
     --clean-after-build \
     >"${LOG_DIR}/${log_name}.log" 2>&1
 }
@@ -226,10 +228,9 @@ EOF
 }
 
 bootstrap_vcpkg
-install_triplet "${DEVICE_TRIPLET}" "device-install"
-install_triplet "${SIMULATOR_TRIPLET}" "simulator-install"
-
+install_triplet "${DEVICE_TRIPLET}" "device-install" "${DEVICE_INSTALL_ROOT}"
 stage_prefix "${DEVICE_PREFIX}" "${ARTIFACT_ROOT}/device"
+install_triplet "${SIMULATOR_TRIPLET}" "simulator-install" "${SIMULATOR_INSTALL_ROOT}"
 stage_prefix "${SIMULATOR_PREFIX}" "${ARTIFACT_ROOT}/simulator"
 write_metadata
 
