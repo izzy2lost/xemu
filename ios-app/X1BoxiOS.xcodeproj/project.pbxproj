@@ -1,0 +1,678 @@
+// !$*UTF8*$!
+{
+  archiveVersion = 1;
+  classes = {
+  };
+  objectVersion = 56;
+  objects = {
+
+/* Begin PBXBuildFile section */
+    A12000000000000000000001 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000001 /* AppModel.swift */; };
+    A12000000000000000000002 /* GameEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000002 /* GameEntry.swift */; };
+    A12000000000000000000003 /* SettingsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000003 /* SettingsModels.swift */; };
+    A12000000000000000000004 /* SetupModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000004 /* SetupModels.swift */; };
+    A12000000000000000000005 /* AppPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000005 /* AppPaths.swift */; };
+    A12000000000000000000006 /* BoxArtResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000006 /* BoxArtResolver.swift */; };
+    A12000000000000000000007 /* EmulatorSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000007 /* EmulatorSession.swift */; };
+    A12000000000000000000008 /* GameControllerMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000008 /* GameControllerMonitor.swift */; };
+    A12000000000000000000009 /* LibraryScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000009 /* LibraryScanner.swift */; };
+    A1200000000000000000000A /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000000A /* SettingsStore.swift */; };
+    A1200000000000000000000B /* SetupAssetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000000B /* SetupAssetStore.swift */; };
+    A1200000000000000000000C /* XboxEepromEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000000C /* XboxEepromEditor.swift */; };
+    A1200000000000000000000D /* XemuConfigWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000000D /* XemuConfigWriter.swift */; };
+    A1200000000000000000000E /* XboxTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000000E /* XboxTheme.swift */; };
+    A1200000000000000000000F /* EmulatorContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000000F /* EmulatorContainerView.swift */; };
+    A12000000000000000000010 /* GameLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000010 /* GameLibraryView.swift */; };
+    A12000000000000000000011 /* LauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000011 /* LauncherView.swift */; };
+    A12000000000000000000012 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000012 /* RootView.swift */; };
+    A12000000000000000000013 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000013 /* SettingsView.swift */; };
+    A12000000000000000000014 /* SetupWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000014 /* SetupWizardView.swift */; };
+    A12000000000000000000015 /* TouchOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000015 /* TouchOverlayView.swift */; };
+    A12000000000000000000016 /* X1BoxiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000016 /* X1BoxiOSApp.swift */; };
+    A12000000000000000000017 /* X1BoxNativeCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A11000000000000000000020 /* X1BoxNativeCore.framework */; };
+    A12000000000000000000018 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000001B /* Assets.xcassets */; };
+    A12000000000000000000019 /* X1BoxNativeCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A11000000000000000000020 /* X1BoxNativeCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+    A1200000000000000000001A /* X1BoxNativeBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000019 /* X1BoxNativeBridge.mm */; };
+    A1200000000000000000001B /* X1BoxNativeCore.h in Headers */ = {isa = PBXBuildFile; fileRef = A11000000000000000000017 /* X1BoxNativeCore.h */; settings = {ATTRIBUTES = (Public, ); }; };
+    A1200000000000000000001C /* X1BoxNativeBridge.h in Headers */ = {isa = PBXBuildFile; fileRef = A11000000000000000000018 /* X1BoxNativeBridge.h */; settings = {ATTRIBUTES = (Public, ); }; };
+    A1200000000000000000001D /* SettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000001C /* SettingsStoreTests.swift */; };
+    A1200000000000000000001E /* LibraryScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000001D /* LibraryScannerTests.swift */; };
+    A1200000000000000000001F /* XemuConfigWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1100000000000000000001E /* XemuConfigWriterTests.swift */; };
+    A12000000000000000000020 /* SetupAssetStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000023 /* SetupAssetStoreTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+    A16000000000000000000001 /* PBXContainerItemProxy */ = {
+      isa = PBXContainerItemProxy;
+      containerPortal = A10000000000000000000001 /* Project object */;
+      proxyType = 1;
+      remoteGlobalIDString = A14000000000000000000002;
+      remoteInfo = X1BoxNativeCore;
+    };
+    A16000000000000000000002 /* PBXContainerItemProxy */ = {
+      isa = PBXContainerItemProxy;
+      containerPortal = A10000000000000000000001 /* Project object */;
+      proxyType = 1;
+      remoteGlobalIDString = A14000000000000000000001;
+      remoteInfo = X1BoxiOS;
+    };
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+    A13000000000000000000004 /* Embed Frameworks */ = {
+      isa = PBXCopyFilesBuildPhase;
+      buildActionMask = 2147483647;
+      dstPath = "";
+      dstSubfolderSpec = 10;
+      files = (
+        A12000000000000000000019 /* X1BoxNativeCore.framework in Embed Frameworks */,
+      );
+      name = "Embed Frameworks";
+      runOnlyForDeploymentPostprocessing = 0;
+    };
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+    A11000000000000000000001 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+    A11000000000000000000002 /* GameEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameEntry.swift; sourceTree = "<group>"; };
+    A11000000000000000000003 /* SettingsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsModels.swift; sourceTree = "<group>"; };
+    A11000000000000000000004 /* SetupModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupModels.swift; sourceTree = "<group>"; };
+    A11000000000000000000005 /* AppPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPaths.swift; sourceTree = "<group>"; };
+    A11000000000000000000006 /* BoxArtResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoxArtResolver.swift; sourceTree = "<group>"; };
+    A11000000000000000000007 /* EmulatorSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmulatorSession.swift; sourceTree = "<group>"; };
+    A11000000000000000000008 /* GameControllerMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameControllerMonitor.swift; sourceTree = "<group>"; };
+    A11000000000000000000009 /* LibraryScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryScanner.swift; sourceTree = "<group>"; };
+    A1100000000000000000000A /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+    A1100000000000000000000B /* SetupAssetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupAssetStore.swift; sourceTree = "<group>"; };
+    A1100000000000000000000C /* XboxEepromEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XboxEepromEditor.swift; sourceTree = "<group>"; };
+    A1100000000000000000000D /* XemuConfigWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XemuConfigWriter.swift; sourceTree = "<group>"; };
+    A1100000000000000000000E /* XboxTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XboxTheme.swift; sourceTree = "<group>"; };
+    A1100000000000000000000F /* EmulatorContainerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmulatorContainerView.swift; sourceTree = "<group>"; };
+    A11000000000000000000010 /* GameLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameLibraryView.swift; sourceTree = "<group>"; };
+    A11000000000000000000011 /* LauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherView.swift; sourceTree = "<group>"; };
+    A11000000000000000000012 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+    A11000000000000000000013 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+    A11000000000000000000014 /* SetupWizardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupWizardView.swift; sourceTree = "<group>"; };
+    A11000000000000000000015 /* TouchOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchOverlayView.swift; sourceTree = "<group>"; };
+    A11000000000000000000016 /* X1BoxiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = X1BoxiOSApp.swift; sourceTree = "<group>"; };
+    A11000000000000000000017 /* X1BoxNativeCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = X1BoxNativeCore.h; sourceTree = "<group>"; };
+    A11000000000000000000018 /* X1BoxNativeBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = X1BoxNativeBridge.h; sourceTree = "<group>"; };
+    A11000000000000000000019 /* X1BoxNativeBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = X1BoxNativeBridge.mm; sourceTree = "<group>"; };
+    A1100000000000000000001A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+    A1100000000000000000001B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+    A1100000000000000000001C /* SettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStoreTests.swift; sourceTree = "<group>"; };
+    A1100000000000000000001D /* LibraryScannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryScannerTests.swift; sourceTree = "<group>"; };
+    A1100000000000000000001E /* XemuConfigWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XemuConfigWriterTests.swift; sourceTree = "<group>"; };
+    A1100000000000000000001F /* X1BoxiOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = X1BoxiOS.entitlements; sourceTree = "<group>"; };
+    A11000000000000000000020 /* X1BoxNativeCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = X1BoxNativeCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+    A11000000000000000000021 /* X1BoxiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = X1BoxiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+    A11000000000000000000022 /* X1BoxiOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = X1BoxiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+    A11000000000000000000023 /* SetupAssetStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupAssetStoreTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+    A13000000000000000000002 /* Frameworks */ = {
+      isa = PBXFrameworksBuildPhase;
+      buildActionMask = 2147483647;
+      files = (
+        A12000000000000000000017 /* X1BoxNativeCore.framework in Frameworks */,
+      );
+      runOnlyForDeploymentPostprocessing = 0;
+    };
+    A13000000000000000000007 /* Frameworks */ = {
+      isa = PBXFrameworksBuildPhase;
+      buildActionMask = 2147483647;
+      files = (
+      );
+      runOnlyForDeploymentPostprocessing = 0;
+    };
+    A13000000000000000000009 /* Frameworks */ = {
+      isa = PBXFrameworksBuildPhase;
+      buildActionMask = 2147483647;
+      files = (
+      );
+      runOnlyForDeploymentPostprocessing = 0;
+    };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+    A10000000000000000000002 = {
+      isa = PBXGroup;
+      children = (
+        A10000000000000000000005 /* App */,
+        A1000000000000000000000A /* NativeCore */,
+        A1000000000000000000000B /* Support */,
+        A1000000000000000000000F /* X1BoxiOSTests */,
+        A10000000000000000000003 /* Products */,
+        A10000000000000000000004 /* Frameworks */,
+      );
+      sourceTree = "<group>";
+    };
+    A10000000000000000000003 /* Products */ = {
+      isa = PBXGroup;
+      children = (
+        A11000000000000000000021 /* X1BoxiOS.app */,
+        A11000000000000000000020 /* X1BoxNativeCore.framework */,
+        A11000000000000000000022 /* X1BoxiOSTests.xctest */,
+      );
+      name = Products;
+      sourceTree = "<group>";
+    };
+    A10000000000000000000004 /* Frameworks */ = {
+      isa = PBXGroup;
+      children = (
+      );
+      name = Frameworks;
+      sourceTree = "<group>";
+    };
+    A10000000000000000000005 /* App */ = {
+      isa = PBXGroup;
+      children = (
+        A11000000000000000000001 /* AppModel.swift */,
+        A10000000000000000000006 /* Models */,
+        A10000000000000000000007 /* Services */,
+        A10000000000000000000008 /* Utilities */,
+        A10000000000000000000009 /* Views */,
+      );
+      path = App;
+      sourceTree = "<group>";
+    };
+    A10000000000000000000006 /* Models */ = {
+      isa = PBXGroup;
+      children = (
+        A11000000000000000000002 /* GameEntry.swift */,
+        A11000000000000000000003 /* SettingsModels.swift */,
+        A11000000000000000000004 /* SetupModels.swift */,
+      );
+      path = Models;
+      sourceTree = "<group>";
+    };
+    A10000000000000000000007 /* Services */ = {
+      isa = PBXGroup;
+      children = (
+        A11000000000000000000005 /* AppPaths.swift */,
+        A11000000000000000000006 /* BoxArtResolver.swift */,
+        A11000000000000000000007 /* EmulatorSession.swift */,
+        A11000000000000000000008 /* GameControllerMonitor.swift */,
+        A11000000000000000000009 /* LibraryScanner.swift */,
+        A1100000000000000000000A /* SettingsStore.swift */,
+        A1100000000000000000000B /* SetupAssetStore.swift */,
+        A1100000000000000000000C /* XboxEepromEditor.swift */,
+        A1100000000000000000000D /* XemuConfigWriter.swift */,
+      );
+      path = Services;
+      sourceTree = "<group>";
+    };
+    A10000000000000000000008 /* Utilities */ = {
+      isa = PBXGroup;
+      children = (
+        A1100000000000000000000E /* XboxTheme.swift */,
+      );
+      path = Utilities;
+      sourceTree = "<group>";
+    };
+    A10000000000000000000009 /* Views */ = {
+      isa = PBXGroup;
+      children = (
+        A1100000000000000000000F /* EmulatorContainerView.swift */,
+        A11000000000000000000010 /* GameLibraryView.swift */,
+        A11000000000000000000011 /* LauncherView.swift */,
+        A11000000000000000000012 /* RootView.swift */,
+        A11000000000000000000013 /* SettingsView.swift */,
+        A11000000000000000000014 /* SetupWizardView.swift */,
+        A11000000000000000000015 /* TouchOverlayView.swift */,
+        A11000000000000000000016 /* X1BoxiOSApp.swift */,
+      );
+      path = Views;
+      sourceTree = "<group>";
+    };
+    A1000000000000000000000A /* NativeCore */ = {
+      isa = PBXGroup;
+      children = (
+        A11000000000000000000017 /* X1BoxNativeCore.h */,
+        A11000000000000000000018 /* X1BoxNativeBridge.h */,
+        A11000000000000000000019 /* X1BoxNativeBridge.mm */,
+      );
+      path = NativeCore;
+      sourceTree = "<group>";
+    };
+    A1000000000000000000000B /* Support */ = {
+      isa = PBXGroup;
+      children = (
+        A1100000000000000000001A /* Info.plist */,
+        A1100000000000000000001B /* Assets.xcassets */,
+        A1100000000000000000001F /* X1BoxiOS.entitlements */,
+      );
+      path = Support;
+      sourceTree = "<group>";
+    };
+    A1000000000000000000000F /* X1BoxiOSTests */ = {
+      isa = PBXGroup;
+      children = (
+        A1100000000000000000001C /* SettingsStoreTests.swift */,
+        A1100000000000000000001D /* LibraryScannerTests.swift */,
+        A1100000000000000000001E /* XemuConfigWriterTests.swift */,
+        A11000000000000000000023 /* SetupAssetStoreTests.swift */,
+      );
+      path = X1BoxiOSTests;
+      sourceTree = "<group>";
+    };
+/* End PBXGroup section */
+
+/* Begin PBXHeadersBuildPhase section */
+    A13000000000000000000006 /* Headers */ = {
+      isa = PBXHeadersBuildPhase;
+      buildActionMask = 2147483647;
+      files = (
+        A1200000000000000000001B /* X1BoxNativeCore.h in Headers */,
+        A1200000000000000000001C /* X1BoxNativeBridge.h in Headers */,
+      );
+      runOnlyForDeploymentPostprocessing = 0;
+    };
+/* End PBXHeadersBuildPhase section */
+
+/* Begin PBXNativeTarget section */
+    A14000000000000000000001 /* X1BoxiOS */ = {
+      isa = PBXNativeTarget;
+      buildConfigurationList = A17000000000000000000002 /* Build configuration list for PBXNativeTarget "X1BoxiOS" */;
+      buildPhases = (
+        A13000000000000000000001 /* Sources */,
+        A13000000000000000000002 /* Frameworks */,
+        A13000000000000000000003 /* Resources */,
+        A13000000000000000000004 /* Embed Frameworks */,
+      );
+      buildRules = (
+      );
+      dependencies = (
+        A15000000000000000000001 /* PBXTargetDependency */,
+      );
+      name = X1BoxiOS;
+      productName = X1BoxiOS;
+      productReference = A11000000000000000000021 /* X1BoxiOS.app */;
+      productType = "com.apple.product-type.application";
+    };
+    A14000000000000000000002 /* X1BoxNativeCore */ = {
+      isa = PBXNativeTarget;
+      buildConfigurationList = A17000000000000000000003 /* Build configuration list for PBXNativeTarget "X1BoxNativeCore" */;
+      buildPhases = (
+        A13000000000000000000005 /* Sources */,
+        A13000000000000000000006 /* Headers */,
+        A13000000000000000000007 /* Frameworks */,
+      );
+      buildRules = (
+      );
+      dependencies = (
+      );
+      name = X1BoxNativeCore;
+      productName = X1BoxNativeCore;
+      productReference = A11000000000000000000020 /* X1BoxNativeCore.framework */;
+      productType = "com.apple.product-type.framework";
+    };
+    A14000000000000000000003 /* X1BoxiOSTests */ = {
+      isa = PBXNativeTarget;
+      buildConfigurationList = A17000000000000000000004 /* Build configuration list for PBXNativeTarget "X1BoxiOSTests" */;
+      buildPhases = (
+        A13000000000000000000008 /* Sources */,
+        A13000000000000000000009 /* Frameworks */,
+      );
+      buildRules = (
+      );
+      dependencies = (
+        A15000000000000000000002 /* PBXTargetDependency */,
+      );
+      name = X1BoxiOSTests;
+      productName = X1BoxiOSTests;
+      productReference = A11000000000000000000022 /* X1BoxiOSTests.xctest */;
+      productType = "com.apple.product-type.bundle.unit-test";
+    };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+    A10000000000000000000001 /* Project object */ = {
+      isa = PBXProject;
+      attributes = {
+        BuildIndependentTargetsInParallel = 1;
+        LastSwiftUpdateCheck = 1600;
+        LastUpgradeCheck = 1600;
+        ORGANIZATIONNAME = AlejandroMazabuel;
+        TargetAttributes = {
+          A14000000000000000000001 = {
+            CreatedOnToolsVersion = 16.0;
+          };
+          A14000000000000000000002 = {
+            CreatedOnToolsVersion = 16.0;
+          };
+          A14000000000000000000003 = {
+            CreatedOnToolsVersion = 16.0;
+            TestTargetID = A14000000000000000000001;
+          };
+        };
+      };
+      buildConfigurationList = A17000000000000000000001 /* Build configuration list for PBXProject "X1BoxiOS" */;
+      compatibilityVersion = "Xcode 15.0";
+      developmentRegion = en;
+      hasScannedForEncodings = 0;
+      knownRegions = (
+        en,
+        Base,
+      );
+      mainGroup = A10000000000000000000002;
+      productRefGroup = A10000000000000000000003 /* Products */;
+      projectDirPath = "";
+      projectRoot = "";
+      targets = (
+        A14000000000000000000001 /* X1BoxiOS */,
+        A14000000000000000000002 /* X1BoxNativeCore */,
+        A14000000000000000000003 /* X1BoxiOSTests */,
+      );
+    };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+    A13000000000000000000003 /* Resources */ = {
+      isa = PBXResourcesBuildPhase;
+      buildActionMask = 2147483647;
+      files = (
+        A12000000000000000000018 /* Assets.xcassets in Resources */,
+      );
+      runOnlyForDeploymentPostprocessing = 0;
+    };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+    A13000000000000000000001 /* Sources */ = {
+      isa = PBXSourcesBuildPhase;
+      buildActionMask = 2147483647;
+      files = (
+        A12000000000000000000001 /* AppModel.swift in Sources */,
+        A12000000000000000000002 /* GameEntry.swift in Sources */,
+        A12000000000000000000003 /* SettingsModels.swift in Sources */,
+        A12000000000000000000004 /* SetupModels.swift in Sources */,
+        A12000000000000000000005 /* AppPaths.swift in Sources */,
+        A12000000000000000000006 /* BoxArtResolver.swift in Sources */,
+        A12000000000000000000007 /* EmulatorSession.swift in Sources */,
+        A12000000000000000000008 /* GameControllerMonitor.swift in Sources */,
+        A12000000000000000000009 /* LibraryScanner.swift in Sources */,
+        A1200000000000000000000A /* SettingsStore.swift in Sources */,
+        A1200000000000000000000B /* SetupAssetStore.swift in Sources */,
+        A1200000000000000000000C /* XboxEepromEditor.swift in Sources */,
+        A1200000000000000000000D /* XemuConfigWriter.swift in Sources */,
+        A1200000000000000000000E /* XboxTheme.swift in Sources */,
+        A1200000000000000000000F /* EmulatorContainerView.swift in Sources */,
+        A12000000000000000000010 /* GameLibraryView.swift in Sources */,
+        A12000000000000000000011 /* LauncherView.swift in Sources */,
+        A12000000000000000000012 /* RootView.swift in Sources */,
+        A12000000000000000000013 /* SettingsView.swift in Sources */,
+        A12000000000000000000014 /* SetupWizardView.swift in Sources */,
+        A12000000000000000000015 /* TouchOverlayView.swift in Sources */,
+        A12000000000000000000016 /* X1BoxiOSApp.swift in Sources */,
+      );
+      runOnlyForDeploymentPostprocessing = 0;
+    };
+    A13000000000000000000005 /* Sources */ = {
+      isa = PBXSourcesBuildPhase;
+      buildActionMask = 2147483647;
+      files = (
+        A1200000000000000000001A /* X1BoxNativeBridge.mm in Sources */,
+      );
+      runOnlyForDeploymentPostprocessing = 0;
+    };
+    A13000000000000000000008 /* Sources */ = {
+      isa = PBXSourcesBuildPhase;
+      buildActionMask = 2147483647;
+      files = (
+        A1200000000000000000001D /* SettingsStoreTests.swift in Sources */,
+        A1200000000000000000001E /* LibraryScannerTests.swift in Sources */,
+        A1200000000000000000001F /* XemuConfigWriterTests.swift in Sources */,
+        A12000000000000000000020 /* SetupAssetStoreTests.swift in Sources */,
+      );
+      runOnlyForDeploymentPostprocessing = 0;
+    };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+    A15000000000000000000001 /* PBXTargetDependency */ = {
+      isa = PBXTargetDependency;
+      target = A14000000000000000000002 /* X1BoxNativeCore */;
+      targetProxy = A16000000000000000000001 /* PBXContainerItemProxy */;
+    };
+    A15000000000000000000002 /* PBXTargetDependency */ = {
+      isa = PBXTargetDependency;
+      target = A14000000000000000000001 /* X1BoxiOS */;
+      targetProxy = A16000000000000000000002 /* PBXContainerItemProxy */;
+    };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+    A18000000000000000000001 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        CLANG_ENABLE_MODULES = YES;
+        CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+        CLANG_WARN_EMPTY_BODY = YES;
+        CLANG_WARN_ENUM_CONVERSION = YES;
+        CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+        GCC_C_LANGUAGE_STANDARD = gnu17;
+        IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+        SDKROOT = iphoneos;
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+        SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+        SWIFT_VERSION = 5.0;
+        TARGETED_DEVICE_FAMILY = "1,2";
+      };
+      name = Debug;
+    };
+    A18000000000000000000002 /* Release */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        CLANG_ENABLE_MODULES = YES;
+        CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+        CLANG_WARN_EMPTY_BODY = YES;
+        CLANG_WARN_ENUM_CONVERSION = YES;
+        CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+        COPY_PHASE_STRIP = NO;
+        GCC_C_LANGUAGE_STANDARD = gnu17;
+        IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+        SDKROOT = iphoneos;
+        SWIFT_COMPILATION_MODE = wholemodule;
+        SWIFT_VERSION = 5.0;
+        TARGETED_DEVICE_FAMILY = "1,2";
+      };
+      name = Release;
+    };
+    A18000000000000000000003 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+        CLANG_ENABLE_MODULES = YES;
+        CODE_SIGN_ENTITLEMENTS = Support/X1BoxiOS.entitlements;
+        CODE_SIGN_STYLE = Automatic;
+        CURRENT_PROJECT_VERSION = 1;
+        ENABLE_PREVIEWS = YES;
+        GENERATE_INFOPLIST_FILE = NO;
+        INFOPLIST_FILE = Support/Info.plist;
+        IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+        LD_RUNPATH_SEARCH_PATHS = (
+          "$(inherited)",
+          "@executable_path/Frameworks",
+        );
+        MARKETING_VERSION = 1.0;
+        PRODUCT_BUNDLE_IDENTIFIER = com.alejomazabuel.x1boxios;
+        PRODUCT_NAME = "$(TARGET_NAME)";
+        SDKROOT = iphoneos;
+        SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+        SWIFT_EMIT_LOC_STRINGS = YES;
+        SWIFT_VERSION = 5.0;
+        TARGETED_DEVICE_FAMILY = "1,2";
+      };
+      name = Debug;
+    };
+    A18000000000000000000004 /* Release */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+        CLANG_ENABLE_MODULES = YES;
+        CODE_SIGN_ENTITLEMENTS = Support/X1BoxiOS.entitlements;
+        CODE_SIGN_STYLE = Automatic;
+        CURRENT_PROJECT_VERSION = 1;
+        ENABLE_PREVIEWS = YES;
+        GENERATE_INFOPLIST_FILE = NO;
+        INFOPLIST_FILE = Support/Info.plist;
+        IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+        LD_RUNPATH_SEARCH_PATHS = (
+          "$(inherited)",
+          "@executable_path/Frameworks",
+        );
+        MARKETING_VERSION = 1.0;
+        PRODUCT_BUNDLE_IDENTIFIER = com.alejomazabuel.x1boxios;
+        PRODUCT_NAME = "$(TARGET_NAME)";
+        SDKROOT = iphoneos;
+        SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+        SWIFT_EMIT_LOC_STRINGS = YES;
+        SWIFT_VERSION = 5.0;
+        TARGETED_DEVICE_FAMILY = "1,2";
+      };
+      name = Release;
+    };
+    A18000000000000000000005 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+        CLANG_ENABLE_MODULES = YES;
+        CURRENT_PROJECT_VERSION = 1;
+        DEFINES_MODULE = YES;
+        DYLIB_COMPATIBILITY_VERSION = 1;
+        DYLIB_CURRENT_VERSION = 1;
+        GENERATE_INFOPLIST_FILE = YES;
+        INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+        IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+        MACH_O_TYPE = mh_dylib;
+        PRODUCT_BUNDLE_IDENTIFIER = com.alejomazabuel.x1boxnativecore;
+        PRODUCT_NAME = "$(TARGET_NAME)";
+        PUBLIC_HEADERS_FOLDER_PATH = Headers;
+        SDKROOT = iphoneos;
+        SKIP_INSTALL = YES;
+        SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+        TARGETED_DEVICE_FAMILY = "1,2";
+      };
+      name = Debug;
+    };
+    A18000000000000000000006 /* Release */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+        CLANG_ENABLE_MODULES = YES;
+        CURRENT_PROJECT_VERSION = 1;
+        DEFINES_MODULE = YES;
+        DYLIB_COMPATIBILITY_VERSION = 1;
+        DYLIB_CURRENT_VERSION = 1;
+        GENERATE_INFOPLIST_FILE = YES;
+        INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+        IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+        MACH_O_TYPE = mh_dylib;
+        PRODUCT_BUNDLE_IDENTIFIER = com.alejomazabuel.x1boxnativecore;
+        PRODUCT_NAME = "$(TARGET_NAME)";
+        PUBLIC_HEADERS_FOLDER_PATH = Headers;
+        SDKROOT = iphoneos;
+        SKIP_INSTALL = YES;
+        SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+        TARGETED_DEVICE_FAMILY = "1,2";
+      };
+      name = Release;
+    };
+    A18000000000000000000007 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        BUNDLE_LOADER = "$(TEST_HOST)";
+        CLANG_ENABLE_MODULES = YES;
+        CODE_SIGN_STYLE = Automatic;
+        CURRENT_PROJECT_VERSION = 1;
+        GENERATE_INFOPLIST_FILE = YES;
+        IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+        LD_RUNPATH_SEARCH_PATHS = (
+          "$(inherited)",
+          "@loader_path/Frameworks",
+          "@executable_path/Frameworks",
+        );
+        MARKETING_VERSION = 1.0;
+        PRODUCT_BUNDLE_IDENTIFIER = com.alejomazabuel.x1boxiostests;
+        PRODUCT_NAME = "$(TARGET_NAME)";
+        SDKROOT = iphoneos;
+        SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+        SWIFT_VERSION = 5.0;
+        TARGETED_DEVICE_FAMILY = "1,2";
+        TEST_HOST = "$(BUILT_PRODUCTS_DIR)/X1BoxiOS.app/X1BoxiOS";
+      };
+      name = Debug;
+    };
+    A18000000000000000000008 /* Release */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        BUNDLE_LOADER = "$(TEST_HOST)";
+        CLANG_ENABLE_MODULES = YES;
+        CODE_SIGN_STYLE = Automatic;
+        CURRENT_PROJECT_VERSION = 1;
+        GENERATE_INFOPLIST_FILE = YES;
+        IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+        LD_RUNPATH_SEARCH_PATHS = (
+          "$(inherited)",
+          "@loader_path/Frameworks",
+          "@executable_path/Frameworks",
+        );
+        MARKETING_VERSION = 1.0;
+        PRODUCT_BUNDLE_IDENTIFIER = com.alejomazabuel.x1boxiostests;
+        PRODUCT_NAME = "$(TARGET_NAME)";
+        SDKROOT = iphoneos;
+        SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+        SWIFT_VERSION = 5.0;
+        TARGETED_DEVICE_FAMILY = "1,2";
+        TEST_HOST = "$(BUILT_PRODUCTS_DIR)/X1BoxiOS.app/X1BoxiOS";
+      };
+      name = Release;
+    };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+    A17000000000000000000001 /* Build configuration list for PBXProject "X1BoxiOS" */ = {
+      isa = XCConfigurationList;
+      buildConfigurations = (
+        A18000000000000000000001 /* Debug */,
+        A18000000000000000000002 /* Release */,
+      );
+      defaultConfigurationIsVisible = 0;
+      defaultConfigurationName = Release;
+    };
+    A17000000000000000000002 /* Build configuration list for PBXNativeTarget "X1BoxiOS" */ = {
+      isa = XCConfigurationList;
+      buildConfigurations = (
+        A18000000000000000000003 /* Debug */,
+        A18000000000000000000004 /* Release */,
+      );
+      defaultConfigurationIsVisible = 0;
+      defaultConfigurationName = Release;
+    };
+    A17000000000000000000003 /* Build configuration list for PBXNativeTarget "X1BoxNativeCore" */ = {
+      isa = XCConfigurationList;
+      buildConfigurations = (
+        A18000000000000000000005 /* Debug */,
+        A18000000000000000000006 /* Release */,
+      );
+      defaultConfigurationIsVisible = 0;
+      defaultConfigurationName = Release;
+    };
+    A17000000000000000000004 /* Build configuration list for PBXNativeTarget "X1BoxiOSTests" */ = {
+      isa = XCConfigurationList;
+      buildConfigurations = (
+        A18000000000000000000007 /* Debug */,
+        A18000000000000000000008 /* Release */,
+      );
+      defaultConfigurationIsVisible = 0;
+      defaultConfigurationName = Release;
+    };
+/* End XCConfigurationList section */
+
+  };
+  rootObject = A10000000000000000000001 /* Project object */;
+}

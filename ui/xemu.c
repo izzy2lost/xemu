@@ -39,6 +39,7 @@
 #include "qobject/qdict.h"
 #include "ui/console.h"
 #include "ui/input.h"
+#include "ui/xemu-embedded.h"
 #include "ui/xemu-display.h"
 #include "system/runstate.h"
 #include "system/runstate-action.h"
@@ -59,6 +60,12 @@
 
 #include <stb_image.h>
 #include <locale.h>
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#else
+#define TARGET_OS_IPHONE 0
+#endif
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -123,6 +130,28 @@ static SDL_threadID sdl_render_thread_id;
 // struct decal_shader *blit;
 
 static QemuSemaphore display_init_sem;
+static bool g_embedded_host_mode = false;
+static bool g_embedded_host_booted = false;
+static bool g_embedded_host_started_once = false;
+static bool g_embedded_host_hud_initialized = false;
+static bool g_embedded_host_core_exited = false;
+static bool g_embedded_host_save_registered = false;
+static int g_embedded_host_exit_code = 0;
+static char g_embedded_host_error[1024];
+
+static void xemu_embedded_set_error(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(g_embedded_host_error, sizeof(g_embedded_host_error), fmt, ap);
+    va_end(ap);
+}
+
+const char *xemu_embedded_get_last_error(void)
+{
+    return g_embedded_host_error[0] ? g_embedded_host_error : NULL;
+}
 
 static void toggle_full_screen(struct sdl2_console *scon);
 
@@ -901,7 +930,8 @@ static const DisplayChangeListenerOps dcl_gl_ops = {
     .dpy_gl_update           = sdl2_gl_scanout_flush,
 };
 
-static void sdl2_display_very_early_init(DisplayOptions *o)
+static bool sdl2_display_very_early_init_internal(DisplayOptions *o,
+                                                  bool abort_on_failure)
 {
 #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
@@ -937,9 +967,13 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 #endif
 
     if (SDL_Init(SDL_INIT_VIDEO)) {
-        fprintf(stderr, "Failed to initialize SDL video subsystem: %s\n",
-                SDL_GetError());
-        exit(1);
+        xemu_embedded_set_error("Failed to initialize SDL video subsystem: %s",
+                                SDL_GetError());
+        fprintf(stderr, "%s\n", g_embedded_host_error);
+        if (abort_on_failure) {
+            exit(1);
+        }
+        return false;
     }
 
 #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR /* only available since SDL 2.0.8 */
@@ -957,11 +991,11 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || TARGET_OS_IPHONE
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
                         SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, TARGET_OS_IPHONE ? 0 : 2);
 #else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
@@ -1030,7 +1064,7 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 
     // On Android, always use OpenGL window even for Vulkan because Vulkan
     // needs GL context for external memory display presentation
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || TARGET_OS_IPHONE
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 #else
     bool use_vulkan = (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN);
@@ -1044,15 +1078,21 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
         title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width, window_height,
         window_flags);
     if (m_window == NULL) {
-        fprintf(stderr, "Failed to create main window\n");
+        xemu_embedded_set_error("Failed to create main window: %s",
+                                SDL_GetError());
+        fprintf(stderr, "%s\n", g_embedded_host_error);
+        g_free(title);
         SDL_Quit();
-        exit(1);
+        if (abort_on_failure) {
+            exit(1);
+        }
+        return false;
     }
     g_free(title);
     SDL_SetWindowMinimumSize(m_window, min_window_width, min_window_height);
 
     SDL_GetCurrentDisplayMode(SDL_GetWindowDisplayIndex(m_window), &disp_mode);
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !TARGET_OS_IPHONE
     if (disp_mode.w < window_width || disp_mode.h < window_height) {
         SDL_SetWindowSize(m_window, min_window_width, min_window_height);
         SDL_SetWindowPosition(m_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
@@ -1061,7 +1101,7 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 
     m_context = SDL_GL_CreateContext(m_window);
 
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !TARGET_OS_IPHONE
     if (m_context != NULL && epoxy_gl_version() < 40) {
         SDL_GL_MakeCurrent(NULL, NULL);
         SDL_GL_DeleteContext(m_context);
@@ -1070,7 +1110,7 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 #endif
 
     if (m_context == NULL) {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || TARGET_OS_IPHONE
         const char *msg =
             "Unable to create OpenGL ES context. This usually means the\r\n"
             "graphics device on this system does not support OpenGL ES 3.0.\r\n"
@@ -1083,20 +1123,33 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
             "\r\n"
             "xemu cannot continue and will now exit.";
 #endif
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-            "Unable to create OpenGL context",
-            msg,
-            m_window);
+        xemu_embedded_set_error("%s", msg);
+        if (abort_on_failure) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                "Unable to create OpenGL context",
+                msg,
+                m_window);
+        }
         SDL_DestroyWindow(m_window);
+        m_window = NULL;
         SDL_Quit();
-        exit(1);
+        if (abort_on_failure) {
+            exit(1);
+        }
+        return false;
     }
 
     if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
-        fprintf(stderr, "Failed to make GL context current: %s\n", SDL_GetError());
+        xemu_embedded_set_error("Failed to make GL context current: %s",
+                                SDL_GetError());
+        fprintf(stderr, "%s\n", g_embedded_host_error);
         SDL_DestroyWindow(m_window);
+        m_window = NULL;
         SDL_Quit();
-        exit(1);
+        if (abort_on_failure) {
+            exit(1);
+        }
+        return false;
     }
 #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
@@ -1157,7 +1210,7 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 #else
     nv2a_context_init();
 #endif
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !TARGET_OS_IPHONE
     SDL_GL_MakeCurrent(NULL, NULL);
 #endif
 
@@ -1166,6 +1219,12 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
                         "sdl2_display_very_early_init: done");
 #endif
     // FIXME: atexit(sdl_cleanup);
+    return true;
+}
+
+static void sdl2_display_very_early_init(DisplayOptions *o)
+{
+    (void)sdl2_display_very_early_init_internal(o, true);
 }
 
 static void sdl2_display_early_init(DisplayOptions *o)
@@ -1180,6 +1239,10 @@ static void sdl2_display_early_init(DisplayOptions *o)
 #ifdef __ANDROID__
     // Avoid binding the display context on the QEMU thread.
     return;
+#elif TARGET_OS_IPHONE
+    if (g_embedded_host_mode) {
+        return;
+    }
 #else
     SDL_GL_MakeCurrent(m_window, m_context);
     SDL_GL_SetSwapInterval(g_config.display.window.vsync ? 1 : 0);
@@ -1198,6 +1261,10 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
 #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                         "sdl2_display_init: begin");
+#elif TARGET_OS_IPHONE
+    if (!g_embedded_host_mode) {
+        SDL_GL_MakeCurrent(m_window, m_context);
+    }
 #else
     SDL_GL_MakeCurrent(m_window, m_context);
 #endif
@@ -1264,7 +1331,7 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
     sdl_cursor_normal = SDL_GetCursor();
 
     /* Tell main thread to go ahead and create the app and enter the run loop */
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !TARGET_OS_IPHONE
     SDL_GL_MakeCurrent(NULL, NULL);
 #endif
     qemu_sem_post(&display_init_sem);
@@ -1875,6 +1942,174 @@ void sdl2_process_key(struct sdl2_console *scon,
 
 int gArgc;
 char **gArgv;
+static void *call_qemu_main(void *opaque);
+static void *call_qemu_main_embedded(void *opaque);
+
+#if TARGET_OS_IPHONE
+bool xemu_embedded_boot(const char *config_path, const char **error_out)
+{
+    QemuThread thread;
+
+    g_embedded_host_error[0] = '\0';
+
+    if (!config_path || !config_path[0]) {
+        xemu_embedded_set_error("The embedded xemu launch requires a config path.");
+        if (error_out) {
+            *error_out = g_embedded_host_error;
+        }
+        return false;
+    }
+
+    if (g_embedded_host_started_once) {
+        xemu_embedded_set_error(
+            "The embedded xemu core already initialized once in this process. Restart the app before launching again.");
+        if (error_out) {
+            *error_out = g_embedded_host_error;
+        }
+        return false;
+    }
+
+    fprintf(stderr, "xemu_version: %s\n", xemu_version);
+    fprintf(stderr, "xemu_commit: %s\n", xemu_commit);
+    fprintf(stderr, "xemu_date: %s\n", xemu_date);
+
+    setlocale(LC_NUMERIC, "C");
+    xemu_settings_set_path(config_path);
+    if (!xemu_settings_load()) {
+        const char *err_msg = xemu_settings_get_error_message();
+        xemu_embedded_set_error("%s",
+                                err_msg ? err_msg : "Failed to load xemu config file.");
+        if (error_out) {
+            *error_out = g_embedded_host_error;
+        }
+        return false;
+    }
+
+    if (!g_embedded_host_save_registered) {
+        atexit(xemu_settings_save);
+        g_embedded_host_save_registered = true;
+    }
+
+    g_embedded_host_mode = true;
+    if (!sdl2_display_very_early_init_internal(NULL, false)) {
+        g_embedded_host_mode = false;
+        if (error_out) {
+            *error_out = xemu_embedded_get_last_error();
+        }
+        return false;
+    }
+
+    if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+        xemu_embedded_set_error("Embedded iOS host could not bind the GL context: %s",
+                                SDL_GetError());
+        g_embedded_host_mode = false;
+        if (error_out) {
+            *error_out = g_embedded_host_error;
+        }
+        return false;
+    }
+
+    qemu_sem_init(&display_init_sem, 0);
+
+    static char arg0[] = "xemu";
+    static char *embeddedArgv[] = { arg0, NULL, NULL, NULL };
+    gArgc = 3;
+    gArgv = embeddedArgv;
+
+    qemu_thread_create(&thread, "qemu_main_embedded", call_qemu_main_embedded,
+                       NULL, QEMU_THREAD_DETACHED);
+    qemu_sem_wait(&display_init_sem);
+
+    gui_grab = 0;
+    if (gui_fullscreen) {
+        sdl_grab_start(0);
+        set_full_screen(&sdl2_console[0], gui_fullscreen);
+    }
+
+    SDL_GL_SetSwapInterval(g_config.display.window.vsync ? 1 : 0);
+    if (!g_embedded_host_hud_initialized) {
+        xemu_hud_init(m_window, m_context);
+        g_embedded_host_hud_initialized = true;
+    }
+
+    tcg_register_init_ctx();
+    qemu_set_current_aio_context(qemu_get_aio_context());
+
+    qemu_mutex_lock_main_loop();
+    bql_lock();
+    xemu_input_init();
+    bql_unlock();
+    qemu_mutex_unlock_main_loop();
+
+    g_embedded_host_booted = true;
+    g_embedded_host_started_once = true;
+    g_embedded_host_core_exited = false;
+    g_embedded_host_exit_code = 0;
+
+    if (error_out) {
+        *error_out = NULL;
+    }
+    return true;
+}
+
+void xemu_embedded_pump_frame(void)
+{
+    if (!g_embedded_host_booted || !sdl2_console || !sdl2_console[0].real_window) {
+        return;
+    }
+
+    if (g_embedded_host_core_exited) {
+        g_embedded_host_booted = false;
+        return;
+    }
+
+    if (SDL_GL_GetCurrentContext() != m_context) {
+        if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+            xemu_embedded_set_error("Embedded iOS host lost its GL context: %s",
+                                    SDL_GetError());
+            g_embedded_host_booted = false;
+            return;
+        }
+    }
+
+    sdl2_gl_refresh(&sdl2_console[0].dcl);
+}
+
+void xemu_embedded_request_shutdown(void)
+{
+    if (!g_embedded_host_booted) {
+        return;
+    }
+    qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
+}
+
+bool xemu_embedded_is_active(void)
+{
+    return g_embedded_host_booted && !g_embedded_host_core_exited;
+}
+#else
+bool xemu_embedded_boot(const char *config_path, const char **error_out)
+{
+    xemu_embedded_set_error("Embedded iOS host is only available in iPhone and iPad builds.");
+    if (error_out) {
+        *error_out = g_embedded_host_error;
+    }
+    return false;
+}
+
+void xemu_embedded_pump_frame(void)
+{
+}
+
+void xemu_embedded_request_shutdown(void)
+{
+}
+
+bool xemu_embedded_is_active(void)
+{
+    return false;
+}
+#endif
 
 // vl.c
 
@@ -1887,6 +2122,17 @@ static void *call_qemu_main(void *opaque)
     status = qemu_main();
     DPRINTF("Second thread: qemu_main() returned, exiting\n");
     exit(status);
+}
+
+static void *call_qemu_main_embedded(void *opaque)
+{
+    DPRINTF("Embedded thread: calling qemu_main()\n");
+    qemu_init(gArgc, gArgv);
+    g_embedded_host_exit_code = qemu_main();
+    g_embedded_host_core_exited = true;
+    DPRINTF("Embedded thread: qemu_main() returned %d\n",
+            g_embedded_host_exit_code);
+    return NULL;
 }
 
 /* Note: only supports millisecond resolution on Windows */

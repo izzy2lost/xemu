@@ -1,0 +1,82 @@
+name: Build iOS App
+
+on:
+  workflow_dispatch:
+    inputs:
+      sim_destination:
+        description: iOS Simulator destination for xcodebuild
+        required: false
+        default: "platform=iOS Simulator,name=iPhone 16,OS=latest"
+        type: string
+      run_device_build:
+        description: Also run the generic iOS device build
+        required: false
+        default: true
+        type: boolean
+      artifact_name:
+        description: Artifact name used when uploading logs/results
+        required: false
+        default: x1box-ios-ci
+        type: string
+  pull_request:
+    paths:
+      - "ios-app/**"
+      - "ui/xemu.c"
+      - "include/ui/xemu-embedded.h"
+      - ".github/workflows/build-ios-app.yml"
+  push:
+    branches-ignore:
+      - master
+    tags-ignore:
+      - "v*"
+    paths:
+      - "ios-app/**"
+      - "ui/xemu.c"
+      - "include/ui/xemu-embedded.h"
+      - ".github/workflows/build-ios-app.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_ios:
+    name: Build iOS shell and tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Show available simulators
+        run: xcrun simctl list devices available
+
+      - name: Build and test iOS app
+        env:
+          SIM_DESTINATION: ${{ inputs.sim_destination || 'platform=iOS Simulator,name=iPhone 16,OS=latest' }}
+          BUILD_ROOT: build/ios-ci
+          RUN_DEVICE_BUILD: ${{ inputs.run_device_build == false && 'false' || 'true' }}
+        run: bash ios-app/scripts/ci-build-ios.sh
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## X1 BOX iOS CI"
+            echo
+            echo "- Simulator destination: \`${{ inputs.sim_destination || 'platform=iOS Simulator,name=iPhone 16,OS=latest' }}\`"
+            echo "- Device build enabled: \`${{ inputs.run_device_build == false && 'false' || 'true' }}\`"
+            echo "- Artifact name: \`${{ inputs.artifact_name || 'x1box-ios-ci' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload iOS CI artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
+        with:
+          name: ${{ inputs.artifact_name || 'x1box-ios-ci' }}
+          path: |
+            build/ios-ci/logs
+            build/ios-ci/results
+          if-no-files-found: warn
+          compression-level: 0
