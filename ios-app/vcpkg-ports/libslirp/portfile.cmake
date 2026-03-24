@@ -8,61 +8,44 @@ vcpkg_from_gitlab(
 )
 
 if(VCPKG_TARGET_IS_IOS)
-    set(x1box_ios_test_block [=[
-pingtest = executable('pingtest', 'test/pingtest.c',
-link_with: [ lib ],
-c_args : cargs,
-link_args : vflag,
-include_directories: [ 'src' ],
-dependencies : libslirp_deps
-)
-test('ping', pingtest)
-ncsitest = executable('ncsitest', 'test/ncsitest.c',
-link_with: [lib],
-c_args : cargs,
-link_args : vflag,
-include_directories: ['src'],
-dependencies: libslirp_deps
-)
-test('ncsi', ncsitest)]=])
-
-    set(x1box_ios_wrapped_test_block [=[
-if host_system != 'ios'
-pingtest = executable('pingtest', 'test/pingtest.c',
-link_with: [ lib ],
-c_args : cargs,
-link_args : vflag,
-include_directories: [ 'src' ],
-dependencies : libslirp_deps
-)
-test('ping', pingtest)
-ncsitest = executable('ncsitest', 'test/ncsitest.c',
-link_with: [lib],
-c_args : cargs,
-link_args : vflag,
-include_directories: ['src'],
-dependencies: libslirp_deps
-)
-test('ncsi', ncsitest)
-endif]=])
-
     set(x1box_libslirp_meson "${SOURCE_PATH}/meson.build")
-    file(READ "${x1box_libslirp_meson}" x1box_libslirp_meson_contents)
+    file(READ "${x1box_libslirp_meson}" x1box_libslirp_meson_raw)
 
-    if(x1box_libslirp_meson_contents MATCHES "host_system != 'ios'")
+    if(x1box_libslirp_meson_raw MATCHES "if host_system != 'ios'")
         message(STATUS "libslirp iOS test binaries already disabled")
     else()
-        string(REPLACE "${x1box_ios_test_block}" "${x1box_ios_wrapped_test_block}" x1box_libslirp_meson_contents "${x1box_libslirp_meson_contents}")
+    file(STRINGS "${x1box_libslirp_meson}" x1box_libslirp_meson_lines)
 
-        if(x1box_libslirp_meson_contents STREQUAL "")
-            message(FATAL_ERROR "libslirp meson.build replacement unexpectedly produced empty output")
+    set(x1box_pingtest_start "pingtest = executable('pingtest', 'test/pingtest.c',")
+    set(x1box_ncsi_end "test('ncsi', ncsitest)")
+    set(x1box_injected_guard FALSE)
+    set(x1box_inserted_end FALSE)
+    set(x1box_rewritten_lines)
+
+    foreach(x1box_line IN LISTS x1box_libslirp_meson_lines)
+        if(x1box_line STREQUAL "if host_system != 'ios'")
+            set(x1box_injected_guard TRUE)
+        endif()
+        if(x1box_line STREQUAL "${x1box_pingtest_start}" AND NOT x1box_injected_guard)
+            list(APPEND x1box_rewritten_lines "if host_system != 'ios'")
+            set(x1box_injected_guard TRUE)
         endif()
 
+        list(APPEND x1box_rewritten_lines "${x1box_line}")
+
+        if(x1box_line STREQUAL "${x1box_ncsi_end}" AND x1box_injected_guard AND NOT x1box_inserted_end)
+            list(APPEND x1box_rewritten_lines "endif")
+            set(x1box_inserted_end TRUE)
+        endif()
+    endforeach()
+
+    if(x1box_injected_guard AND x1box_inserted_end)
+        string(JOIN "\n" x1box_libslirp_meson_contents ${x1box_rewritten_lines})
+        string(APPEND x1box_libslirp_meson_contents "\n")
         file(WRITE "${x1box_libslirp_meson}" "${x1box_libslirp_meson_contents}")
-        file(READ "${x1box_libslirp_meson}" x1box_libslirp_meson_verify)
-        if(NOT x1box_libslirp_meson_verify MATCHES "if host_system != 'ios'")
-            message(FATAL_ERROR "Failed to disable libslirp test executables for iOS")
-        endif()
+    else()
+        message(FATAL_ERROR "Failed to locate libslirp pingtest block for iOS guard insertion")
+    endif()
     endif()
 endif()
 
