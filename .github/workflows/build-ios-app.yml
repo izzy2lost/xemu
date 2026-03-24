@@ -36,8 +36,10 @@ on:
       - ".github/workflows/build-ios-app.yml"
 
 permissions:
-  actions: write
+  actions: read
   contents: read
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -85,61 +87,159 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
 
-  dispatch_followup:
-    name: Dispatch iOS follow-up
+  publish_followup:
+    name: Publish iOS follow-up
     if: ${{ always() && github.ref_name != 'master' }}
     needs:
       - build_ios
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch follow-up workflow
+      - name: Gather workflow metadata
+        id: gather
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          REF_NAME: ${{ github.head_ref || github.ref_name }}
-          SOURCE_RUN_ID: ${{ github.run_id }}
-          SOURCE_RUN_NUMBER: ${{ github.run_number }}
-          SOURCE_RUN_STATUS: completed
-          SOURCE_RUN_CONCLUSION: ${{ needs.build_ios.result }}
-          SOURCE_RUN_EVENT: ${{ github.event_name }}
-          SOURCE_RUN_NAME: ${{ github.workflow }}
-          SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SOURCE_HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
-          SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          SOURCE_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_STATUS: completed
+          RUN_CONCLUSION: ${{ needs.build_ios.result }}
+          RUN_EVENT: ${{ github.event_name }}
+          RUN_NAME: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER_INPUT: ${{ github.event.pull_request.number || '' }}
         shell: bash
         run: |
           set -euo pipefail
 
-          payload="$(jq -n \
-            --arg ref "${REF_NAME}" \
-            --arg run_id "${SOURCE_RUN_ID}" \
-            --arg run_number "${SOURCE_RUN_NUMBER}" \
-            --arg run_status "${SOURCE_RUN_STATUS}" \
-            --arg run_conclusion "${SOURCE_RUN_CONCLUSION}" \
-            --arg run_event "${SOURCE_RUN_EVENT}" \
-            --arg run_name "${SOURCE_RUN_NAME}" \
-            --arg run_url "${SOURCE_RUN_URL}" \
-            --arg head_branch "${SOURCE_HEAD_BRANCH}" \
-            --arg head_sha "${SOURCE_HEAD_SHA}" \
-            --arg pr_number "${SOURCE_PR_NUMBER}" \
-            '{ref: $ref, inputs: {
-              source_run_id: $run_id,
-              source_run_number: $run_number,
-              source_run_status: $run_status,
-              source_run_conclusion: $run_conclusion,
-              source_run_event: $run_event,
-              source_run_name: $run_name,
-              source_run_url: $run_url,
-              source_head_branch: $head_branch,
-              source_head_sha: $head_sha,
-              source_pr_number: $pr_number
-            }}')"
+          mkdir -p build/ios-followup
 
-          curl -fsSL \
-            -X POST \
+          artifacts_api="https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}/artifacts"
+          jobs_api="https://api.github.com/repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100"
+          artifact_response="$(curl -fsSL \
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            -d "${payload}" \
-            "https://api.github.com/repos/${REPO}/actions/workflows/ios-workflow-followup.yml/dispatches" > /dev/null
+            "${artifacts_api}")"
+          jobs_response="$(curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${jobs_api}")"
+
+          artifact_count="$(jq '.total_count // 0' <<<"${artifact_response}")"
+          artifact_names="$(jq -r 'if (.artifacts | length) == 0 then "none" else [.artifacts[].name] | join(", ") end' <<<"${artifact_response}")"
+          failed_jobs_json="$(jq -c '[.jobs[] | select((.conclusion // "pending") != "success") | {name, conclusion: (.conclusion // "pending"), steps: [(.steps // [])[] | select((.conclusion // "pending") != "success" and (.conclusion // "pending") != "skipped") | {name, conclusion: (.conclusion // "pending")}]}]' <<<"${jobs_response}")"
+          failed_jobs_markdown="$(jq -r 'if length == 0 then "none" else map("- " + .name + " [" + .conclusion + "]" + (if (.steps | length) > 0 then ": " + ([.steps[] | .name + " [" + .conclusion + "]"] | join(", ")) else "" end)) | join("\n") end' <<<"${failed_jobs_json}")"
+          pr_number="${PR_NUMBER_INPUT}"
+
+          {
+            echo "## X1 BOX iOS Workflow Follow-up"
+            echo
+            echo "- Workflow: \`${RUN_NAME}\`"
+            echo "- Run number: \`${RUN_NUMBER}\`"
+            echo "- Status: \`${RUN_STATUS}\`"
+            echo "- Conclusion: \`${RUN_CONCLUSION:-pending}\`"
+            echo "- Event: \`${RUN_EVENT}\`"
+            echo "- Branch: \`${HEAD_BRANCH}\`"
+            echo "- Commit: \`${HEAD_SHA}\`"
+            echo "- Artifacts: \`${artifact_names}\`"
+            echo "- Run URL: ${RUN_URL}"
+            echo
+            echo "### Failed jobs and steps"
+            echo
+            printf '%s\n' "${failed_jobs_markdown}"
+          } > build/ios-followup/workflow-run-summary.md
+
+          jq -n \
+            --arg checked_at_utc "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --arg workflow "${RUN_NAME}" \
+            --argjson run_id "${RUN_ID}" \
+            --argjson run_number "${RUN_NUMBER}" \
+            --arg status "${RUN_STATUS}" \
+            --arg conclusion "${RUN_CONCLUSION:-pending}" \
+            --arg event "${RUN_EVENT}" \
+            --arg branch "${HEAD_BRANCH}" \
+            --arg head_sha "${HEAD_SHA}" \
+            --arg html_url "${RUN_URL}" \
+            --arg repo "${REPO}" \
+            --arg artifacts "${artifact_names}" \
+            --arg pr_number "${pr_number}" \
+            --argjson failed_jobs "${failed_jobs_json}" \
+            '{
+              checked_at_utc: $checked_at_utc,
+              repository: $repo,
+              workflow: $workflow,
+              run_id: $run_id,
+              run_number: $run_number,
+              status: $status,
+              conclusion: $conclusion,
+              event: $event,
+              branch: $branch,
+              head_sha: $head_sha,
+              html_url: $html_url,
+              artifacts: $artifacts,
+              failed_jobs: $failed_jobs,
+              pr_number: (if $pr_number == "" then null else ($pr_number | tonumber) end)
+            }' > build/ios-followup/workflow-run-summary.json
+
+          {
+            echo "pr_number=${pr_number}"
+            echo "artifact_count=${artifact_count}"
+            echo "artifact_names<<EOF"
+            echo "${artifact_names}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Publish job summary
+        shell: bash
+        run: cat build/ios-followup/workflow-run-summary.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload follow-up artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
+        with:
+          name: x1box-ios-followup-${{ github.run_id }}
+          path: build/ios-followup
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Update pull request comment
+        if: ${{ steps.gather.outputs.pr_number != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.gather.outputs.pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          marker="<!-- x1box-ios-workflow-followup -->"
+          comments_api="https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments"
+          comments="$(curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${comments_api}?per_page=100")"
+
+          existing_comment_id="$(jq -r --arg marker "${marker}" 'map(select(.body | contains($marker))) | last | .id // empty' <<<"${comments}")"
+          comment_body="$(printf '%s\n\n%s\n' "${marker}" "$(cat build/ios-followup/workflow-run-summary.md)")"
+          payload="$(jq -n --arg body "${comment_body}" '{body: $body}')"
+
+          if [[ -n "${existing_comment_id}" ]]; then
+            curl -fsSL \
+              -X PATCH \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -d "${payload}" \
+              "https://api.github.com/repos/${REPO}/issues/comments/${existing_comment_id}" > /dev/null
+          else
+            curl -fsSL \
+              -X POST \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -d "${payload}" \
+              "${comments_api}" > /dev/null
+          fi

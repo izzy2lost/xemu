@@ -59,10 +59,10 @@ When that image exports the same symbols already referenced by the bridge (`xemu
 From this Windows workspace, the most reliable way to validate the iOS project is through GitHub Actions on macOS.
 
 - The repository now includes `.github/workflows/build-ios-app.yml`.
-- The repository also includes `.github/workflows/ios-workflow-followup.yml`, which now reacts on feature branches by workflow dispatch from the build workflow, and can still react via `workflow_run` once it lives on the default branch.
+- The repository also includes `.github/workflows/ios-workflow-followup.yml` for default-branch `workflow_run` follow-up, while feature branches publish the same summary/comment artifact inline from `build-ios-app.yml`.
 - That workflow builds the app for iOS Simulator, runs the `X1BoxiOSTests` suite, and also performs a generic iOS device build with signing disabled.
 - The helper script `ios-app/scripts/ci-build-ios.sh` is the single source of truth for those `xcodebuild` commands, so the same flow can be reused locally on macOS.
-- The bridge script `ios-app/scripts/fork-workflow-bridge.ps1` can dispatch the workflow on your fork, wait for completion, and download the uploaded artifacts back into this workspace.
+- The bridge script `ios-app/scripts/fork-workflow-bridge.ps1` can dispatch the workflow on your fork, wait for completion, and download both the main iOS CI artifact and the follow-up summary artifact back into this workspace.
 - The follow-up workflow publishes a compact summary artifact for every run, includes failed jobs and failing steps, and updates the related pull request comment when the run belongs to a PR.
 
 This is the practical answer to "can we program this correctly from here?": yes, by pairing this Windows editing environment with remote macOS CI for every iOS iteration, and by letting GitHub itself react on every workflow use.

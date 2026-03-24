@@ -279,7 +279,10 @@ function Save-WorkflowArtifacts {
   New-Item -ItemType Directory -Force -Path $destination | Out-Null
 
   foreach ($artifact in $artifactResponse.artifacts) {
-    if ($ExpectedArtifactName -and $artifact.name -ne $ExpectedArtifactName) {
+    $matchesExpectedName = -not $ExpectedArtifactName -or $artifact.name -eq $ExpectedArtifactName
+    $matchesFollowUpArtifact = $artifact.name -like "x1box-ios-followup-*"
+
+    if (-not ($matchesExpectedName -or $matchesFollowUpArtifact)) {
       continue
     }
 
