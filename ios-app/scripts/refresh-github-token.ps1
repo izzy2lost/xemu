@@ -58,14 +58,6 @@ function Resolve-Token {
     return (New-TokenInfo -Value $ExplicitToken -Source "argument")
   }
 
-  if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
-    return (New-TokenInfo -Value $env:GITHUB_TOKEN -Source "env:GITHUB_TOKEN")
-  }
-
-  if (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
-    return (New-TokenInfo -Value $env:GH_TOKEN -Source "env:GH_TOKEN")
-  }
-
   $userGitHubToken = [Environment]::GetEnvironmentVariable("GITHUB_TOKEN", "User")
   if (-not [string]::IsNullOrWhiteSpace($userGitHubToken)) {
     return (New-TokenInfo -Value $userGitHubToken -Source "user:GITHUB_TOKEN")
@@ -74,6 +66,14 @@ function Resolve-Token {
   $userGhToken = [Environment]::GetEnvironmentVariable("GH_TOKEN", "User")
   if (-not [string]::IsNullOrWhiteSpace($userGhToken)) {
     return (New-TokenInfo -Value $userGhToken -Source "user:GH_TOKEN")
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+    return (New-TokenInfo -Value $env:GITHUB_TOKEN -Source "env:GITHUB_TOKEN")
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+    return (New-TokenInfo -Value $env:GH_TOKEN -Source "env:GH_TOKEN")
   }
 
   throw "Provide -Token or set GITHUB_TOKEN / GH_TOKEN before running this script."
@@ -107,7 +107,7 @@ function Invoke-GitHubApi {
   }
 
   if ($Raw) {
-    return Invoke-WebRequest -Method $Method -Uri $Uri -Headers $headers
+    return Invoke-WebRequest -UseBasicParsing -Method $Method -Uri $Uri -Headers $headers
   }
 
   return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
