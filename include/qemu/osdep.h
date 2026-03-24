@@ -858,6 +858,11 @@ size_t qemu_get_host_physmem(void);
  * for the current thread.
  */
 #ifdef __APPLE__
+#include <TargetConditionals.h>
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+static inline void qemu_thread_jit_execute(void) {}
+static inline void qemu_thread_jit_write(void) {}
+#else
 static inline void qemu_thread_jit_execute(void)
 {
     pthread_jit_write_protect_np(true);
@@ -867,6 +872,7 @@ static inline void qemu_thread_jit_write(void)
 {
     pthread_jit_write_protect_np(false);
 }
+#endif
 #else
 static inline void qemu_thread_jit_write(void) {}
 static inline void qemu_thread_jit_execute(void) {}
