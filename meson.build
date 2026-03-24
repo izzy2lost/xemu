@@ -2406,6 +2406,8 @@ endif
 if host_os == 'windows'
   libpcap = declare_dependency(include_directories: 'winpcap-loader/include',
                                link_args: ['-lws2_32'])
+elif host_os == 'darwin' and get_option('x1box_ios_embedded_core')
+  libpcap = declare_dependency()
 else
   libpcap = dependency('libpcap', method: 'pkg-config', required: true)
 endif
