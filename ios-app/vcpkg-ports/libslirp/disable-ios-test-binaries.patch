@@ -1,44 +1,37 @@
 --- a/meson.build
 +++ b/meson.build
-@@ -1,19 +1,21 @@
+@@ -202,16 +202,18 @@
 -pingtest = executable('pingtest', 'test/pingtest.c',
--  link_with: [ lib ],
--  c_args : cargs,
--  link_args : vflag,
--  include_directories: [ 'src' ],
--  dependencies : libslirp_deps
+-link_with: [ lib ],
+-c_args : cargs,
+-link_args : vflag,
+-include_directories: [ 'src' ],
+-dependencies : libslirp_deps
 -)
--
 -test('ping', pingtest)
--
 -ncsitest = executable('ncsitest', 'test/ncsitest.c',
--  link_with: [lib],
--  c_args : cargs,
--  link_args : vflag,
--  include_directories: ['src'],
--  dependencies: libslirp_deps
+-link_with: [lib],
+-c_args : cargs,
+-link_args : vflag,
+-include_directories: ['src'],
+-dependencies: libslirp_deps
 -)
--
 -test('ncsi', ncsitest)
 +if host_system != 'ios'
-+  pingtest = executable('pingtest', 'test/pingtest.c',
-+    link_with: [ lib ],
-+    c_args : cargs,
-+    link_args : vflag,
-+    include_directories: [ 'src' ],
-+    dependencies : libslirp_deps
-+  )
-+
-+  test('ping', pingtest)
-+
-+  ncsitest = executable('ncsitest', 'test/ncsitest.c',
-+    link_with: [lib],
-+    c_args : cargs,
-+    link_args : vflag,
-+    include_directories: ['src'],
-+    dependencies: libslirp_deps
-+  )
-+
-+  test('ncsi', ncsitest)
++pingtest = executable('pingtest', 'test/pingtest.c',
++link_with: [ lib ],
++c_args : cargs,
++link_args : vflag,
++include_directories: [ 'src' ],
++dependencies : libslirp_deps
++)
++test('ping', pingtest)
++ncsitest = executable('ncsitest', 'test/ncsitest.c',
++link_with: [lib],
++c_args : cargs,
++link_args : vflag,
++include_directories: ['src'],
++dependencies: libslirp_deps
++)
++test('ncsi', ncsitest)
 +endif
-
