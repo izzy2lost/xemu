@@ -11,7 +11,7 @@ set(VCPKG_OSX_ARCHITECTURES arm64)
 set(VCPKG_OSX_SYSROOT iphonesimulator)
 set(VCPKG_MAKE_BUILD_TRIPLET
     --build=aarch64-apple-darwin
-    --host=aarch64-apple-ios-simulator)
+    --host=aarch64-apple-darwin)
 set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE static)
 set(VCPKG_BUILD_TYPE release)
