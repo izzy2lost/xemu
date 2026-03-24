@@ -207,7 +207,7 @@ configure_and_build() {
   export PKG_CONFIG_ALLOW_CROSS=1
   export PKG_CONFIG_PATH="${dep_prefix}/lib/pkgconfig"
   export PKG_CONFIG_LIBDIR="${dep_prefix}/lib/pkgconfig"
-  export PKG_CONFIG_SYSROOT_DIR="${sdkroot}"
+  unset PKG_CONFIG_SYSROOT_DIR
 
   "${REPO_ROOT}/configure" \
     --cross-prefix= \
