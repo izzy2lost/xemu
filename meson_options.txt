@@ -40,6 +40,8 @@ option('coroutine_backend', type: 'combo',
        value: 'auto', description: 'coroutine backend to use')
 option('gdb', type: 'string', value: '',
        description: 'Path to GDB')
+option('x1box_ios_embedded_core', type : 'boolean', value : false,
+       description: 'Build the X1 BOX embedded iOS core shared library target on darwin/iOS toolchains')
 
 # Everything else can be set via --enable/--disable-* option
 # on the configure script command line.  After adding an option

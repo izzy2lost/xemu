@@ -18,6 +18,16 @@ on:
         required: false
         default: x1box-ios-ci
         type: string
+      embedded_core_run_id:
+        description: Workflow run ID that produced the embedded core artifact
+        required: false
+        default: ""
+        type: string
+      embedded_core_artifact_name:
+        description: Artifact name that contains X1BoxEmbeddedCore.framework/.xcframework or libxemu-ios-core.dylib
+        required: false
+        default: x1box-ios-embedded-core
+        type: string
   pull_request:
     paths:
       - "ios-app/**"
@@ -58,6 +68,23 @@ jobs:
       - name: Show available simulators
         run: xcrun simctl list devices available
 
+      - name: Download embedded core artifact
+        if: ${{ inputs.embedded_core_run_id != '' }}
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
+        with:
+          name: ${{ inputs.embedded_core_artifact_name || 'x1box-ios-embedded-core' }}
+          path: build/ios-embedded-core-download
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.embedded_core_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Stage embedded core drop-in
+        if: ${{ inputs.embedded_core_run_id != '' }}
+        run: |
+          bash ios-app/scripts/prepare-embedded-core-dropin.sh \
+            build/ios-embedded-core-download \
+            ios-app/EmbeddedCore
+
       - name: Build and test iOS app
         env:
           SIM_DESTINATION: ${{ inputs.sim_destination || 'platform=iOS Simulator,name=iPhone 16,OS=latest' }}
@@ -74,6 +101,8 @@ jobs:
             echo "- Simulator destination: \`${{ inputs.sim_destination || 'platform=iOS Simulator,name=iPhone 16,OS=latest' }}\`"
             echo "- Device build enabled: \`${{ inputs.run_device_build == false && 'false' || 'true' }}\`"
             echo "- Artifact name: \`${{ inputs.artifact_name || 'x1box-ios-ci' }}\`"
+            echo "- Embedded core run id: \`${{ inputs.embedded_core_run_id || 'none' }}\`"
+            echo "- Embedded core artifact: \`${{ inputs.embedded_core_artifact_name || 'x1box-ios-embedded-core' }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload iOS CI artifacts

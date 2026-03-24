@@ -51,6 +51,7 @@ When that image exports the same symbols already referenced by the bridge (`xemu
 
 If you already have an upstream-built binary, `ios-app/scripts/package-x1box-embedded-core.sh <path-to-binary>` wraps it into `ios-app/EmbeddedCore/X1BoxEmbeddedCore.framework` so it can be signed and bundled without changing the SwiftUI shell.
 If you have separate device and simulator builds, `ios-app/scripts/package-x1box-embedded-core-xcframework.sh --device <path> --simulator <path>` creates `ios-app/EmbeddedCore/X1BoxEmbeddedCore.xcframework` so the embed step can choose the right slice automatically.
+If you download the output of the embedded-core CI workflow, `ios-app/scripts/prepare-embedded-core-dropin.sh <artifact-download-dir>` stages the framework, xcframework, or dylib into `ios-app/EmbeddedCore/` automatically.
 
 ## Build setup
 
@@ -65,9 +66,11 @@ If you have separate device and simulator builds, `ios-app/scripts/package-x1box
 From this Windows workspace, the most reliable way to validate the iOS project is through GitHub Actions on macOS.
 
 - The repository now includes `.github/workflows/build-ios-app.yml`.
+- The repository now includes `.github/workflows/build-ios-embedded-core.yml` for the macOS-side `libxemu-ios-core.dylib` / `X1BoxEmbeddedCore.xcframework` packaging path.
 - The repository also includes `.github/workflows/ios-workflow-followup.yml` for default-branch `workflow_run` follow-up, while feature branches publish the same summary/comment artifact inline from `build-ios-app.yml`.
 - That workflow builds the app for iOS Simulator, runs the `X1BoxiOSTests` suite, and also performs a generic iOS device build with signing disabled.
 - The helper script `ios-app/scripts/ci-build-ios.sh` is the single source of truth for those `xcodebuild` commands, so the same flow can be reused locally on macOS.
+- `build-ios-app.yml` can now optionally download a prior `x1box-ios-embedded-core` artifact and stage it into `ios-app/EmbeddedCore/` before the Xcode build starts.
 - The bridge script `ios-app/scripts/fork-workflow-bridge.ps1` can dispatch the workflow on your fork, wait for completion, and download both the main iOS CI artifact and the follow-up summary artifact back into this workspace.
 - The follow-up workflow publishes a compact summary artifact for every run, includes failed jobs and failing steps, and updates the related pull request comment when the run belongs to a PR.
 

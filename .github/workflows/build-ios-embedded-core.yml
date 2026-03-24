@@ -1,0 +1,93 @@
+name: Build iOS Embedded Core
+
+on:
+  workflow_dispatch:
+    inputs:
+      deps_run_id:
+        description: Workflow run ID that produced the iOS dependency bundle artifact
+        required: false
+        default: ""
+        type: string
+      deps_artifact_name:
+        description: Artifact name that contains device/ and simulator/ dependency prefixes
+        required: false
+        default: x1box-ios-deps
+        type: string
+      min_ios_version:
+        description: Minimum iOS version used for the embedded core build
+        required: false
+        default: "17.0"
+        type: string
+      simulator_arch:
+        description: Simulator architecture
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - arm64
+          - x86_64
+      artifact_name:
+        description: Artifact name used when uploading the embedded core output
+        required: false
+        default: x1box-ios-embedded-core
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build_embedded_core:
+    name: Build embedded iOS core
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Set up Python tooling
+        run: python3 -m pip install --upgrade meson ninja
+
+      - name: Download dependency bundle
+        if: ${{ inputs.deps_run_id != '' }}
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
+        with:
+          name: ${{ inputs.deps_artifact_name || 'x1box-ios-deps' }}
+          path: build/ios-core-deps
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.deps_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build embedded core xcframework
+        env:
+          X1BOX_IOS_DEPS_ROOT: ${{ github.workspace }}/build/ios-core-deps
+          X1BOX_IOS_MIN_VERSION: ${{ inputs.min_ios_version || '17.0' }}
+          X1BOX_IOS_SIMULATOR_ARCH: ${{ inputs.simulator_arch || 'auto' }}
+          X1BOX_IOS_EMBEDDED_CORE_BUILD_ROOT: ${{ github.workspace }}/build/ios-embedded-core
+        run: bash ios-app/scripts/build-x1box-embedded-core.sh
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## X1 BOX Embedded iOS Core"
+            echo
+            echo "- Dependency run id: \`${{ inputs.deps_run_id || 'local workspace' }}\`"
+            echo "- Dependency artifact: \`${{ inputs.deps_artifact_name || 'x1box-ios-deps' }}\`"
+            echo "- Minimum iOS: \`${{ inputs.min_ios_version || '17.0' }}\`"
+            echo "- Simulator arch: \`${{ inputs.simulator_arch || 'auto' }}\`"
+            echo "- Output artifact: \`${{ inputs.artifact_name || 'x1box-ios-embedded-core' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload embedded core artifact
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
+        with:
+          name: ${{ inputs.artifact_name || 'x1box-ios-embedded-core' }}
+          path: |
+            build/ios-embedded-core/artifacts
+            build/ios-embedded-core/logs
+          if-no-files-found: warn
+          compression-level: 0

@@ -30,6 +30,7 @@ Packaging helper:
 
 - If you already have an upstream-built core binary, run `scripts/package-x1box-embedded-core.sh <path-to-binary>` to wrap it into `EmbeddedCore/X1BoxEmbeddedCore.framework`.
 - If you already have separate device and simulator artifacts, run `scripts/package-x1box-embedded-core-xcframework.sh --device <path> --simulator <path>` to build `EmbeddedCore/X1BoxEmbeddedCore.xcframework`.
+- If you downloaded the `x1box-ios-embedded-core` CI artifact, run `scripts/prepare-embedded-core-dropin.sh <artifact-download-dir>` to stage the correct drop-in into this folder.
 - The generated framework is runtime-only. Sign it with the same identity as the app before testing on a real device.
 
 Development fallback:

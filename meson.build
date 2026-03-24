@@ -1855,7 +1855,11 @@ opengl = not_found
 if not get_option('opengl').auto() or have_system or have_vhost_user_gpu
   # FIXME: Use meson's 'gl' dep
   if host_os == 'darwin'
-    opengl_libs=['-framework', 'OpenGL']
+    if get_option('x1box_ios_embedded_core')
+      opengl_libs=['-framework', 'OpenGLES']
+    else
+      opengl_libs=['-framework', 'OpenGL']
+    endif
   elif host_os == 'windows'
     opengl_libs=['-lopengl32', '-lgdi32']
   elif host_os == 'linux'
@@ -4660,6 +4664,21 @@ foreach target : target_dirs
     }]
 
   endforeach
+
+  if host_os == 'darwin' and target == 'i386-softmmu' and get_option('x1box_ios_embedded_core')
+    ios_core = shared_library(
+      'xemu-ios-core',
+      [],
+      install: false,
+      c_args: c_args,
+      dependencies: arch_deps + [sdl],
+      objects: lib.extract_all_objects(recursive: true),
+      link_depends: [block_syms, qemu_syms],
+      link_args: link_args,
+      name_prefix: 'lib'
+    )
+    alias_target('x1box-ios-embedded-core', ios_core)
+  endif
 endforeach
 
 # Other build targets

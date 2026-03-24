@@ -20,6 +20,10 @@
 #ifndef XEMU_OS_UTILS_H
 #define XEMU_OS_UTILS_H
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -41,7 +45,11 @@ static inline const char *xemu_get_os_platform(void)
 #elif defined(_WIN32)
     platform_name = "Windows";
 #elif defined(__APPLE__)
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    platform_name = "iOS";
+#else
     platform_name = "macOS";
+#endif
 #else
     platform_name = "Unknown";
 #endif

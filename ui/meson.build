@@ -41,8 +41,13 @@ endif
 subdir('xui')
 
 if host_os == 'darwin'
-  xemu_cocoa = dependency('appleframeworks', modules: 'Cocoa')
-  xemu_ss.add(xemu_cocoa)
+  if get_option('x1box_ios_embedded_core')
+    xemu_uikit = dependency('appleframeworks', modules: 'UIKit')
+    xemu_ss.add(xemu_uikit)
+  else
+    xemu_cocoa = dependency('appleframeworks', modules: 'Cocoa')
+    xemu_ss.add(xemu_cocoa)
+  endif
 endif
 
 if host_os == 'linux'
@@ -50,7 +55,11 @@ if host_os == 'linux'
 elif host_os == 'windows'
   xemu_ss.add(files('xemu-os-utils-windows.c'))
 elif host_os == 'darwin'
-  xemu_ss.add(files('xemu-os-utils-macos.m'))
+  if get_option('x1box_ios_embedded_core')
+    xemu_ss.add(files('xemu-os-utils-ios.m'))
+  else
+    xemu_ss.add(files('xemu-os-utils-macos.m'))
+  endif
 endif
 xemu_ss.add(imgui, implot, stb_image, noc, sdl, opengl, fa, fpng, json, fatx, tomlplusplus, genconfig)
 system_ss.add_all(xemu_ss)
