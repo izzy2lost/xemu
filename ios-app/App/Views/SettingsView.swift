@@ -8,6 +8,7 @@ struct SettingsView: View {
 
   @State private var draft: EmulatorSettings
   @State private var isImportingEEPROM = false
+  @State private var isImportingEmbeddedCore = false
   @State private var assetErrorMessage: String?
   @State private var embeddedCoreStatus: String = X1BoxNativeBridge.shared().embeddedCoreStatusSummary()
   @State private var embeddedCorePath: String?
@@ -35,6 +36,17 @@ struct SettingsView: View {
             .font(.footnote)
             .foregroundStyle(XboxTheme.muted)
 
+          Text(setupStore.summary.record(for: .embeddedCore)?.displayName ?? "No embedded core artifact imported into app storage.")
+            .font(.footnote)
+            .foregroundStyle(XboxTheme.muted)
+
+          if let stagedCorePath = setupStore.localURL(for: .embeddedCore)?.path {
+            Text(stagedCorePath)
+              .font(.footnote.monospaced())
+              .foregroundStyle(XboxTheme.text)
+              .textSelection(.enabled)
+          }
+
           if let embeddedCorePath,
              !embeddedCorePath.isEmpty {
             Text(embeddedCorePath)
@@ -43,9 +55,30 @@ struct SettingsView: View {
               .textSelection(.enabled)
           }
 
+          Button("Import Embedded Core") {
+            isImportingEmbeddedCore = true
+          }
+
+          if setupStore.summary.record(for: .embeddedCore) != nil {
+            Button("Clear Imported Embedded Core") {
+              do {
+                try setupStore.removeSelection(for: .embeddedCore)
+                assetErrorMessage = nil
+                refreshEmbeddedCoreStatus()
+              } catch {
+                assetErrorMessage = error.localizedDescription
+              }
+            }
+            .foregroundStyle(.red)
+          }
+
           Button("Refresh Embedded Core Detection") {
             refreshEmbeddedCoreStatus()
           }
+
+          Text("Import a signed X1BoxEmbeddedCore.framework or libxemu-ios-core.dylib exported from the upstream iOS core build. If you replace a core that is already loaded, restart the app so iOS picks up the new image cleanly.")
+            .font(.footnote)
+            .foregroundStyle(XboxTheme.muted)
         }
 
         Section("Display") {
@@ -238,6 +271,25 @@ struct SettingsView: View {
     .preferredColorScheme(.dark)
     .onAppear {
       refreshEmbeddedCoreStatus()
+    }
+    .fileImporter(
+      isPresented: $isImportingEmbeddedCore,
+      allowedContentTypes: [.item, .folder],
+      allowsMultipleSelection: false
+    ) { result in
+      switch result {
+      case .success(let urls):
+        guard let url = urls.first else { return }
+        do {
+          try setupStore.importEmbeddedCoreArtifact(from: url)
+          assetErrorMessage = nil
+          refreshEmbeddedCoreStatus()
+        } catch {
+          assetErrorMessage = error.localizedDescription
+        }
+      case .failure(let error):
+        assetErrorMessage = error.localizedDescription
+      }
     }
     .fileImporter(
       isPresented: $isImportingEEPROM,

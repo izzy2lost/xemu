@@ -25,4 +25,32 @@ final class SetupAssetStoreTests: XCTestCase {
     XCTAssertEqual(record?.bookmarkKey, "ios.setup.bookmark.gamesFolder")
     XCTAssertNotNil(defaults.data(forKey: "ios.setup.bookmark.gamesFolder"))
   }
+
+  func testEmbeddedCoreDylibStagesIntoApplicationSupport() throws {
+    let suiteName = "SetupAssetStoreEmbeddedCoreTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    let sourceRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let sourceURL = sourceRoot.appendingPathComponent("libxemu-ios-core.dylib")
+    try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: sourceURL.path, contents: Data([0xCA, 0xFE, 0xBA, 0xBE]))
+    defer {
+      try? FileManager.default.removeItem(at: sourceRoot)
+    }
+
+    let store = SetupAssetStore(defaults: defaults)
+    try store.importEmbeddedCoreArtifact(from: sourceURL)
+    defer {
+      try? store.removeSelection(for: .embeddedCore)
+    }
+
+    let record = store.summary.record(for: .embeddedCore)
+    XCTAssertEqual(record?.displayName, "libxemu-ios-core.dylib")
+    XCTAssertEqual(record?.localPath, try AppPaths.embeddedCoreDylibURL().path)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: try AppPaths.embeddedCoreDylibURL().path))
+  }
 }

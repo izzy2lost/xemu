@@ -26,6 +26,24 @@ enum AppPaths {
     try appSupportRoot().appendingPathComponent("dvd.iso")
   }
 
+  static func embeddedCoreDirectory() throws -> URL {
+    let url = try appSupportRoot().appendingPathComponent("EmbeddedCore", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+  }
+
+  static func embeddedCoreFrameworkURL() throws -> URL {
+    try embeddedCoreDirectory().appendingPathComponent("X1BoxEmbeddedCore.framework", isDirectory: true)
+  }
+
+  static func embeddedCoreFrameworkBinaryURL() throws -> URL {
+    try embeddedCoreFrameworkURL().appendingPathComponent("X1BoxEmbeddedCore")
+  }
+
+  static func embeddedCoreDylibURL() throws -> URL {
+    try embeddedCoreDirectory().appendingPathComponent("libxemu-ios-core.dylib")
+  }
+
   static func configURL() throws -> URL {
     try appSupportRoot().appendingPathComponent("xemu.toml")
   }

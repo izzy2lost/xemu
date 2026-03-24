@@ -22,6 +22,12 @@ How it works:
 Recommended path for real device testing:
 
 - Use `X1BoxEmbeddedCore.framework` signed with the same development identity as the app.
+- You can also import a framework or dylib from the iOS app Settings screen, which stages it into `Application Support/X1Box/EmbeddedCore/` for runtime loading.
+
+Packaging helper:
+
+- If you already have an upstream-built core binary, run `scripts/package-x1box-embedded-core.sh <path-to-binary>` to wrap it into `EmbeddedCore/X1BoxEmbeddedCore.framework`.
+- The generated framework is runtime-only. Sign it with the same identity as the app before testing on a real device.
 
 Development fallback:
 

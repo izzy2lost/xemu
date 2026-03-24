@@ -44,8 +44,11 @@ The iOS bridge will look for these developer/runtime integration points:
 - a signed bundled framework at `X1BoxEmbeddedCore.framework/X1BoxEmbeddedCore` inside the app's `Frameworks` area
 - a developer fallback image under `Library/Application Support/X1Box/EmbeddedCore/`
 - a packaging drop-in at `ios-app/EmbeddedCore/`, which the Xcode app target now copies into `Frameworks/` through `scripts/embed-x1box-core.sh`
+- a framework or dylib imported from the Settings screen and staged into `Application Support/X1Box/EmbeddedCore/`
 
 When that image exports the same symbols already referenced by the bridge (`xemu_embedded_*`, `qemu_init`, `qemu_main`, `xemu_settings_*`, snapshot helpers), the app can move from shell fallback into the real embedded core path on iPhone and iPad.
+
+If you already have an upstream-built binary, `ios-app/scripts/package-x1box-embedded-core.sh <path-to-binary>` wraps it into `ios-app/EmbeddedCore/X1BoxEmbeddedCore.framework` so it can be signed and bundled without changing the SwiftUI shell.
 
 ## Build setup
 

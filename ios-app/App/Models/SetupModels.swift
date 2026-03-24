@@ -5,6 +5,7 @@ enum SetupAssetKind: String, CaseIterable, Codable, Identifiable {
   case flash
   case hdd
   case eeprom
+  case embeddedCore
   case gamesFolder
 
   var id: String { rawValue }
@@ -19,6 +20,8 @@ enum SetupAssetKind: String, CaseIterable, Codable, Identifiable {
       return "Hard Disk"
     case .eeprom:
       return "EEPROM"
+    case .embeddedCore:
+      return "Embedded iOS Core"
     case .gamesFolder:
       return "Games Folder"
     }
@@ -34,6 +37,8 @@ enum SetupAssetKind: String, CaseIterable, Codable, Identifiable {
       return "hdd.img"
     case .eeprom:
       return "eeprom.bin"
+    case .embeddedCore:
+      return nil
     case .gamesFolder:
       return nil
     }
@@ -43,7 +48,7 @@ enum SetupAssetKind: String, CaseIterable, Codable, Identifiable {
     switch self {
     case .mcpx, .flash, .hdd, .gamesFolder:
       return true
-    case .eeprom:
+    case .eeprom, .embeddedCore:
       return false
     }
   }
