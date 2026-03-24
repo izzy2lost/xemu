@@ -160,12 +160,12 @@ final class EmulatorSession: ObservableObject {
     }
 
     if bridge.canUseNativeSnapshots() {
-      var snapshotError: NSError?
-      if bridge.saveNativeSnapshotNamed(nativeSnapshotName, error: &snapshotError) {
+      do {
+        try bridge.saveNativeSnapshotNamed(nativeSnapshotName)
         slot.nativeSnapshotName = nativeSnapshotName
         slot.detail += " Native memory-state snapshot is available for this slot."
-      } else if let snapshotError {
-        throw snapshotError
+      } catch {
+        throw error
       }
     } else {
       slot.nativeSnapshotName = nil
@@ -192,10 +192,10 @@ final class EmulatorSession: ObservableObject {
 
     if let nativeSnapshotName,
        bridge.canUseNativeSnapshots() {
-      var snapshotError: NSError?
-      if !bridge.deleteNativeSnapshotNamed(nativeSnapshotName, error: &snapshotError),
-         let snapshotError {
-        throw snapshotError
+      do {
+        try bridge.deleteNativeSnapshotNamed(nativeSnapshotName)
+      } catch {
+        throw error
       }
     }
 
@@ -226,12 +226,14 @@ final class EmulatorSession: ObservableObject {
       lastPreparedConfigURL = configURL
       currentGame = game
 
-      var bridgeError: NSError?
-      if bridge.startSession(withConfigPath: configURL.path, error: &bridgeError) {
+      do {
+        try bridge.startSession(withConfigPath: configURL.path)
         state = .running
         currentLaunchTarget = launchTarget(for: game)
-      } else {
-        let message = bridgeError?.localizedDescription ?? "The native bridge could not start the session."
+      } catch {
+        let message = error.localizedDescription.isEmpty
+          ? "The native bridge could not start the session."
+          : error.localizedDescription
         state = .failed(message)
       }
     } catch {
@@ -298,18 +300,14 @@ final class EmulatorSession: ObservableObject {
       return false
     }
 
-    var snapshotError: NSError?
-    if bridge.loadNativeSnapshotNamed(nativeSnapshotName, error: &snapshotError) {
+    do {
+      try bridge.loadNativeSnapshotNamed(nativeSnapshotName)
       snapshotActionMessage = "Loaded native snapshot for slot \(slot.slotNumber)."
       snapshotActionError = nil
       return true
+    } catch {
+      throw error
     }
-
-    if let snapshotError {
-      throw snapshotError
-    }
-
-    return false
   }
 
   private func applyEEPROMOverridesIfNeeded(setup: SetupSummary, settings: EmulatorSettings) throws {
