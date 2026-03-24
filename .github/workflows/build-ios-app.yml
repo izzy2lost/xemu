@@ -28,6 +28,11 @@ on:
         required: false
         default: x1box-ios-embedded-core
         type: string
+  workflow_run:
+    workflows:
+      - Build iOS Embedded Core
+    types:
+      - completed
   pull_request:
     paths:
       - "ios-app/**"
@@ -58,6 +63,7 @@ concurrency:
 jobs:
   build_ios:
     name: Build iOS shell and tests
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: macos-15
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
@@ -68,18 +74,42 @@ jobs:
       - name: Show available simulators
         run: xcrun simctl list devices available
 
+      - name: Resolve embedded core source
+        id: embedded_core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          run_id="${{ inputs.embedded_core_run_id }}"
+          artifact_name="${{ inputs.embedded_core_artifact_name || 'x1box-ios-embedded-core' }}"
+          source_label="manual input"
+
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            run_id="${{ github.event.workflow_run.id }}"
+            artifact_name="x1box-ios-embedded-core"
+            source_label="workflow_run"
+          elif [[ -z "${run_id}" ]]; then
+            source_label="not requested"
+          fi
+
+          {
+            echo "run_id=${run_id}"
+            echo "artifact_name=${artifact_name}"
+            echo "source_label=${source_label}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Download embedded core artifact
-        if: ${{ inputs.embedded_core_run_id != '' }}
+        if: ${{ steps.embedded_core.outputs.run_id != '' }}
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
         with:
-          name: ${{ inputs.embedded_core_artifact_name || 'x1box-ios-embedded-core' }}
+          name: ${{ steps.embedded_core.outputs.artifact_name }}
           path: build/ios-embedded-core-download
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.embedded_core_run_id }}
+          run-id: ${{ steps.embedded_core.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Stage embedded core drop-in
-        if: ${{ inputs.embedded_core_run_id != '' }}
+        if: ${{ steps.embedded_core.outputs.run_id != '' }}
         run: |
           bash ios-app/scripts/prepare-embedded-core-dropin.sh \
             build/ios-embedded-core-download \
@@ -98,11 +128,13 @@ jobs:
           {
             echo "## X1 BOX iOS CI"
             echo
+            echo "- Trigger event: \`${{ github.event_name }}\`"
             echo "- Simulator destination: \`${{ inputs.sim_destination || 'platform=iOS Simulator,name=iPhone 16,OS=latest' }}\`"
             echo "- Device build enabled: \`${{ inputs.run_device_build == false && 'false' || 'true' }}\`"
             echo "- Artifact name: \`${{ inputs.artifact_name || 'x1box-ios-ci' }}\`"
-            echo "- Embedded core run id: \`${{ inputs.embedded_core_run_id || 'none' }}\`"
-            echo "- Embedded core artifact: \`${{ inputs.embedded_core_artifact_name || 'x1box-ios-embedded-core' }}\`"
+            echo "- Embedded core source: \`${{ steps.embedded_core.outputs.source_label }}\`"
+            echo "- Embedded core run id: \`${{ steps.embedded_core.outputs.run_id || 'none' }}\`"
+            echo "- Embedded core artifact: \`${{ steps.embedded_core.outputs.artifact_name || 'x1box-ios-embedded-core' }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload iOS CI artifacts

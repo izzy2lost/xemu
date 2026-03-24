@@ -71,6 +71,7 @@ From this Windows workspace, the most reliable way to validate the iOS project i
 - That workflow builds the app for iOS Simulator, runs the `X1BoxiOSTests` suite, and also performs a generic iOS device build with signing disabled.
 - The helper script `ios-app/scripts/ci-build-ios.sh` is the single source of truth for those `xcodebuild` commands, so the same flow can be reused locally on macOS.
 - `build-ios-app.yml` can now optionally download a prior `x1box-ios-embedded-core` artifact and stage it into `ios-app/EmbeddedCore/` before the Xcode build starts.
+- After this lands on a default branch, `build-ios-app.yml` can also react to `Build iOS Embedded Core` via `workflow_run`, download that run's default `x1box-ios-embedded-core` artifact, and validate the shell against the packaged core automatically.
 - The bridge script `ios-app/scripts/fork-workflow-bridge.ps1` can dispatch the workflow on your fork, wait for completion, and download both the main iOS CI artifact and the follow-up summary artifact back into this workspace.
 - The follow-up workflow publishes a compact summary artifact for every run, includes failed jobs and failing steps, and updates the related pull request comment when the run belongs to a PR.
 
