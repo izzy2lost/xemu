@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
+import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -725,48 +726,108 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       return
     }
 
-    val options = arrayOf(
-      getString(R.string.in_game_menu_resume),
+    val dp = resources.displayMetrics.density
+    val verticalButtonSpacing = (8 * dp).toInt()
+    val horizontalButtonSpacing = (8 * dp).toInt()
+    lateinit var dialog: androidx.appcompat.app.AlertDialog
+    data class MenuButtonSpec(
+      val label: String,
+      val action: () -> Unit,
+    )
+
+    fun createMenuButton(spec: MenuButtonSpec): MaterialButton {
+      return MaterialButton(
+        this@MainActivity,
+        null,
+        com.google.android.material.R.attr.materialButtonOutlinedStyle
+      ).apply {
+        text = spec.label
+        gravity = Gravity.CENTER
+        textAlignment = View.TEXT_ALIGNMENT_CENTER
+        isSingleLine = false
+        maxLines = 2
+        setOnClickListener {
+          dialog.dismiss()
+          spec.action()
+        }
+      }
+    }
+
+    fun addSingleButton(parent: LinearLayout, spec: MenuButtonSpec) {
+      parent.addView(createMenuButton(spec).apply {
+        layoutParams = LinearLayout.LayoutParams(
+          LinearLayout.LayoutParams.MATCH_PARENT,
+          LinearLayout.LayoutParams.WRAP_CONTENT
+        ).also { lp ->
+          lp.bottomMargin = verticalButtonSpacing
+        }
+      })
+    }
+
+    fun addButtonRow(parent: LinearLayout, left: MenuButtonSpec, right: MenuButtonSpec) {
+      parent.addView(
+        LinearLayout(this).apply {
+          orientation = LinearLayout.HORIZONTAL
+          layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+          ).also { lp ->
+            lp.bottomMargin = verticalButtonSpacing
+          }
+          addView(createMenuButton(left).apply {
+            layoutParams = LinearLayout.LayoutParams(
+              0,
+              LinearLayout.LayoutParams.WRAP_CONTENT,
+              1f
+            ).also { lp ->
+              lp.marginEnd = horizontalButtonSpacing
+            }
+          })
+          addView(createMenuButton(right).apply {
+            layoutParams = LinearLayout.LayoutParams(
+              0,
+              LinearLayout.LayoutParams.WRAP_CONTENT,
+              1f
+            )
+          })
+        }
+      )
+    }
+
+    val resumeButton = MenuButtonSpec(getString(R.string.in_game_menu_resume)) { /* Resume */ }
+    val touchControlsButton = MenuButtonSpec(
       if (isControllerVisible) {
         getString(R.string.in_game_menu_hide_touch_controls)
       } else {
         getString(R.string.in_game_menu_show_touch_controls)
-      },
-      getString(R.string.in_game_menu_save_state),
-      getString(R.string.in_game_menu_load_state),
-      getString(R.string.in_game_menu_reboot_system),
-      getString(R.string.in_game_menu_exit_to_library),
-      getString(R.string.in_game_menu_quit_app),
-    )
-
-    val dp = resources.displayMetrics.density
-    lateinit var dialog: androidx.appcompat.app.AlertDialog
+      }
+    ) {
+      toggleOnScreenController()
+    }
+    val saveStateButton = MenuButtonSpec(getString(R.string.in_game_menu_save_state)) {
+      showSaveStateDialog()
+    }
+    val loadStateButton = MenuButtonSpec(getString(R.string.in_game_menu_load_state)) {
+      showLoadStateDialog()
+    }
+    val rebootButton = MenuButtonSpec(getString(R.string.in_game_menu_reboot_system)) {
+      showRebootSystemConfirmation()
+    }
+    val exitToLibraryButton = MenuButtonSpec(getString(R.string.in_game_menu_exit_to_library)) {
+      exitToGameLibrary()
+    }
+    val quitAppButton = MenuButtonSpec(getString(R.string.in_game_menu_quit_app)) {
+      quitApp()
+    }
 
     val buttonList = LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       setPadding((20 * dp).toInt(), (12 * dp).toInt(), (20 * dp).toInt(), 0)
-      options.forEachIndexed { i, label ->
-        addView(MaterialButton(this@MainActivity, null,
-          com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
-          text = label
-          layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-          ).also { lp -> lp.bottomMargin = (8 * dp).toInt() }
-          setOnClickListener {
-            dialog.dismiss()
-            when (i) {
-              0 -> { /* Resume — dialog dismissed above */ }
-              1 -> toggleOnScreenController()
-              2 -> showSaveStateDialog()
-              3 -> showLoadStateDialog()
-              4 -> showRebootSystemConfirmation()
-              5 -> exitToGameLibrary()
-              6 -> quitApp()
-            }
-          }
-        })
-      }
+      addSingleButton(this, resumeButton)
+      addSingleButton(this, touchControlsButton)
+      addButtonRow(this, saveStateButton, loadStateButton)
+      addSingleButton(this, rebootButton)
+      addButtonRow(this, exitToLibraryButton, quitAppButton)
     }
 
     val scrollContainer = NestedScrollView(this).apply {

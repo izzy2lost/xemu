@@ -28,7 +28,6 @@ import androidx.documentfile.provider.DocumentFile
 import coil.load
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.materialswitch.MaterialSwitch
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -121,7 +120,6 @@ class GameLibraryActivity : AppCompatActivity() {
   private lateinit var btnAbout: ImageButton
   private lateinit var btnViewList: MaterialButton
   private lateinit var btnViewGrid: MaterialButton
-  private lateinit var switchBoxArtLookup: MaterialSwitch
 
   private var gamesFolderUri: Uri? = null
   private var scanGeneration = 0
@@ -175,15 +173,14 @@ class GameLibraryActivity : AppCompatActivity() {
     btnAbout = findViewById(R.id.btn_library_about)
     btnViewList = findViewById(R.id.btn_view_list)
     btnViewGrid = findViewById(R.id.btn_view_grid)
-    switchBoxArtLookup = findViewById(R.id.switch_box_art_lookup)
     btnViewList.isCheckable = true
     btnViewGrid.isCheckable = true
 
     gamesFolderUri = prefs.getString("gamesFolderUri", null)?.let(Uri::parse)
     useCoverGrid = prefs.getBoolean("library_cover_grid", false)
-    boxArtLookupEnabled = prefs.getBoolean("library_box_art_lookup", true)
+    boxArtLookupEnabled = true
+    prefs.edit().putBoolean("library_box_art_lookup", true).apply()
 
-    switchBoxArtLookup.isChecked = boxArtLookupEnabled
     syncDisplayModeUi()
 
     btnBootDashboard.setOnClickListener {
@@ -207,13 +204,6 @@ class GameLibraryActivity : AppCompatActivity() {
     }
     btnViewList.setOnClickListener { setDisplayMode(false) }
     btnViewGrid.setOnClickListener { setDisplayMode(true) }
-    switchBoxArtLookup.setOnCheckedChangeListener { _, checked ->
-      boxArtLookupEnabled = checked
-      prefs.edit().putBoolean("library_box_art_lookup", checked).apply()
-      if (useCoverGrid) {
-        renderGames()
-      }
-    }
     updateConvertButtonState()
 
     if (!isFolderReady(gamesFolderUri)) {
@@ -572,7 +562,6 @@ class GameLibraryActivity : AppCompatActivity() {
   private fun syncDisplayModeUi() {
     btnViewList.isChecked = !useCoverGrid
     btnViewGrid.isChecked = useCoverGrid
-    switchBoxArtLookup.visibility = if (useCoverGrid) View.VISIBLE else View.GONE
     gamesListContainer.visibility = if (useCoverGrid) View.GONE else View.VISIBLE
     gamesGridContainer.visibility = if (useCoverGrid) View.VISIBLE else View.GONE
   }

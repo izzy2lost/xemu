@@ -16,6 +16,9 @@
   <color name="xemu_green_dark">#66FF00</color>
   <color name="xemu_green_container">#1A5224</color>
 
+  <!-- Notice -->
+  <color name="xemu_notice">#FFD54F</color>
+
   <!-- Danger / warning -->
   <color name="xemu_warning">#FF6B6B</color>
   <color name="xemu_warning_container">#4A1515</color>

@@ -45,6 +45,7 @@
   <string name="library_view_list">List</string>
   <string name="library_view_cover_grid">Cover Grid</string>
   <string name="library_box_art_lookup">Look up box art online</string>
+  <string name="library_long_press_hint">Press and hold on a game for more options.</string>
   <string name="library_no_folder">No folder selected</string>
   <string name="library_loading_games">Scanning games...</string>
   <string name="library_converting_game">Converting %1$s...</string>
