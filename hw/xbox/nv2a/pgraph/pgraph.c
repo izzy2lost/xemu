@@ -1160,7 +1160,9 @@ DEF_METHOD(NV097, SET_COMBINER_SPECULAR_FOG_CW1)
 DEF_METHOD(NV097, SET_TEXTURE_ADDRESS)
 {
     int slot = (method - NV097_SET_TEXTURE_ADDRESS) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXADDRESS0 + slot * 4, parameter);
+    unsigned int reg = NV_PGRAPH_TEXADDRESS0 + slot * 4;
+    pg->texture_dirty[slot] |= (parameter != pgraph_reg_r(pg, reg));
+    pgraph_reg_w(pg, reg, parameter);
 }
 
 DEF_METHOD(NV097, SET_CONTROL0)
@@ -2628,8 +2630,9 @@ DEF_METHOD(NV097, SET_BEGIN_END)
 DEF_METHOD(NV097, SET_TEXTURE_OFFSET)
 {
     int slot = (method - NV097_SET_TEXTURE_OFFSET) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXOFFSET0 + slot * 4, parameter);
-    pg->texture_dirty[slot] = true;
+    unsigned int reg = NV_PGRAPH_TEXOFFSET0 + slot * 4;
+    pg->texture_dirty[slot] |= (parameter != pgraph_reg_r(pg, reg));
+    pgraph_reg_w(pg, reg, parameter);
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_FORMAT)
@@ -2656,6 +2659,7 @@ DEF_METHOD(NV097, SET_TEXTURE_FORMAT)
         GET_MASK(parameter, NV097_SET_TEXTURE_FORMAT_BASE_SIZE_P);
 
     unsigned int reg = NV_PGRAPH_TEXFMT0 + slot * 4;
+    uint32_t prev = pgraph_reg_r(pg, reg);
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_CONTEXT_DMA, dma_select);
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_CUBEMAPENABLE, cubemap);
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_BORDER_SOURCE, border_source);
@@ -2666,35 +2670,39 @@ DEF_METHOD(NV097, SET_TEXTURE_FORMAT)
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_BASE_SIZE_V, log_height);
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_BASE_SIZE_P, log_depth);
 
-    pg->texture_dirty[slot] = true;
+    pg->texture_dirty[slot] |= (pgraph_reg_r(pg, reg) != prev);
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_CONTROL0)
 {
     int slot = (method - NV097_SET_TEXTURE_CONTROL0) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXCTL0_0 + slot*4, parameter);
-    pg->texture_dirty[slot] = true;
+    unsigned int reg = NV_PGRAPH_TEXCTL0_0 + slot * 4;
+    pg->texture_dirty[slot] |= (parameter != pgraph_reg_r(pg, reg));
+    pgraph_reg_w(pg, reg, parameter);
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_CONTROL1)
 {
     int slot = (method - NV097_SET_TEXTURE_CONTROL1) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXCTL1_0 + slot*4, parameter);
-    pg->texture_dirty[slot] = true;
+    unsigned int reg = NV_PGRAPH_TEXCTL1_0 + slot * 4;
+    pg->texture_dirty[slot] |= (parameter != pgraph_reg_r(pg, reg));
+    pgraph_reg_w(pg, reg, parameter);
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_FILTER)
 {
     int slot = (method - NV097_SET_TEXTURE_FILTER) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXFILTER0 + slot * 4, parameter);
-    pg->texture_dirty[slot] = true;
+    unsigned int reg = NV_PGRAPH_TEXFILTER0 + slot * 4;
+    pg->texture_dirty[slot] |= (parameter != pgraph_reg_r(pg, reg));
+    pgraph_reg_w(pg, reg, parameter);
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_IMAGE_RECT)
 {
     int slot = (method - NV097_SET_TEXTURE_IMAGE_RECT) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXIMAGERECT0 + slot * 4, parameter);
-    pg->texture_dirty[slot] = true;
+    unsigned int reg = NV_PGRAPH_TEXIMAGERECT0 + slot * 4;
+    pg->texture_dirty[slot] |= (parameter != pgraph_reg_r(pg, reg));
+    pgraph_reg_w(pg, reg, parameter);
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_PALETTE)
@@ -2709,17 +2717,20 @@ DEF_METHOD(NV097, SET_TEXTURE_PALETTE)
         GET_MASK(parameter, NV097_SET_TEXTURE_PALETTE_OFFSET);
 
     unsigned int reg = NV_PGRAPH_TEXPALETTE0 + slot * 4;
+    uint32_t prev = pgraph_reg_r(pg, reg);
     PG_SET_MASK(reg, NV_PGRAPH_TEXPALETTE0_CONTEXT_DMA, dma_select);
     PG_SET_MASK(reg, NV_PGRAPH_TEXPALETTE0_LENGTH, length);
     PG_SET_MASK(reg, NV_PGRAPH_TEXPALETTE0_OFFSET, offset);
 
-    pg->texture_dirty[slot] = true;
+    pg->texture_dirty[slot] |= (pgraph_reg_r(pg, reg) != prev);
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_BORDER_COLOR)
 {
     int slot = (method - NV097_SET_TEXTURE_BORDER_COLOR) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_BORDERCOLOR0 + slot * 4, parameter);
+    unsigned int reg = NV_PGRAPH_BORDERCOLOR0 + slot * 4;
+    pg->texture_dirty[slot] |= (parameter != pgraph_reg_r(pg, reg));
+    pgraph_reg_w(pg, reg, parameter);
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_SET_BUMP_ENV_MAT)

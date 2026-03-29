@@ -1431,6 +1431,10 @@ static bool check_textures_dirty(PGRAPHState *pg)
         if (!r->texture_bindings[i] || pg->texture_dirty[i]) {
             return true;
         }
+        if (r->texture_bindings[i] != &r->dummy_texture &&
+            r->texture_bindings[i]->possibly_dirty) {
+            return true;
+        }
     }
     return false;
 }
@@ -1483,16 +1487,29 @@ void pgraph_vk_bind_textures(NV2AState *d)
 
     for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
         if (!pgraph_is_texture_enabled(pg, i)) {
-            r->texture_bindings[i] = &r->dummy_texture;
+            if (r->texture_bindings[i] != &r->dummy_texture) {
+                r->texture_bindings[i] = &r->dummy_texture;
+                r->texture_bindings_changed = true;
+            }
+            pg->texture_dirty[i] = false;
             continue;
         }
 
+        if (!pg->texture_dirty[i] && r->texture_bindings[i] &&
+            r->texture_bindings[i] != &r->dummy_texture &&
+            !r->texture_bindings[i]->possibly_dirty) {
+            continue;
+        }
+
+        TextureBinding *prev_binding = r->texture_bindings[i];
         create_texture(pg, i);
 
         pg->texture_dirty[i] = false; // FIXME: Move to renderer?
+        if (r->texture_bindings[i] != prev_binding) {
+            r->texture_bindings_changed = true;
+        }
     }
 
-    r->texture_bindings_changed = true;
     update_timestamps(r);
     NV2A_VK_DGROUP_END();
 }
