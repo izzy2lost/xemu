@@ -43,6 +43,9 @@
 #include "glsl.h"
 
 #define HAVE_EXTERNAL_MEMORY 0
+#define NUM_GFX_DESCRIPTOR_SETS 8192
+#define MAX_FRAMEBUFFERS 256
+#define FB_CACHE_MAX 32
 
 typedef struct QueueFamilyIndices {
     int queue_family;
@@ -369,9 +372,19 @@ typedef struct PGRAPHVkState {
     VkCommandBuffer aux_command_buffer;
     bool in_aux_command_buffer;
 
-    VkFramebuffer framebuffers[50];
+    VkFramebuffer framebuffers[MAX_FRAMEBUFFERS];
     int framebuffer_index;
     bool framebuffer_dirty;
+    struct {
+        VkRenderPass render_pass;
+        VkImageView color_view;
+        VkImageView zeta_view;
+        uint32_t width;
+        uint32_t height;
+        VkFramebuffer framebuffer;
+    } fb_cache[FB_CACHE_MAX];
+    int fb_cache_count;
+    VkFramebuffer current_framebuffer;
 
     VkRenderPass render_pass;
     GArray *render_passes; // RenderPass
@@ -387,7 +400,8 @@ typedef struct PGRAPHVkState {
 
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layout;
-    VkDescriptorSet descriptor_sets[1024];
+    VkDescriptorSet *descriptor_sets;
+    int descriptor_set_count;
     int descriptor_set_index;
 
     StorageBuffer storage_buffers[BUFFER_COUNT];

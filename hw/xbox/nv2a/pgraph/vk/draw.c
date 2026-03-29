@@ -471,6 +471,26 @@ static void create_frame_buffer(PGRAPHState *pg)
 
     assert(r->color_binding || r->zeta_binding);
 
+    SurfaceBinding *binding = r->color_binding ? : r->zeta_binding;
+    VkImageView color_view = r->color_binding ? r->color_binding->image_view
+                                              : VK_NULL_HANDLE;
+    VkImageView zeta_view = r->zeta_binding ? r->zeta_binding->image_view
+                                            : VK_NULL_HANDLE;
+    uint32_t width = binding->width;
+    uint32_t height = binding->height;
+    pgraph_apply_scaling_factor(pg, &width, &height);
+
+    for (int i = 0; i < r->fb_cache_count; i++) {
+        if (r->fb_cache[i].render_pass == r->render_pass &&
+            r->fb_cache[i].color_view == color_view &&
+            r->fb_cache[i].zeta_view == zeta_view &&
+            r->fb_cache[i].width == width &&
+            r->fb_cache[i].height == height) {
+            r->current_framebuffer = r->fb_cache[i].framebuffer;
+            return;
+        }
+    }
+
     if (r->framebuffer_index >= ARRAY_SIZE(r->framebuffers)) {
         pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
     }
@@ -479,26 +499,35 @@ static void create_frame_buffer(PGRAPHState *pg)
     int attachment_count = 0;
 
     if (r->color_binding) {
-        attachments[attachment_count++] = r->color_binding->image_view;
+        attachments[attachment_count++] = color_view;
     }
     if (r->zeta_binding) {
-        attachments[attachment_count++] = r->zeta_binding->image_view;
+        attachments[attachment_count++] = zeta_view;
     }
-
-    SurfaceBinding *binding = r->color_binding ? : r->zeta_binding;
 
     VkFramebufferCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .renderPass = r->render_pass,
         .attachmentCount = attachment_count,
         .pAttachments = attachments,
-        .width = binding->width,
-        .height = binding->height,
+        .width = width,
+        .height = height,
         .layers = 1,
     };
-    pgraph_apply_scaling_factor(pg, &create_info.width, &create_info.height);
     VK_CHECK(vkCreateFramebuffer(r->device, &create_info, NULL,
                                  &r->framebuffers[r->framebuffer_index++]));
+    r->current_framebuffer = r->framebuffers[r->framebuffer_index - 1];
+
+    if (r->fb_cache_count < FB_CACHE_MAX) {
+        r->fb_cache[r->fb_cache_count++] = (typeof(r->fb_cache[0])) {
+            .render_pass = r->render_pass,
+            .color_view = color_view,
+            .zeta_view = zeta_view,
+            .width = width,
+            .height = height,
+            .framebuffer = r->current_framebuffer,
+        };
+    }
 }
 
 static void destroy_framebuffers(PGRAPHState *pg)
@@ -511,6 +540,8 @@ static void destroy_framebuffers(PGRAPHState *pg)
         r->framebuffers[i] = VK_NULL_HANDLE;
     }
     r->framebuffer_index = 0;
+    r->fb_cache_count = 0;
+    r->current_framebuffer = VK_NULL_HANDLE;
 }
 
 static void create_clear_pipeline(PGRAPHState *pg)
@@ -1282,12 +1313,12 @@ static void begin_render_pass(PGRAPHState *pg)
                  vp_height = pg->surface_binding_dim.height;
     pgraph_apply_scaling_factor(pg, &vp_width, &vp_height);
 
-    assert(r->framebuffer_index > 0);
+    assert(r->current_framebuffer != VK_NULL_HANDLE);
 
     VkRenderPassBeginInfo render_pass_begin_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = r->render_pass,
-        .framebuffer = r->framebuffers[r->framebuffer_index - 1],
+        .framebuffer = r->current_framebuffer,
         .renderArea.extent.width = vp_width,
         .renderArea.extent.height = vp_height,
         .clearValueCount = 0,
