@@ -1,4 +1,4 @@
-use std::ffi::{c_char, CStr};
+use std::ffi::{c_char, c_void, CStr};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context};
 use xdvdfs::blockdev::OffsetWrapper;
 use xdvdfs::write::fs::{StdIOCopier, XDVDFSFilesystem};
-use xdvdfs::write::img::{create_xdvdfs_image, NoOpProgressVisitor};
+use xdvdfs::write::fs::PathRef;
+use xdvdfs::write::img::{create_xdvdfs_image, NoOpProgressVisitor, ProgressVisitor};
 
 fn canonical_or_absolute(path: &Path) -> std::io::Result<PathBuf> {
     match std::fs::canonicalize(path) {
@@ -21,7 +22,55 @@ fn canonical_or_absolute(path: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
-fn convert_iso_to_xiso(input: &Path, output: &Path) -> anyhow::Result<()> {
+struct ProgressReporter {
+    callback: extern "C" fn(i32, i32, *mut c_void),
+    user_data: *mut c_void,
+    total: i32,
+    current: i32,
+    last_percent: i32,
+}
+
+impl ProgressReporter {
+    fn report(&mut self) {
+        let percent = if self.total > 0 {
+            (self.current as i64 * 100 / self.total as i64) as i32
+        } else {
+            0
+        };
+        if percent != self.last_percent {
+            self.last_percent = percent;
+            (self.callback)(self.current, self.total, self.user_data);
+        }
+    }
+}
+
+impl ProgressVisitor for ProgressReporter {
+    fn entry_counts(&mut self, file_count: usize, dir_count: usize) {
+        self.total = (file_count + dir_count) as i32;
+        self.current = 0;
+        self.last_percent = -1;
+        (self.callback)(0, self.total, self.user_data);
+    }
+
+    fn directory_added(&mut self, _path: PathRef<'_>, _sector: u64) {
+        self.current += 1;
+        self.report();
+    }
+
+    fn file_added(&mut self, _path: PathRef<'_>, _sector: u64) {
+        self.current += 1;
+        self.report();
+    }
+
+    fn finished(&mut self) {
+        if self.total > 0 {
+            self.current = self.total;
+            (self.callback)(self.current, self.total, self.user_data);
+        }
+    }
+}
+
+fn convert_iso_to_xiso(input: &Path, output: &Path, visitor: impl ProgressVisitor) -> anyhow::Result<()> {
     let input_meta = std::fs::metadata(input)
         .with_context(|| format!("Failed to read input metadata: {}", input.display()))?;
     if !input_meta.is_file() {
@@ -63,7 +112,7 @@ fn convert_iso_to_xiso(input: &Path, output: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("Failed to open output file: {}", output.display()))?;
     let mut output_writer = BufWriter::with_capacity(1024 * 1024, output_file);
 
-    create_xdvdfs_image(&mut fs, &mut output_writer, NoOpProgressVisitor)
+    create_xdvdfs_image(&mut fs, &mut output_writer, visitor)
         .context("Failed while creating XISO image")?;
     output_writer
         .flush()
@@ -109,7 +158,7 @@ pub extern "C" fn xiso_convert_iso_to_xiso(
     let outcome = std::panic::catch_unwind(|| {
         let input = c_path_to_owned(input_path, "input_path")?;
         let output = c_path_to_owned(output_path, "output_path")?;
-        convert_iso_to_xiso(Path::new(&input), Path::new(&output))
+        convert_iso_to_xiso(Path::new(&input), Path::new(&output), NoOpProgressVisitor)
     });
 
     match outcome {
@@ -118,7 +167,53 @@ pub extern "C" fn xiso_convert_iso_to_xiso(
             0
         }
         Ok(Err(e)) => {
-            write_err_buf(err_buf, err_buf_len, &e.to_string());
+            write_err_buf(err_buf, err_buf_len, &format!("{e:#}"));
+            1
+        }
+        Err(_) => {
+            write_err_buf(err_buf, err_buf_len, "ISO conversion panicked");
+            2
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn xiso_convert_iso_to_xiso_with_progress(
+    input_path: *const c_char,
+    output_path: *const c_char,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+    progress_callback: Option<extern "C" fn(i32, i32, *mut c_void)>,
+    user_data: *mut c_void,
+) -> i32 {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let input = c_path_to_owned(input_path, "input_path")?;
+        let output = c_path_to_owned(output_path, "output_path")?;
+
+        match progress_callback {
+            Some(cb) => {
+                let reporter = ProgressReporter {
+                    callback: cb,
+                    user_data,
+                    total: 0,
+                    current: 0,
+                    last_percent: -1,
+                };
+                convert_iso_to_xiso(Path::new(&input), Path::new(&output), reporter)
+            }
+            None => {
+                convert_iso_to_xiso(Path::new(&input), Path::new(&output), NoOpProgressVisitor)
+            }
+        }
+    }));
+
+    match outcome {
+        Ok(Ok(())) => {
+            write_err_buf(err_buf, err_buf_len, "");
+            0
+        }
+        Ok(Err(e)) => {
+            write_err_buf(err_buf, err_buf_len, &format!("{e:#}"));
             1
         }
         Err(_) => {

@@ -46,20 +46,35 @@
             android:orientation="horizontal">
 
             <TextView
-              android:layout_width="0dp"
+              android:layout_width="wrap_content"
               android:layout_height="wrap_content"
-              android:layout_weight="1"
               android:text="@string/library_title"
               android:textAppearance="@style/TextAppearance.Material3.HeadlineMedium" />
 
             <ImageButton
               android:id="@+id/btn_library_about"
-              android:layout_width="40dp"
-              android:layout_height="40dp"
+              android:layout_width="36dp"
+              android:layout_height="36dp"
+              android:layout_marginStart="6dp"
               android:background="?attr/selectableItemBackgroundBorderless"
               android:contentDescription="@string/library_about_button_desc"
               android:padding="6dp"
               android:src="@drawable/ic_xemu_info"
+              android:tint="@color/game_library_top_button_content" />
+
+            <View
+              android:layout_width="0dp"
+              android:layout_height="0dp"
+              android:layout_weight="1" />
+
+            <ImageButton
+              android:id="@+id/btn_settings"
+              android:layout_width="40dp"
+              android:layout_height="40dp"
+              android:background="?attr/selectableItemBackgroundBorderless"
+              android:contentDescription="@string/library_settings"
+              android:padding="6dp"
+              android:src="@drawable/ic_xemu_settings"
               android:tint="@color/game_library_top_button_content" />
           </LinearLayout>
 
@@ -70,110 +85,47 @@
             All get the spring press animator via the global style.
           -->
 
-          <!-- Primary action: filled green pill -->
-          <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_boot_dashboard"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/library_boot_dashboard"
-            android:textColor="@color/xemu_black"
-            app:icon="@drawable/ic_xemu_play"
-            app:iconGravity="textStart"
-            app:iconTint="@color/xemu_black"
-            app:iconPadding="10dp" />
-
-          <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/library_boot_dashboard_note"
-            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
-            android:textColor="@color/xemu_text_muted" />
-
-          <!-- Secondary actions: outlined pills with explicit spring (not in toggle group) -->
-          <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_settings"
-            style="@style/Widget.Xemu.Button.Outlined.Pill"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="@string/library_settings"
-            android:textColor="@color/game_library_top_button_content"
-            app:icon="@drawable/ic_xemu_settings"
-            app:iconGravity="textStart"
-            app:iconTint="@color/game_library_top_button_content"
-            app:iconPadding="10dp" />
-
-          <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_snapshots"
-            style="@style/Widget.Xemu.Button.Outlined.Pill"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="@string/library_snapshots"
-            android:textColor="@color/game_library_top_button_content"
-            app:icon="@drawable/ic_xemu_history"
-            app:iconGravity="textStart"
-            app:iconTint="@color/game_library_top_button_content"
-            app:iconPadding="10dp" />
-
-          <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_convert_iso"
-            style="@style/Widget.Xemu.Button.Outlined.Pill"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="@string/library_convert_iso"
-            android:textColor="@color/game_library_top_button_content"
-            app:icon="@drawable/ic_xemu_sync_alt"
-            app:iconGravity="textStart"
-            app:iconTint="@color/game_library_top_button_content"
-            app:iconPadding="10dp" />
-
-          <!-- Expressive-style view mode buttons -->
+          <!-- Dashboard + Snapshots -->
           <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
+            android:layout_marginTop="16dp"
             android:baselineAligned="false"
             android:orientation="horizontal">
 
             <com.google.android.material.button.MaterialButton
-              android:id="@+id/btn_view_list"
-              style="@style/Widget.Xemu.Button.Outlined.Pill"
+              android:id="@+id/btn_boot_dashboard"
               android:layout_width="0dp"
               android:layout_height="wrap_content"
               android:layout_weight="1"
-              android:text="@string/library_view_list"
-              android:textColor="@color/game_library_view_toggle_content"
-              app:backgroundTint="@color/game_library_view_toggle_background"
-              app:icon="@drawable/ic_xemu_view_list"
+              android:text="@string/library_boot_dashboard"
+              android:textColor="@color/xemu_black"
+              app:icon="@drawable/ic_xemu_play"
               app:iconGravity="textStart"
-              app:iconTint="@color/game_library_view_toggle_content"
+              app:iconTint="@color/xemu_black"
               app:iconPadding="8dp" />
 
             <com.google.android.material.button.MaterialButton
-              android:id="@+id/btn_view_grid"
+              android:id="@+id/btn_snapshots"
               style="@style/Widget.Xemu.Button.Outlined.Pill"
               android:layout_width="0dp"
               android:layout_height="wrap_content"
-              android:layout_marginStart="10dp"
+              android:layout_marginStart="6dp"
               android:layout_weight="1"
-              android:text="@string/library_view_cover_grid"
-              android:textColor="@color/game_library_view_toggle_content"
-              app:backgroundTint="@color/game_library_view_toggle_background"
-              app:icon="@drawable/ic_xemu_grid_view"
+              android:text="@string/library_snapshots"
+              android:textColor="@color/game_library_top_button_content"
+              app:icon="@drawable/ic_xemu_history"
               app:iconGravity="textStart"
-              app:iconTint="@color/game_library_view_toggle_content"
+              app:iconTint="@color/game_library_top_button_content"
               app:iconPadding="8dp" />
           </LinearLayout>
 
+          <!-- Hint + view mode buttons on one row -->
           <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="center"
+            android:layout_marginTop="10dp"
+            android:gravity="center_vertical"
             android:orientation="horizontal">
 
             <ImageView
@@ -186,12 +138,50 @@
 
             <TextView
               android:id="@+id/tv_library_long_press_hint"
-              android:layout_width="wrap_content"
+              android:layout_width="0dp"
               android:layout_height="wrap_content"
+              android:layout_weight="1"
               android:text="@string/library_long_press_hint"
-              android:textAlignment="center"
               android:textAppearance="@style/TextAppearance.Material3.BodySmall"
               android:textColor="@color/xemu_text_muted" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_view_list"
+              style="@style/Widget.Xemu.Button.Outlined"
+              android:layout_width="40dp"
+              android:layout_height="40dp"
+              android:layout_marginStart="8dp"
+              android:insetTop="0dp"
+              android:insetBottom="0dp"
+              android:minWidth="0dp"
+              android:minHeight="0dp"
+              android:padding="0dp"
+              android:contentDescription="@string/library_view_list"
+              android:textColor="@color/game_library_view_toggle_content"
+              app:backgroundTint="@color/game_library_view_toggle_background"
+              app:icon="@drawable/ic_xemu_view_list"
+              app:iconGravity="textStart"
+              app:iconPadding="0dp"
+              app:iconTint="@color/game_library_view_toggle_content" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_view_grid"
+              style="@style/Widget.Xemu.Button.Outlined"
+              android:layout_width="40dp"
+              android:layout_height="40dp"
+              android:layout_marginStart="6dp"
+              android:insetTop="0dp"
+              android:insetBottom="0dp"
+              android:minWidth="0dp"
+              android:minHeight="0dp"
+              android:padding="0dp"
+              android:contentDescription="@string/library_view_cover_grid"
+              android:textColor="@color/game_library_view_toggle_content"
+              app:backgroundTint="@color/game_library_view_toggle_background"
+              app:icon="@drawable/ic_xemu_grid_view"
+              app:iconGravity="textStart"
+              app:iconPadding="0dp"
+              app:iconTint="@color/game_library_view_toggle_content" />
           </LinearLayout>
 
           <LinearLayout
@@ -207,6 +197,18 @@
               android:layout_width="20dp"
               android:layout_height="20dp"
               android:indeterminateTint="@color/xemu_green"
+              android:visibility="gone" />
+
+            <ProgressBar
+              android:id="@+id/library_convert_progress"
+              style="?android:attr/progressBarStyleHorizontal"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:layout_marginStart="10dp"
+              android:max="100"
+              android:progress="0"
+              android:progressTint="@color/xemu_green"
               android:visibility="gone" />
 
             <TextView
@@ -230,6 +232,20 @@
             android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
             android:textColor="@color/xemu_text_muted"
             android:visibility="gone" />
+
+          <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_convert_iso"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="8dp"
+            android:text="@string/library_convert_iso"
+            android:textColor="#FF5252"
+            android:visibility="gone"
+            app:rippleColor="#33FF5252"
+            app:shapeAppearance="@style/ShapeAppearance.Xemu.Pill"
+            app:strokeColor="#FF5252" />
 
           <LinearLayout
             android:id="@+id/library_games_container"

@@ -38,17 +38,18 @@
   <string name="setup_disc_value">Games Folder: %1$s</string>
 
   <string name="library_title">Game Library</string>
-  <string name="library_boot_dashboard">Boot Dashboard</string>
+  <string name="library_boot_dashboard">Dashboard</string>
   <string name="library_boot_dashboard_note">Requires a hard drive image with the Microsoft dashboard installed. Barebones HDD layouts will not work.</string>
   <string name="library_snapshots">Snapshots</string>
-  <string name="library_convert_iso">Convert ISO to XISO</string>
+  <string name="library_convert_iso">ISO  ›  XISO</string>
   <string name="library_view_list">List</string>
-  <string name="library_view_cover_grid">Cover Grid</string>
+  <string name="library_view_cover_grid">Covers</string>
   <string name="library_box_art_lookup">Look up box art online</string>
-  <string name="library_long_press_hint">Press and hold on a game for more options.</string>
+  <string name="library_long_press_hint">Press and hold on game for options.</string>
   <string name="library_no_folder">No folder selected</string>
   <string name="library_loading_games">Scanning games...</string>
   <string name="library_converting_game">Converting %1$s...</string>
+  <string name="library_converting_game_percent">Converting %1$s… %2$d%%</string>
   <string name="library_empty_games">No supported games found in this folder.</string>
   <string name="library_convert_pick_title">Select ISO to convert</string>
   <string name="library_convert_none">No .iso files found to convert.</string>
@@ -100,7 +101,7 @@
 
   <string name="settings_title">Settings</string>
   <string name="settings_save">Save</string>
-  <string name="settings_redo_setup_wizard">Redo Setup Wizard</string>
+  <string name="settings_redo_setup_wizard">Setup Wizard</string>
 
   <string name="settings_section_display">Display</string>
   <string name="settings_graphics_api">Graphics API</string>
@@ -159,7 +160,7 @@
   <string name="settings_online_enable">Enable online networking (Insignia)</string>
   <string name="settings_online_hint">Turns on NAT networking for dashboards and Insignia. Use the helper buttons below to write the DNS preset and boot the Setup Assistant.</string>
   <string name="settings_insignia_guide_action">Insignia Guide</string>
-  <string name="settings_insignia_sign_up_action">Sign Up With Insignia</string>
+  <string name="settings_insignia_sign_up_action">Insignia Sign Up</string>
   <string name="settings_insignia_prepare_action">Prepare Insignia Networking</string>
   <string name="settings_insignia_register_action">Register With Setup Assistant</string>
   <string name="settings_insignia_status_checking">Checking Insignia setup...</string>
@@ -252,7 +253,7 @@
   <string name="settings_hdd_layout_unavailable_not_enough_space">This HDD image does not have enough usable space for that layout.</string>
   <string name="settings_hdd_init_title">Initialize HDD Layout</string>
   <string name="settings_hdd_init_message">Initialize the current HDD image with %1$s?\n\n%2$s\n\nImage: %3$s</string>
-  <string name="settings_hdd_init_action">Initialize HDD Layout</string>
+  <string name="settings_hdd_init_action">Initialize HDD</string>
   <string name="settings_hdd_init_working">Initializing HDD...</string>
   <string name="settings_hdd_init_success">HDD layout initialized</string>
   <string name="settings_hdd_init_failed">Failed to initialize HDD: %1$s</string>
@@ -286,7 +287,7 @@
   <string name="settings_clear_debug_log_success">Debug log cleared</string>
   <string name="settings_clear_debug_log_empty">Debug log is already clear.</string>
   <string name="settings_emulator_files_hint">Back up or restore hdd.img, xemu.toml, eeprom.bin, flash.bin, and mcpx.bin. Export creates one ZIP package. Import accepts either a ZIP or files with those exact names.</string>
-  <string name="settings_import_emulator_files_action">Import Emulator Files</string>
+  <string name="settings_import_emulator_files_action">Import Files</string>
   <string name="settings_import_emulator_files_message">Importing replaces matching local emulator files and reloads this settings screen. Unsaved changes on this page will be discarded.</string>
   <string name="settings_import_emulator_files_continue">Choose Source</string>
   <string name="settings_import_emulator_files_source_title">Choose Import Source</string>
@@ -301,7 +302,7 @@
   <string name="settings_import_emulator_files_success">Imported: %1$s</string>
   <string name="settings_import_emulator_files_failed">Failed to import emulator files: %1$s</string>
   <string name="settings_import_emulator_files_unknown_error">unknown error</string>
-  <string name="settings_export_emulator_files_action">Export Emulator Files</string>
+  <string name="settings_export_emulator_files_action">Export Files</string>
   <string name="settings_export_emulator_files_empty">No emulator files are available to export yet.</string>
   <string name="settings_export_emulator_files_working">Exporting emulator files...</string>
   <string name="settings_export_emulator_files_open_failed">Could not open the selected export location.</string>

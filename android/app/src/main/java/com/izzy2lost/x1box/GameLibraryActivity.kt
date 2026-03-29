@@ -32,6 +32,8 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -109,12 +111,13 @@ class GameLibraryActivity : AppCompatActivity() {
   @Volatile private var discFormatCacheDirty = false
 
   private lateinit var loadingSpinner: ProgressBar
+  private lateinit var convertProgressBar: ProgressBar
   private lateinit var loadingText: TextView
   private lateinit var emptyText: TextView
   private lateinit var gamesListContainer: LinearLayout
   private lateinit var gamesGridContainer: LinearLayout
   private lateinit var btnBootDashboard: MaterialButton
-  private lateinit var btnSettings: MaterialButton
+  private lateinit var btnSettings: ImageButton
   private lateinit var btnSnapshots: MaterialButton
   private lateinit var btnConvertIso: MaterialButton
   private lateinit var btnAbout: ImageButton
@@ -162,6 +165,7 @@ class GameLibraryActivity : AppCompatActivity() {
     }
 
     loadingSpinner = findViewById(R.id.library_loading)
+    convertProgressBar = findViewById(R.id.library_convert_progress)
     loadingText = findViewById(R.id.library_loading_text)
     emptyText = findViewById(R.id.library_empty_text)
     gamesListContainer = findViewById(R.id.library_games_container)
@@ -603,9 +607,10 @@ class GameLibraryActivity : AppCompatActivity() {
   }
 
   private fun updateConvertButtonState(games: List<GameEntry> = currentGames) {
-    btnConvertIso.isEnabled = XisoConverterNative.isAvailable() &&
+    val hasConvertible = XisoConverterNative.isAvailable() &&
       !isConvertingIso &&
       games.any { game -> isConvertibleIso(game) }
+    btnConvertIso.visibility = if (hasConvertible) View.VISIBLE else View.GONE
   }
 
   private fun renderList(games: List<GameEntry>) {
@@ -1076,12 +1081,24 @@ class GameLibraryActivity : AppCompatActivity() {
 
     isConvertingIso = true
     updateConvertButtonState()
-    setLoading(true, getString(R.string.library_converting_game, game.title))
+    convertProgressBar.progress = 0
+    convertProgressBar.visibility = View.VISIBLE
+    loadingText.text = getString(R.string.library_converting_game_percent, game.title, 0)
+    loadingText.visibility = View.VISIBLE
+
+    val onProgress = { percent: Int ->
+      runOnUiThread {
+        convertProgressBar.progress = percent
+        loadingText.text = getString(R.string.library_converting_game_percent, game.title, percent)
+      }
+    }
 
     Thread {
-      val error = convertIsoToXisoInFolder(game, outputName, overwrite)
+      val error = convertIsoToXisoInFolder(game, outputName, overwrite, onProgress)
       runOnUiThread {
         isConvertingIso = false
+        convertProgressBar.visibility = View.GONE
+        convertProgressBar.progress = 0
         setLoading(false, getString(R.string.library_loading_games))
         updateConvertButtonState()
         if (error == null) {
@@ -1105,7 +1122,8 @@ class GameLibraryActivity : AppCompatActivity() {
   private fun convertIsoToXisoInFolder(
     game: GameEntry,
     outputName: String,
-    overwrite: Boolean
+    overwrite: Boolean,
+    onProgress: ((Int) -> Unit)? = null
   ): String? {
     val folderUri = gamesFolderUri ?: return getString(R.string.library_no_folder)
     val root = DocumentFile.fromTreeUri(this, folderUri)
@@ -1137,23 +1155,46 @@ class GameLibraryActivity : AppCompatActivity() {
     val outputTemp = File(stageDir, "output-$token.xiso.iso")
     var success = false
     try {
-      if (!copyUriToFile(game.uri, inputTemp)) {
+      // Phase 1 (0-40%): copy input from SAF to local temp
+      if (!copyUriToFile(game.uri, inputTemp, game.sizeBytes) { copyPercent ->
+        onProgress?.invoke((copyPercent * 40) / 100)
+      }) {
         return getString(R.string.library_convert_copy_input_failed)
       }
+      onProgress?.invoke(40)
 
-      val nativeError =
+      // Phase 2 (40-90%): native XISO conversion
+      val nativeProgressCallback = if (onProgress != null) {
+        XisoProgressCallback { current, total ->
+          val convertPercent = if (total > 0) (current * 100) / total else 0
+          onProgress(40 + (convertPercent * 50) / 100)
+        }
+      } else null
+
+      val nativeError = if (nativeProgressCallback != null) {
+        XisoConverterNative.convertIsoToXiso(inputTemp.absolutePath, outputTemp.absolutePath, nativeProgressCallback)
+      } else {
         XisoConverterNative.convertIsoToXiso(inputTemp.absolutePath, outputTemp.absolutePath)
+      }
+      // Free input temp space before output copy
+      inputTemp.delete()
+
       if (!nativeError.isNullOrBlank()) {
         return nativeError
       }
+      onProgress?.invoke(90)
 
       if (!outputTemp.exists() || outputTemp.length() <= 0L) {
         return "Converted image was empty"
       }
 
-      if (!copyFileToUri(outputTemp, outputDoc.uri)) {
+      // Phase 3 (90-100%): copy converted output back to SAF
+      if (!copyFileToUri(outputTemp, outputDoc.uri) { copyPercent ->
+        onProgress?.invoke(90 + (copyPercent * 10) / 100)
+      }) {
         return getString(R.string.library_convert_copy_output_failed)
       }
+      onProgress?.invoke(100)
       success = true
       return null
     } finally {
@@ -1184,12 +1225,17 @@ class GameLibraryActivity : AppCompatActivity() {
     return dir
   }
 
-  private fun copyUriToFile(uri: Uri, target: File): Boolean {
+  private fun copyUriToFile(
+    uri: Uri,
+    target: File,
+    totalSize: Long = -1L,
+    onProgress: ((Int) -> Unit)? = null,
+  ): Boolean {
     return try {
       val input = contentResolver.openInputStream(uri) ?: return false
       input.use { stream ->
         FileOutputStream(target).use { output ->
-          stream.copyTo(output)
+          copyWithProgress(stream, output, totalSize, onProgress)
         }
       }
       true
@@ -1198,17 +1244,46 @@ class GameLibraryActivity : AppCompatActivity() {
     }
   }
 
-  private fun copyFileToUri(source: File, targetUri: Uri): Boolean {
+  private fun copyFileToUri(
+    source: File,
+    targetUri: Uri,
+    onProgress: ((Int) -> Unit)? = null,
+  ): Boolean {
     return try {
+      val totalSize = source.length()
       val output = contentResolver.openOutputStream(targetUri, "w") ?: return false
       FileInputStream(source).use { input ->
         output.use { stream ->
-          input.copyTo(stream)
+          copyWithProgress(input, stream, totalSize, onProgress)
         }
       }
       true
     } catch (_: IOException) {
       false
+    }
+  }
+
+  private fun copyWithProgress(
+    input: InputStream,
+    output: OutputStream,
+    totalSize: Long,
+    onProgress: ((Int) -> Unit)?,
+  ) {
+    val buffer = ByteArray(128 * 1024)
+    var bytesCopied = 0L
+    var lastPercent = -1
+    while (true) {
+      val bytes = input.read(buffer)
+      if (bytes < 0) break
+      output.write(buffer, 0, bytes)
+      bytesCopied += bytes
+      if (totalSize > 0 && onProgress != null) {
+        val percent = ((bytesCopied * 100) / totalSize).toInt().coerceAtMost(100)
+        if (percent != lastPercent) {
+          lastPercent = percent
+          onProgress(percent)
+        }
+      }
     }
   }
 
@@ -1225,14 +1300,7 @@ class GameLibraryActivity : AppCompatActivity() {
   }
 
   private fun isConvertibleIso(game: GameEntry): Boolean {
-    return when (game.discImageFormat) {
-      DiscImageFormat.REGULAR_ISO -> true
-      DiscImageFormat.UNKNOWN_ISO -> {
-        val lower = game.relativePath.lowercase(Locale.ROOT)
-        lower.endsWith(".iso") && !lower.endsWith(".xiso.iso")
-      }
-      else -> false
-    }
+    return game.discImageFormat == DiscImageFormat.REGULAR_ISO
   }
 
   private fun buildXisoFileName(sourceName: String): String {
