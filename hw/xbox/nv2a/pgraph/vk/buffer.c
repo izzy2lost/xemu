@@ -29,6 +29,7 @@ typedef struct MemoryBudget {
     size_t vertex_inline_cap;
     size_t index_cap;
     size_t staging_cap;
+    size_t uniform_cap;
     size_t shader_module_cache_entries;
 } MemoryBudget;
 
@@ -73,6 +74,7 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
         b.vertex_inline_cap = SIZE_MAX;
         b.index_cap = SIZE_MAX;
         b.staging_cap = SIZE_MAX;
+        b.uniform_cap = 64 * mib;
         b.shader_module_cache_entries = 50 * 1024;
     } else {
         size_t budget = b.renderer_budget;
@@ -81,6 +83,10 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
         b.vertex_inline_cap = MAX(8 * mib, budget / 5);
         b.index_cap = MAX(4 * mib, budget / 20);
         b.staging_cap = MAX(16 * mib, budget * 12 / 100);
+        b.uniform_cap = MAX(16 * mib, budget / 16);
+        if (b.uniform_cap > 64 * mib) {
+            b.uniform_cap = 64 * mib;
+        }
         b.shader_module_cache_entries = budget_mib * 4;
         if (b.shader_module_cache_entries < 2048) {
             b.shader_module_cache_entries = 2048;
@@ -175,12 +181,13 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
                                 NV2A_MAX_BATCH_LENGTH *
                                 4 * sizeof(float) * 10;
     vertex_inline_size = MIN(vertex_inline_size, mb.vertex_inline_cap);
+    size_t uniform_size = mb.uniform_cap;
 
     r->shader_module_cache_target = mb.shader_module_cache_entries;
 
 #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                        "vk memory budget: heap=%zuMB budget=%s%zuMB staging_cap=%zuMB index_cap=%zuMB vtx_inline_cap=%zuMB shader_cache=%zu",
+                        "vk memory budget: heap=%zuMB budget=%s%zuMB staging_cap=%zuMB index_cap=%zuMB vtx_inline_cap=%zuMB uniform_cap=%zuMB shader_cache=%zu",
                         mb.total_heap >> 20,
                         mb.renderer_budget == SIZE_MAX ? "uncapped/" : "",
                         mb.renderer_budget == SIZE_MAX ? 0 :
@@ -189,10 +196,11 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
                         mb.index_cap == SIZE_MAX ? 0 : mb.index_cap >> 20,
                         mb.vertex_inline_cap == SIZE_MAX ? 0 :
                                                            mb.vertex_inline_cap >> 20,
+                        mb.uniform_cap >> 20,
                         mb.shader_module_cache_entries);
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                        "vk buffer init: vram=%zu staging=%zu compute=%zu",
-                        vram_size, staging_size, compute_size);
+                        "vk buffer init: vram=%zu staging=%zu compute=%zu uniform=%zu",
+                        vram_size, staging_size, compute_size, uniform_size);
 #endif
 
     VmaAllocationCreateInfo host_alloc_create_info = {
@@ -275,7 +283,7 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
         .alloc_info = device_alloc_create_info,
         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        .buffer_size = 8 * 1024 * 1024,
+        .buffer_size = uniform_size,
     };
 
     r->storage_buffers[BUFFER_UNIFORM_STAGING] = (StorageBuffer){
