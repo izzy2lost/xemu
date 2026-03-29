@@ -255,13 +255,18 @@ static void generate_shaders(PGRAPHGLState *r, ShaderBinding *binding)
     ShaderModuleCacheKey key;
 #ifdef __ANDROID__
     const bool gles = true;
-    const int gles_version = 320;
+    const int gles_version = r->gles_version;
 #else
     const bool gles = false;
     const int gles_version = 0;
 #endif
 
     bool need_geometry_shader = pgraph_glsl_need_geom(&state->geom);
+#ifdef __ANDROID__
+    if (need_geometry_shader && !r->geometry_shaders_supported) {
+        need_geometry_shader = false;
+    }
+#endif
     if (need_geometry_shader) {
         memset(&key, 0, sizeof(key));
         key.kind = GL_GEOMETRY_SHADER;
@@ -292,9 +297,23 @@ static void generate_shaders(PGRAPHGLState *r, ShaderBinding *binding)
     glLinkProgram(program);
     GLint linked = 0;
     glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    binding->gl_primitive_mode =
+        get_gl_primitive_mode(state->geom.primitive_mode);
     if(!linked) {
         GLchar log[2048];
         glGetProgramInfoLog(program, 2048, NULL, log);
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                            "nv2a: shader linking failed: %s", log);
+        binding->gl_program = 0;
+        binding->initialized = true;
+        memset(binding->uniform_locs.vsh, 0xFF,
+               sizeof(binding->uniform_locs.vsh));
+        memset(binding->uniform_locs.psh, 0xFF,
+               sizeof(binding->uniform_locs.psh));
+        glDeleteProgram(program);
+        return;
+#endif
         fprintf(stderr, "nv2a: shader linking failed: %s\n", log);
         abort();
     }
@@ -302,8 +321,6 @@ static void generate_shaders(PGRAPHGLState *r, ShaderBinding *binding)
     glUseProgram(program);
 
     binding->gl_program = program;
-    binding->gl_primitive_mode =
-        get_gl_primitive_mode(state->geom.primitive_mode);
     binding->initialized = true;
 
     set_texture_sampler_uniforms(binding);
@@ -581,6 +598,8 @@ static void shader_cache_entry_init(Lru *lru, LruNode *node, const void *state)
     binding->cached = false;
     binding->program = NULL;
     binding->save_thread = NULL;
+    memset(binding->uniform_locs.vsh, 0xFF, sizeof(binding->uniform_locs.vsh));
+    memset(binding->uniform_locs.psh, 0xFF, sizeof(binding->uniform_locs.psh));
 }
 
 static void shader_cache_entry_post_evict(Lru *lru, LruNode *node)

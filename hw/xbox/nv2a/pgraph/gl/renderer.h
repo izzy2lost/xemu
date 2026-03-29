@@ -269,6 +269,8 @@ typedef struct PGRAPHGLState {
 
 #ifdef __ANDROID__
     bool bgra_supported;
+    bool geometry_shaders_supported;
+    int gles_version;
 #endif
 } PGRAPHGLState;
 

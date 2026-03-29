@@ -34,6 +34,7 @@
 #include "qemu/rcu.h"
 #include "qemu-version.h"
 #include "qemu-main.h"
+#include "block/block-global-state.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-block.h"
 #include "qobject/qdict.h"
@@ -823,10 +824,16 @@ void sdl2_poll_events(struct sdl2_console *scon)
 #ifdef __ANDROID__
         case SDL_APP_TERMINATING:
             g_android_should_quit = true;
+            bdrv_flush_all();
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                                "android: app terminating");
+                                "android: app terminating, flushed");
             break;
         case SDL_APP_WILLENTERBACKGROUND:
+            bdrv_flush_all();
+            g_android_paused = true;
+            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                                "android: app background, flushed");
+            break;
         case SDL_APP_DIDENTERBACKGROUND:
             g_android_paused = true;
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",

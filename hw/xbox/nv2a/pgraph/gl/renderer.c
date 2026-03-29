@@ -107,12 +107,32 @@ static void pgraph_gl_init(NV2AState *d, Error **errp)
 
 #ifdef __ANDROID__
     const char *exts = (const char *)glGetString(GL_EXTENSIONS);
+    const char *glsl_version = (const char *)glGetString(
+        GL_SHADING_LANGUAGE_VERSION);
+    int glsl_es_major = 0;
+    int glsl_es_minor = 0;
     r->bgra_supported = gl_extension_supported(exts, "GL_EXT_texture_format_BGRA8888") ||
                         gl_extension_supported(exts, "GL_OES_texture_format_BGRA8888") ||
                         gl_extension_supported(exts, "GL_EXT_texture_format_BGRA8888_OES");
+    r->gles_version = 300;
+    if (glsl_version != NULL) {
+        while (*glsl_version != '\0' && !g_ascii_isdigit(*glsl_version)) {
+            glsl_version++;
+        }
+        if (sscanf(glsl_version, "%d.%d", &glsl_es_major, &glsl_es_minor) ==
+            2) {
+            r->gles_version = glsl_es_major * 100 + glsl_es_minor * 10;
+        }
+    }
+    r->geometry_shaders_supported =
+        r->gles_version >= 320 ||
+        gl_extension_supported(exts, "GL_EXT_geometry_shader") ||
+        gl_extension_supported(exts, "GL_OES_geometry_shader");
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                        "pgraph_gl_init: bgra_supported=%s",
-                        r->bgra_supported ? "yes" : "no");
+                        "pgraph_gl_init: bgra_supported=%s geom_shader=%s glsl_es=%d",
+                        r->bgra_supported ? "yes" : "no",
+                        r->geometry_shaders_supported ? "yes" : "no",
+                        r->gles_version);
 #endif
 
 #if DEBUG_NV2A_GL
