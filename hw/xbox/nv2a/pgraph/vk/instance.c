@@ -418,6 +418,33 @@ static void report_device_incompatibility(VkPhysicalDevice device,
 #endif
 }
 
+#ifdef __ANDROID__
+static void log_android_format_support_failure(const char *label,
+                                               VkFormat format,
+                                               VkImageUsageFlags usage,
+                                               VkFormatFeatureFlags required,
+                                               VkFormatProperties props,
+                                               VkResult image_result)
+{
+    fprintf(stderr,
+            "Android Vulkan format issue [%s]: format=%d usage=0x%x "
+            "required_optimal=0x%x optimal=0x%x linear=0x%x buffer=0x%x "
+            "imageFormatResult=%d\n",
+            label, (int)format, (unsigned int)usage, (unsigned int)required,
+            (unsigned int)props.optimalTilingFeatures,
+            (unsigned int)props.linearTilingFeatures,
+            (unsigned int)props.bufferFeatures, (int)image_result);
+    __android_log_print(
+        ANDROID_LOG_WARN, "xemu-android",
+        "vk format issue [%s]: format=%d usage=0x%x required_optimal=0x%x "
+        "optimal=0x%x linear=0x%x buffer=0x%x imageFormatResult=%d",
+        label, (int)format, (unsigned int)usage, (unsigned int)required,
+        (unsigned int)props.optimalTilingFeatures,
+        (unsigned int)props.linearTilingFeatures,
+        (unsigned int)props.bufferFeatures, (int)image_result);
+}
+#endif
+
 static bool format_already_checked(const VkFormat *formats, size_t count,
                                    VkFormat format)
 {
@@ -459,7 +486,8 @@ static bool check_image_format_usage_supported(VkPhysicalDevice device,
            VK_SUCCESS;
 }
 
-static bool check_texture_formats_supported(VkPhysicalDevice device)
+static bool check_texture_formats_supported_internal(VkPhysicalDevice device,
+                                                     bool report_failures)
 {
     VkFormat checked_formats[ARRAY_SIZE(kelvin_color_format_vk_map)];
     size_t num_checked_formats = 0;
@@ -482,13 +510,15 @@ static bool check_texture_formats_supported(VkPhysicalDevice device)
         if (!check_format_supports_features(device, format,
                                             VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ||
             !check_image_format_usage_supported(device, format, usage)) {
-            char reason[160];
+            if (report_failures) {
+                char reason[160];
 
-            snprintf(reason, sizeof(reason),
-                     "sampled texture uploads need VkFormat %d to support "
-                     "optimal sampled images and transfer-dst usage",
-                     format);
-            report_device_incompatibility(device, reason);
+                snprintf(reason, sizeof(reason),
+                         "sampled texture uploads need VkFormat %d to support "
+                         "optimal sampled images and transfer-dst usage",
+                         format);
+                report_device_incompatibility(device, reason);
+            }
             return false;
         }
     }
@@ -496,21 +526,34 @@ static bool check_texture_formats_supported(VkPhysicalDevice device)
     return true;
 }
 
-static bool check_surface_format_supported(VkPhysicalDevice device,
-                                           const SurfaceFormatInfo *format)
+static bool check_texture_formats_supported(VkPhysicalDevice device)
+{
+    return check_texture_formats_supported_internal(device, true);
+}
+
+static bool check_surface_format_supported_internal(VkPhysicalDevice device,
+                                                    const SurfaceFormatInfo *format,
+                                                    bool report_failures,
+                                                    const char *reason)
 {
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT |
                               VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                               format->usage;
 
-    return check_image_format_usage_supported(device, format->vk_format, usage) &&
-           check_format_supports_features(device, format->vk_format,
-                                          VK_FORMAT_FEATURE_BLIT_SRC_BIT |
-                                          VK_FORMAT_FEATURE_BLIT_DST_BIT);
+    bool supported =
+        check_image_format_usage_supported(device, format->vk_format, usage) &&
+        check_format_supports_features(device, format->vk_format,
+                                       VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+                                       VK_FORMAT_FEATURE_BLIT_DST_BIT);
+    if (!supported && report_failures) {
+        report_device_incompatibility(device, reason);
+    }
+    return supported;
 }
 
-static bool check_surface_formats_supported(VkPhysicalDevice device)
+static bool check_surface_formats_supported_internal(VkPhysicalDevice device,
+                                                     bool report_failures)
 {
     VkFormat checked_formats[ARRAY_SIZE(kelvin_surface_color_format_vk_map)];
     size_t num_checked_formats = 0;
@@ -528,39 +571,230 @@ static bool check_surface_formats_supported(VkPhysicalDevice device)
 
         checked_formats[num_checked_formats++] = format->vk_format;
 
-        if (!check_surface_format_supported(device, format)) {
-            char reason[192];
-
-            snprintf(reason, sizeof(reason),
-                     "surface format VkFormat %d needs sampled, transfer, "
-                     "attachment, and blit support",
-                     format->vk_format);
-            report_device_incompatibility(device, reason);
+        if (!check_surface_format_supported_internal(
+                device, format, report_failures,
+                "surface format needs sampled, transfer, attachment, and "
+                "blit support")) {
             return false;
         }
     }
 
-    if (!check_surface_format_supported(device, &zeta_d16)) {
-        report_device_incompatibility(
-            device,
-            "Z16 surfaces need sampled, transfer, attachment, and blit support");
+    if (!check_surface_format_supported_internal(
+            device, &zeta_d16, report_failures,
+            "Z16 surfaces need sampled, transfer, attachment, and blit support")) {
         return false;
     }
 
-    if (!check_surface_format_supported(device, &zeta_d24_unorm_s8_uint) &&
-        !check_surface_format_supported(device, &zeta_d32_sfloat_s8_uint)) {
-        report_device_incompatibility(
-            device,
+    if (!check_surface_format_supported_internal(
+            device, &zeta_d24_unorm_s8_uint, false,
             "Z24S8 surfaces need either D24_UNORM_S8_UINT or "
             "D32_SFLOAT_S8_UINT with sampled, transfer, attachment, and blit "
-            "support");
+            "support") &&
+        !check_surface_format_supported_internal(
+            device, &zeta_d32_sfloat_s8_uint, false,
+            "Z24S8 surfaces need either D24_UNORM_S8_UINT or "
+            "D32_SFLOAT_S8_UINT with sampled, transfer, attachment, and blit "
+            "support")) {
+        if (report_failures) {
+            report_device_incompatibility(
+                device,
+                "Z24S8 surfaces need either D24_UNORM_S8_UINT or "
+                "D32_SFLOAT_S8_UINT with sampled, transfer, attachment, and "
+                "blit support");
+        }
         return false;
     }
 
     return true;
 }
 
-static bool is_device_compatible(VkPhysicalDevice device)
+static bool check_surface_formats_supported(VkPhysicalDevice device)
+{
+    return check_surface_formats_supported_internal(device, true);
+}
+
+#ifdef __ANDROID__
+static void log_android_texture_format_diagnostics(VkPhysicalDevice device)
+{
+    VkFormat checked_formats[ARRAY_SIZE(kelvin_color_format_vk_map)];
+    size_t num_checked_formats = 0;
+    const VkImageUsageFlags usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+    memset(checked_formats, 0, sizeof(checked_formats));
+
+    for (int i = 0; i < ARRAY_SIZE(kelvin_color_format_vk_map); i++) {
+        VkFormat format = kelvin_color_format_vk_map[i].vk_format;
+        VkFormatProperties props;
+        VkResult image_result;
+        bool features_ok;
+        bool usage_ok;
+
+        if (format == VK_FORMAT_UNDEFINED ||
+            format_already_checked(checked_formats, num_checked_formats,
+                                   format)) {
+            continue;
+        }
+
+        checked_formats[num_checked_formats++] = format;
+        vkGetPhysicalDeviceFormatProperties(device, format, &props);
+        features_ok = (props.optimalTilingFeatures &
+                       VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ==
+                      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+
+        VkPhysicalDeviceImageFormatInfo2 info = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+            .format = format,
+            .type = VK_IMAGE_TYPE_2D,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = usage,
+        };
+        VkImageFormatProperties2 image_props = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+        };
+        image_result = vkGetPhysicalDeviceImageFormatProperties2(
+            device, &info, &image_props);
+        usage_ok = (image_result == VK_SUCCESS);
+
+        if (!features_ok || !usage_ok) {
+            log_android_format_support_failure(
+                "texture", format, usage, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
+                props, image_result);
+        }
+    }
+}
+
+static void log_android_surface_format_diagnostics(VkPhysicalDevice device)
+{
+    VkFormat checked_formats[ARRAY_SIZE(kelvin_surface_color_format_vk_map)];
+    size_t num_checked_formats = 0;
+    const VkFormatFeatureFlags required_features =
+        VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+
+    memset(checked_formats, 0, sizeof(checked_formats));
+
+    for (int i = 0; i < ARRAY_SIZE(kelvin_surface_color_format_vk_map); i++) {
+        const SurfaceFormatInfo *format = &kelvin_surface_color_format_vk_map[i];
+        VkImageUsageFlags usage;
+        VkFormatProperties props;
+        VkResult image_result;
+        bool features_ok;
+        bool usage_ok;
+
+        if (!format->host_bytes_per_pixel ||
+            format_already_checked(checked_formats, num_checked_formats,
+                                   format->vk_format)) {
+            continue;
+        }
+
+        checked_formats[num_checked_formats++] = format->vk_format;
+        usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | format->usage;
+        vkGetPhysicalDeviceFormatProperties(device, format->vk_format, &props);
+        features_ok =
+            (props.optimalTilingFeatures & required_features) ==
+            required_features;
+
+        VkPhysicalDeviceImageFormatInfo2 info = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+            .format = format->vk_format,
+            .type = VK_IMAGE_TYPE_2D,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = usage,
+        };
+        VkImageFormatProperties2 image_props = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+        };
+        image_result = vkGetPhysicalDeviceImageFormatProperties2(
+            device, &info, &image_props);
+        usage_ok = (image_result == VK_SUCCESS);
+
+        if (!features_ok || !usage_ok) {
+            log_android_format_support_failure("surface-color",
+                                               format->vk_format, usage,
+                                               required_features, props,
+                                               image_result);
+        }
+    }
+
+    const struct {
+        const char *label;
+        const SurfaceFormatInfo *format;
+    } zeta_formats[] = {
+        { "surface-zeta-d16", &zeta_d16 },
+        { "surface-zeta-d24s8", &zeta_d24_unorm_s8_uint },
+        { "surface-zeta-d32s8", &zeta_d32_sfloat_s8_uint },
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(zeta_formats); i++) {
+        const SurfaceFormatInfo *format = zeta_formats[i].format;
+        VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                  format->usage;
+        VkFormatProperties props;
+        VkResult image_result;
+        bool features_ok;
+        bool usage_ok;
+
+        vkGetPhysicalDeviceFormatProperties(device, format->vk_format, &props);
+        features_ok =
+            (props.optimalTilingFeatures & required_features) ==
+            required_features;
+
+        VkPhysicalDeviceImageFormatInfo2 info = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+            .format = format->vk_format,
+            .type = VK_IMAGE_TYPE_2D,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = usage,
+        };
+        VkImageFormatProperties2 image_props = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+        };
+        image_result = vkGetPhysicalDeviceImageFormatProperties2(
+            device, &info, &image_props);
+        usage_ok = (image_result == VK_SUCCESS);
+
+        if (!features_ok || !usage_ok) {
+            log_android_format_support_failure(zeta_formats[i].label,
+                                               format->vk_format, usage,
+                                               required_features, props,
+                                               image_result);
+        }
+    }
+}
+
+static void log_android_device_format_diagnostics(VkPhysicalDevice device)
+{
+    bool textures_ok = check_texture_formats_supported_internal(device, false);
+    bool surfaces_ok = check_surface_formats_supported_internal(device, false);
+
+    if (textures_ok && surfaces_ok) {
+        fprintf(stderr,
+                "Android Vulkan device passed full xemu texture/surface "
+                "format compatibility checks\n");
+        __android_log_print(
+            ANDROID_LOG_INFO, "xemu-android",
+            "Selected Vulkan device passed full xemu texture/surface format "
+            "compatibility checks");
+        return;
+    }
+
+    fprintf(stderr,
+            "Warning: Android Vulkan device is running in best-effort mode; "
+            "full xemu format compatibility checks failed\n");
+    __android_log_print(
+        ANDROID_LOG_WARN, "xemu-android",
+        "Selected Vulkan device is running in best-effort mode; full xemu "
+        "format compatibility checks failed");
+
+    log_android_texture_format_diagnostics(device);
+    log_android_surface_format_diagnostics(device);
+}
+#endif
+
+static bool is_device_minimally_compatible(VkPhysicalDevice device)
 {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(device, &props);
@@ -570,12 +804,18 @@ static bool is_device_compatible(VkPhysicalDevice device)
 
     QueueFamilyIndices indices = pgraph_vk_find_queue_families(device);
 
-#ifdef __ANDROID__
     return is_queue_family_indicies_complete(indices) &&
            check_device_support_required_extensions(device);
+}
+
+static bool is_device_fully_compatible(VkPhysicalDevice device)
+{
+#ifdef __ANDROID__
+    return is_device_minimally_compatible(device) &&
+           check_texture_formats_supported_internal(device, false) &&
+           check_surface_formats_supported_internal(device, false);
 #else
-    return is_queue_family_indicies_complete(indices) &&
-           check_device_support_required_extensions(device) &&
+    return is_device_minimally_compatible(device) &&
            check_texture_formats_supported(device) &&
            check_surface_formats_supported(device);
 #endif
@@ -618,25 +858,51 @@ static bool select_physical_device(PGRAPHState *pg, Error **errp)
 
     r->physical_device = VK_NULL_HANDLE;
 
+    bool selected_device_fully_compatible = false;
+
     if (preferred_device_index >= 0 &&
-        is_device_compatible(devices[preferred_device_index])) {
+        is_device_fully_compatible(devices[preferred_device_index])) {
         r->physical_device = devices[preferred_device_index];
+        selected_device_fully_compatible = true;
     } else {
         for (int i = 0; i < num_physical_devices; i++) {
-            if (is_device_compatible(devices[i])) {
+            if (is_device_fully_compatible(devices[i])) {
                 r->physical_device = devices[i];
+                selected_device_fully_compatible = true;
                 break;
             }
         }
     }
     if (r->physical_device == VK_NULL_HANDLE) {
 #ifdef __ANDROID__
-        int fallback_index = preferred_device_index >= 0 ? preferred_device_index : 0;
-        r->physical_device = devices[fallback_index];
+        if (preferred_device_index >= 0 &&
+            is_device_minimally_compatible(devices[preferred_device_index])) {
+            r->physical_device = devices[preferred_device_index];
+        } else {
+            for (int i = 0; i < num_physical_devices; i++) {
+                if (is_device_minimally_compatible(devices[i])) {
+                    r->physical_device = devices[i];
+                    break;
+                }
+            }
+        }
+        if (r->physical_device == VK_NULL_HANDLE) {
+            int fallback_index =
+                preferred_device_index >= 0 ? preferred_device_index : 0;
+            r->physical_device = devices[fallback_index];
+            vkGetPhysicalDeviceProperties(r->physical_device, &r->device_props);
+            fprintf(stderr,
+                    "Warning: No minimally compatible Vulkan GPU found; "
+                    "trying %s anyway\n",
+                    r->device_props.deviceName);
+        }
         vkGetPhysicalDeviceProperties(r->physical_device, &r->device_props);
-        fprintf(stderr,
-                "Warning: No fully compatible Vulkan GPU found; trying %s anyway\n",
-                r->device_props.deviceName);
+        if (!selected_device_fully_compatible) {
+            fprintf(stderr,
+                    "Warning: No fully compatible Vulkan GPU found; trying %s "
+                    "in best-effort mode\n",
+                    r->device_props.deviceName);
+        }
 #else
         error_setg(errp, "Failed to find a suitable GPU");
         return false;
@@ -657,6 +923,12 @@ static bool select_physical_device(PGRAPHState *pg, Error **errp)
             VK_VERSION_MAJOR(r->device_props.driverVersion),
             VK_VERSION_MINOR(r->device_props.driverVersion),
             VK_VERSION_PATCH(r->device_props.driverVersion));
+
+#ifdef __ANDROID__
+    if (!selected_device_fully_compatible) {
+        log_android_device_format_diagnostics(r->physical_device);
+    }
+#endif
 
     return true;
 }
