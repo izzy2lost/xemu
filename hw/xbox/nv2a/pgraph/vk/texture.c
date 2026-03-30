@@ -52,6 +52,11 @@ static VkSamplerAddressMode lookup_texture_address_mode(int idx)
 }
 
 #ifdef __ANDROID__
+static uint8_t android_vk_expand_4_to_8(uint8_t value)
+{
+    return (value << 4) | value;
+}
+
 static uint8_t android_vk_expand_5_to_8(uint8_t value)
 {
     return (value << 3) | (value >> 2);
@@ -60,14 +65,41 @@ static uint8_t android_vk_expand_5_to_8(uint8_t value)
 static bool android_vk_texture_needs_rgba8_upload(TextureShape s)
 {
     switch (s.color_format) {
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_Y8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_AY8:
     case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A1R5G5B5:
     case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X1R5G5B5:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8Y8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8R8G8B8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X8R8G8B8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_I8_A8R8G8B8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_Y8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_G8B8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_AY8:
     case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A1R5G5B5:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8R8G8B8:
     case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X1R5G5B5:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X8R8G8B8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8Y8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_G8B8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R8B8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8B8G8R8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_B8G8R8A8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R8G8B8A8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8B8G8R8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_B8G8R8A8:
+    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_R8G8B8A8:
         return true;
     default:
         return false;
     }
+}
+
+static bool android_vk_texture_needs_rgba8_repack(TextureShape s)
+{
+    return s.color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_I8_A8R8G8B8;
 }
 
 static uint8_t *android_vk_texture_convert_to_rgba8(TextureShape s,
@@ -91,17 +123,125 @@ static uint8_t *android_vk_texture_convert_to_rgba8(TextureShape s,
             uint8_t *dst_row = dst_slice + y * width * 4;
 
             for (unsigned int x = 0; x < width; x++) {
-                uint16_t pixel = lduw_le_p(src_row + x * 2);
                 uint8_t *out = dst_row + x * 4;
 
-                out[0] = android_vk_expand_5_to_8((pixel >> 10) & 0x1F);
-                out[1] = android_vk_expand_5_to_8((pixel >> 5) & 0x1F);
-                out[2] = android_vk_expand_5_to_8(pixel & 0x1F);
-                out[3] =
-                    (s.color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X1R5G5B5 ||
-                     s.color_format == NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X1R5G5B5) ?
-                        0xFF :
-                        ((pixel & 0x8000) ? 0xFF : 0x00);
+                switch (s.color_format) {
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_Y8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_Y8: {
+                    uint8_t value = src_row[x];
+                    out[0] = value;
+                    out[1] = value;
+                    out[2] = value;
+                    out[3] = 0xFF;
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_AY8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_AY8: {
+                    uint8_t value = src_row[x];
+                    out[0] = value;
+                    out[1] = value;
+                    out[2] = value;
+                    out[3] = value;
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A1R5G5B5:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A1R5G5B5:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X1R5G5B5:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X1R5G5B5: {
+                    uint16_t pixel = lduw_le_p(src_row + x * 2);
+                    out[0] = android_vk_expand_5_to_8((pixel >> 10) & 0x1F);
+                    out[1] = android_vk_expand_5_to_8((pixel >> 5) & 0x1F);
+                    out[2] = android_vk_expand_5_to_8(pixel & 0x1F);
+                    out[3] =
+                        (s.color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X1R5G5B5 ||
+                         s.color_format ==
+                             NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X1R5G5B5)
+                            ? 0xFF
+                            : ((pixel & 0x8000) ? 0xFF : 0x00);
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8: {
+                    uint8_t value = src_row[x];
+                    out[0] = 0xFF;
+                    out[1] = 0xFF;
+                    out[2] = 0xFF;
+                    out[3] = value;
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8Y8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8Y8: {
+                    const uint8_t *pixel = src_row + x * 2;
+                    out[0] = pixel[0];
+                    out[1] = pixel[0];
+                    out[2] = pixel[0];
+                    out[3] = pixel[1];
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8R8G8B8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_I8_A8R8G8B8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8R8G8B8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X8R8G8B8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X8R8G8B8: {
+                    const uint8_t *pixel = src_row + x * 4;
+                    bool preserve_alpha =
+                        (s.color_format !=
+                             NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X8R8G8B8 &&
+                         s.color_format !=
+                             NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X8R8G8B8);
+                    out[0] = pixel[2];
+                    out[1] = pixel[1];
+                    out[2] = pixel[0];
+                    out[3] = preserve_alpha ? pixel[3] : 0xFF;
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_G8B8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_G8B8: {
+                    const uint8_t *pixel = src_row + x * 2;
+                    out[0] = pixel[0];
+                    out[1] = pixel[1];
+                    out[2] = pixel[0];
+                    out[3] = pixel[1];
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R8B8: {
+                    const uint8_t *pixel = src_row + x * 2;
+                    out[0] = pixel[1];
+                    out[1] = pixel[0];
+                    out[2] = pixel[0];
+                    out[3] = pixel[1];
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8B8G8R8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8B8G8R8: {
+                    const uint8_t *pixel = src_row + x * 4;
+                    out[0] = pixel[0];
+                    out[1] = pixel[1];
+                    out[2] = pixel[2];
+                    out[3] = pixel[3];
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_B8G8R8A8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_B8G8R8A8: {
+                    const uint8_t *pixel = src_row + x * 4;
+                    out[0] = pixel[1];
+                    out[1] = pixel[2];
+                    out[2] = pixel[3];
+                    out[3] = pixel[0];
+                    break;
+                }
+                case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R8G8B8A8:
+                case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_R8G8B8A8: {
+                    const uint8_t *pixel = src_row + x * 4;
+                    out[0] = pixel[3];
+                    out[1] = pixel[2];
+                    out[2] = pixel[1];
+                    out[3] = pixel[0];
+                    break;
+                }
+                default:
+                    g_assert_not_reached();
+                }
             }
         }
     }
@@ -265,6 +405,12 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
             converted = android_vk_texture_convert_to_rgba8(
                 s, texture_data_ptr, adjusted_width, adjusted_height, 1,
                 adjusted_pitch, 0, &converted_size);
+        } else if (converted && android_vk_texture_needs_rgba8_repack(s)) {
+            uint8_t *repacked = android_vk_texture_convert_to_rgba8(
+                s, converted, adjusted_width, adjusted_height, 1,
+                adjusted_width * 4, 0, &converted_size);
+            g_free(converted);
+            converted = repacked;
         }
 #endif
 
@@ -367,6 +513,14 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
                         converted = android_vk_texture_convert_to_rgba8(
                             s, unswizzled, width, height, 1, pitch, 0,
                             &converted_size);
+                    } else if (converted &&
+                               android_vk_texture_needs_rgba8_repack(s)) {
+                        uint8_t *repacked =
+                            android_vk_texture_convert_to_rgba8(
+                                s, converted, width, height, 1, width * 4, 0,
+                                &converted_size);
+                        g_free(converted);
+                        converted = repacked;
                     }
 #endif
 
@@ -455,6 +609,13 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
                     converted = android_vk_texture_convert_to_rgba8(
                         s, unswizzled, width, height, depth, row_pitch,
                         slice_pitch, &converted_size);
+                } else if (converted &&
+                           android_vk_texture_needs_rgba8_repack(s)) {
+                    uint8_t *repacked = android_vk_texture_convert_to_rgba8(
+                        s, converted, width, height, depth, width * 4,
+                        width * height * 4, &converted_size);
+                    g_free(converted);
+                    converted = repacked;
                 }
 #endif
 
