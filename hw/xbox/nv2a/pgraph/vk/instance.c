@@ -366,6 +366,16 @@ static void add_optional_device_extension_names(
     r->memory_budget_extension_enabled = add_extension_if_available(
         available_extensions, enabled_extension_names,
         VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+
+#if OPT_BINDLESS_TEXTURES
+    if (r->device_props.apiVersion >= VK_API_VERSION_1_2) {
+        r->bindless_textures_supported = true;
+    } else {
+        r->bindless_textures_supported = add_extension_if_available(
+            available_extensions, enabled_extension_names,
+            VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+    }
+#endif
 }
 
 static bool check_device_support_required_extensions(VkPhysicalDevice device)
@@ -1050,6 +1060,82 @@ static bool create_logical_device(PGRAPHState *pg, Error **errp)
     }
 
     void *next_struct = NULL;
+
+#if OPT_BINDLESS_TEXTURES
+    VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing_features;
+    if (r->bindless_textures_supported) {
+        VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing_query = {
+            .sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
+        };
+        VkPhysicalDeviceDescriptorIndexingProperties descriptor_indexing_props = {
+            .sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES,
+        };
+        VkPhysicalDeviceFeatures2 features2 = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            .pNext = &descriptor_indexing_query,
+        };
+        VkPhysicalDeviceProperties2 props2 = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+            .pNext = &descriptor_indexing_props,
+        };
+
+        vkGetPhysicalDeviceFeatures2(r->physical_device, &features2);
+        vkGetPhysicalDeviceProperties2(r->physical_device, &props2);
+
+        bool have_all =
+            descriptor_indexing_query.descriptorBindingPartiallyBound &&
+            descriptor_indexing_query
+                .descriptorBindingSampledImageUpdateAfterBind &&
+            descriptor_indexing_props
+                .maxPerStageDescriptorUpdateAfterBindSampledImages >=
+                MAX_BINDLESS_TEXTURES;
+
+        if (have_all) {
+            memset(&descriptor_indexing_features, 0,
+                   sizeof(descriptor_indexing_features));
+            descriptor_indexing_features.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+            descriptor_indexing_features.descriptorBindingPartiallyBound =
+                VK_TRUE;
+            descriptor_indexing_features
+                .descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+            descriptor_indexing_features.pNext = next_struct;
+            next_struct = &descriptor_indexing_features;
+
+            if (r->device_props.limits.maxPushConstantsSize >=
+                NV2A_VERTEXSHADER_ATTRIBUTES * 4 * sizeof(float) +
+                    NV2A_MAX_TEXTURES * sizeof(uint32_t)) {
+                r->tex_push_offset =
+                    NV2A_VERTEXSHADER_ATTRIBUTES * 4 * sizeof(float);
+                r->max_vertex_push_attrs = NV2A_VERTEXSHADER_ATTRIBUTES;
+            } else {
+                r->tex_push_offset = 0;
+                r->max_vertex_push_attrs =
+                    NV2A_VERTEXSHADER_ATTRIBUTES - 1;
+            }
+
+            fprintf(stderr,
+                    "Bindless textures enabled (push offset=%u, "
+                    "max vertex attrs=%d, max samplers=%u)\n",
+                    r->tex_push_offset, r->max_vertex_push_attrs,
+                    descriptor_indexing_props
+                        .maxPerStageDescriptorUpdateAfterBindSampledImages);
+        } else {
+            r->bindless_textures_supported = false;
+            fprintf(stderr,
+                    "Bindless textures disabled (partiallyBound=%d, "
+                    "updateAfterBind=%d, maxSamplers=%u)\n",
+                    descriptor_indexing_query
+                        .descriptorBindingPartiallyBound,
+                    descriptor_indexing_query
+                        .descriptorBindingSampledImageUpdateAfterBind,
+                    descriptor_indexing_props
+                        .maxPerStageDescriptorUpdateAfterBindSampledImages);
+        }
+    }
+#endif
 
     VkPhysicalDeviceCustomBorderColorFeaturesEXT custom_border_features;
     if (r->custom_border_color_extension_enabled) {

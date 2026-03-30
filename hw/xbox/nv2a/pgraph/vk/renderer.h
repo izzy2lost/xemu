@@ -46,6 +46,9 @@
 #define NUM_GFX_DESCRIPTOR_SETS 8192
 #define MAX_FRAMEBUFFERS 256
 #define FB_CACHE_MAX 32
+#define OPT_BINDLESS_TEXTURES 1
+#define MAX_BINDLESS_TEXTURES 1024
+#define BINDLESS_STAGE_SLOT_BASE (MAX_BINDLESS_TEXTURES - NV2A_MAX_TEXTURES)
 
 typedef struct QueueFamilyIndices {
     int queue_family;
@@ -247,6 +250,10 @@ typedef struct TextureBinding {
     uint32_t submit_time;
     unsigned int dirty_check_frame;
     bool dirty_check_result;
+#if OPT_BINDLESS_TEXTURES
+    uint32_t bindless_slot;
+    uint32_t bindless_binding;
+#endif
 } TextureBinding;
 
 typedef struct QueryReport {
@@ -366,6 +373,11 @@ typedef struct PGRAPHVkState {
     bool debug_utils_extension_enabled;
     bool custom_border_color_extension_enabled;
     bool memory_budget_extension_enabled;
+#if OPT_BINDLESS_TEXTURES
+    bool bindless_textures_supported;
+    uint32_t tex_push_offset;
+    int max_vertex_push_attrs;
+#endif
 
     VkPhysicalDevice physical_device;
     VkPhysicalDeviceFeatures enabled_physical_device_features;
@@ -383,6 +395,9 @@ typedef struct PGRAPHVkState {
     VkFence command_buffer_fence;
     unsigned int command_buffer_start_time;
     bool in_command_buffer;
+#if OPT_BINDLESS_TEXTURES
+    bool bindless_set_bound;
+#endif
     uint32_t submit_count;
 
     VkCommandBuffer aux_command_buffer;
@@ -419,6 +434,13 @@ typedef struct PGRAPHVkState {
     VkDescriptorSet *descriptor_sets;
     int descriptor_set_count;
     int descriptor_set_index;
+#if OPT_BINDLESS_TEXTURES
+    VkDescriptorPool bindless_descriptor_pool;
+    VkDescriptorSetLayout bindless_set_layout;
+    VkDescriptorSet bindless_descriptor_set;
+    uint64_t bindless_slot_bitmap[MAX_BINDLESS_TEXTURES / 64];
+    uint32_t tex_bindless_indices[NV2A_MAX_TEXTURES];
+#endif
 
     StorageBuffer storage_buffers[BUFFER_COUNT];
     PrimRewriteBuf prim_rewrite_buf;

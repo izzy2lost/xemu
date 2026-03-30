@@ -837,11 +837,19 @@ static MString* psh_convert(struct PixelShader *ps)
                              ps->state->smooth_shading, true, false, false);
 
     if (ps->opts.vulkan) {
-        mstring_append_fmt(
-            preflight,
-            "layout(location = 0) out vec4 fragColor;\n"
-            "layout(binding = %d, std140) uniform PshUniforms {\n",
-            ps->opts.ubo_binding);
+        if (ps->opts.ubo_set > 0) {
+            mstring_append_fmt(
+                preflight,
+                "layout(location = 0) out vec4 fragColor;\n"
+                "layout(set = %d, binding = %d, std140) uniform PshUniforms {\n",
+                ps->opts.ubo_set, ps->opts.ubo_binding);
+        } else {
+            mstring_append_fmt(
+                preflight,
+                "layout(location = 0) out vec4 fragColor;\n"
+                "layout(binding = %d, std140) uniform PshUniforms {\n",
+                ps->opts.ubo_binding);
+        }
     } else {
         mstring_append_fmt(preflight,
                            "layout(location = 0) out vec4 fragColor;\n");
@@ -868,6 +876,18 @@ static MString* psh_convert(struct PixelShader *ps)
 
     if (ps->opts.vulkan) {
         mstring_append(preflight, "};\n");
+    }
+
+    if (ps->opts.bindless) {
+        mstring_append(preflight,
+            "layout(set = 0, binding = 0) uniform sampler2D texArray2D[1024];\n"
+            "layout(set = 0, binding = 1) uniform sampler3D texArray3D[1024];\n"
+            "layout(set = 0, binding = 2) uniform samplerCube texArrayCube[1024];\n");
+        mstring_append_fmt(preflight,
+            "layout(push_constant) uniform TexPushData {\n"
+            "    layout(offset = %d) uint texIdx[4];\n"
+            "};\n",
+            ps->opts.tex_push_offset);
     }
 
     const char *dotmap_funcs[] = {
@@ -1402,10 +1422,26 @@ static MString* psh_convert(struct PixelShader *ps)
         }
 
         if (sampler_type != NULL) {
-            if (ps->opts.vulkan) {
-                mstring_append_fmt(preflight, "layout(binding = %d) ", ps->opts.tex_binding + i);
+            if (ps->opts.bindless) {
+                const char *array_name;
+                if (strcmp(sampler_type, "sampler3D") == 0) {
+                    array_name = "texArray3D";
+                } else if (strcmp(sampler_type, "samplerCube") == 0) {
+                    array_name = "texArrayCube";
+                } else {
+                    array_name = "texArray2D";
+                }
+                mstring_append_fmt(preflight,
+                    "#define texSamp%d %s[texIdx[%d]]\n",
+                    i, array_name, i);
+            } else {
+                if (ps->opts.vulkan) {
+                    mstring_append_fmt(preflight, "layout(binding = %d) ",
+                                       ps->opts.tex_binding + i);
+                }
+                mstring_append_fmt(preflight, "uniform %s texSamp%d;\n",
+                                   sampler_type, i);
             }
-            mstring_append_fmt(preflight, "uniform %s texSamp%d;\n", sampler_type, i);
 
             /* As this means a texture fetch does happen, do alphakill */
             if (ps->state->alphakill[i]) {

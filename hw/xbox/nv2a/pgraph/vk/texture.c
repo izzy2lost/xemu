@@ -1308,6 +1308,17 @@ static bool check_surface_to_texture_compatiblity(const SurfaceBinding *surface,
            surface->host_fmt.host_bytes_per_pixel == vk_format_texel_size(tex_vkf.vk_format);
 }
 
+#if OPT_BINDLESS_TEXTURES
+static void update_bindless_texture_descriptor(PGRAPHVkState *r,
+                                               uint32_t binding,
+                                               uint32_t slot,
+                                               VkImageView image_view,
+                                               VkImageLayout image_layout,
+                                               VkSampler sampler);
+static void set_texture_bindless_index(PGRAPHState *pg, int texture_idx,
+                                       TextureBinding *binding);
+#endif
+
 static void create_dummy_texture(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -1433,13 +1444,77 @@ static void create_dummy_texture(PGRAPHState *pg)
         .allocation = texture_allocation,
         .image_view = texture_image_view,
         .sampler = texture_sampler,
+#if OPT_BINDLESS_TEXTURES
+        .bindless_slot = 0,
+        .bindless_binding = 0,
+#endif
     };
+
+#if OPT_BINDLESS_TEXTURES
+    update_bindless_texture_descriptor(
+        r, 0, 0, texture_image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        texture_sampler);
+#endif
 }
 
 static void destroy_dummy_texture(PGRAPHVkState *r)
 {
     texture_cache_release_node_resources(r, &r->dummy_texture);
 }
+
+#if OPT_BINDLESS_TEXTURES
+static void update_bindless_texture_descriptor(PGRAPHVkState *r,
+                                               uint32_t binding,
+                                               uint32_t slot,
+                                               VkImageView image_view,
+                                               VkImageLayout image_layout,
+                                               VkSampler sampler)
+{
+    if (!r->bindless_textures_supported) {
+        return;
+    }
+
+    VkDescriptorImageInfo image_info = {
+        .imageLayout = image_layout,
+        .imageView = image_view,
+        .sampler = sampler,
+    };
+    VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = r->bindless_descriptor_set,
+        .dstBinding = binding,
+        .dstArrayElement = slot,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .pImageInfo = &image_info,
+    };
+    vkUpdateDescriptorSets(r->device, 1, &write, 0, NULL);
+}
+
+static void set_texture_bindless_index(PGRAPHState *pg, int texture_idx,
+                                       TextureBinding *binding)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+    uint32_t slot = 0;
+
+    if (!r->bindless_textures_supported) {
+        return;
+    }
+
+    if (binding != NULL) {
+        slot = binding->bindless_slot;
+        if (r->tex_surface_direct[texture_idx]) {
+            slot = BINDLESS_STAGE_SLOT_BASE + texture_idx;
+            update_bindless_texture_descriptor(
+                r, binding->bindless_binding, slot,
+                r->tex_surface_direct_views[texture_idx],
+                r->tex_surface_direct_layout[texture_idx], binding->sampler);
+        }
+    }
+
+    r->tex_bindless_indices[texture_idx] = slot;
+}
+#endif
 
 static void set_texture_label(PGRAPHState *pg, TextureBinding *texture)
 {
@@ -1655,6 +1730,9 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
             }
         }
 
+#if OPT_BINDLESS_TEXTURES
+        set_texture_bindless_index(pg, texture_idx, snode);
+#endif
         NV2A_VK_DGROUP_END();
         return;
     }
@@ -1852,6 +1930,22 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
 
     set_texture_label(pg, snode);
 
+#if OPT_BINDLESS_TEXTURES
+    if (r->bindless_textures_supported) {
+        if (state.cubemap) {
+            snode->bindless_binding = 2;
+        } else if (state.dimensionality == 3) {
+            snode->bindless_binding = 1;
+        } else {
+            snode->bindless_binding = 0;
+        }
+        update_bindless_texture_descriptor(
+            r, snode->bindless_binding, snode->bindless_slot,
+            snode->image_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            snode->sampler);
+    }
+#endif
+
     r->texture_bindings[texture_idx] = snode;
 
     if (surface_to_texture) {
@@ -1878,6 +1972,9 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
         snode->draw_time = 0;
     }
 
+#if OPT_BINDLESS_TEXTURES
+    set_texture_bindless_index(pg, texture_idx, snode);
+#endif
     NV2A_VK_DGROUP_END();
 }
 
@@ -1973,6 +2070,9 @@ void pgraph_vk_bind_textures(NV2AState *d)
             r->tex_surface_direct_layout[i] =
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             pg->texture_dirty[i] = false;
+#if OPT_BINDLESS_TEXTURES
+            r->tex_bindless_indices[i] = 0;
+#endif
             continue;
         }
 
@@ -2004,6 +2104,7 @@ void pgraph_vk_bind_textures(NV2AState *d)
 
 static void texture_cache_entry_init(Lru *lru, LruNode *node, const void *state)
 {
+    PGRAPHVkState *r = container_of(lru, PGRAPHVkState, texture_cache);
     TextureBinding *snode = container_of(node, TextureBinding, node);
 
     snode->image = VK_NULL_HANDLE;
@@ -2015,6 +2116,27 @@ static void texture_cache_entry_init(Lru *lru, LruNode *node, const void *state)
     snode->submit_time = 0;
     snode->dirty_check_frame = 0;
     snode->dirty_check_result = false;
+#if OPT_BINDLESS_TEXTURES
+    snode->bindless_slot = 0;
+    snode->bindless_binding = 0;
+    if (r->bindless_textures_supported) {
+        for (uint32_t word = 0;
+             word < ARRAY_SIZE(r->bindless_slot_bitmap); word++) {
+            if (r->bindless_slot_bitmap[word] == UINT64_MAX) {
+                continue;
+            }
+            uint32_t bit = __builtin_ctzll(~r->bindless_slot_bitmap[word]);
+            uint32_t slot = word * 64 + bit;
+            if (slot >= BINDLESS_STAGE_SLOT_BASE) {
+                break;
+            }
+            snode->bindless_slot = slot;
+            r->bindless_slot_bitmap[word] |= (1ULL << bit);
+            break;
+        }
+        assert(snode->bindless_slot > 0);
+    }
+#endif
 }
 
 static void texture_cache_release_node_resources(PGRAPHVkState *r, TextureBinding *snode)
@@ -2061,6 +2183,13 @@ static void texture_cache_entry_post_evict(Lru *lru, LruNode *node)
 {
     PGRAPHVkState *r = container_of(lru, PGRAPHVkState, texture_cache);
     TextureBinding *snode = container_of(node, TextureBinding, node);
+#if OPT_BINDLESS_TEXTURES
+    if (r->bindless_textures_supported && snode->bindless_slot > 0 &&
+        snode->bindless_slot < BINDLESS_STAGE_SLOT_BASE) {
+        r->bindless_slot_bitmap[snode->bindless_slot / 64] &=
+            ~(1ULL << (snode->bindless_slot % 64));
+    }
+#endif
     texture_cache_release_node_resources(r, snode);
 }
 

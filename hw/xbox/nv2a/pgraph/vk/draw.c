@@ -1107,26 +1107,60 @@ static void create_pipeline(PGRAPHState *pg)
     // }
 
 
+    VkPushConstantRange push_constant_ranges[2];
+    int num_push_constant_ranges = 0;
     VkPipelineLayoutCreateInfo pipeline_layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1,
         .pSetLayouts = &r->descriptor_set_layout,
     };
 
-    VkPushConstantRange push_constant_range;
+#if OPT_BINDLESS_TEXTURES
+    VkDescriptorSetLayout set_layouts[2];
+    if (r->bindless_textures_supported) {
+        set_layouts[0] = r->bindless_set_layout;
+        set_layouts[1] = r->descriptor_set_layout;
+        pipeline_layout_info.setLayoutCount = 2;
+        pipeline_layout_info.pSetLayouts = set_layouts;
+        push_constant_ranges[num_push_constant_ranges++] =
+            (VkPushConstantRange){
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .offset = r->tex_push_offset,
+                .size = NV2A_MAX_TEXTURES * sizeof(uint32_t),
+            };
+    }
+#endif
+
     if (r->use_push_constants_for_uniform_attrs) {
         int num_uniform_attributes =
             __builtin_popcount(r->shader_binding->state.vsh.uniform_attrs);
-        if (num_uniform_attributes) {
-            push_constant_range = (VkPushConstantRange){
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-                .offset = 0,
-                // FIXME: Minimize push constants
-                .size = num_uniform_attributes * 4 * sizeof(float),
-            };
-            pipeline_layout_info.pushConstantRangeCount = 1;
-            pipeline_layout_info.pPushConstantRanges = &push_constant_range;
+#if OPT_BINDLESS_TEXTURES
+        if (r->bindless_textures_supported &&
+            num_uniform_attributes > r->max_vertex_push_attrs) {
+            num_uniform_attributes = 0;
         }
+#endif
+        if (num_uniform_attributes) {
+#if OPT_BINDLESS_TEXTURES
+            uint32_t vertex_push_offset =
+                r->bindless_textures_supported && r->tex_push_offset == 0
+                    ? NV2A_MAX_TEXTURES * sizeof(uint32_t)
+                    : 0;
+#else
+            uint32_t vertex_push_offset = 0;
+#endif
+            push_constant_ranges[num_push_constant_ranges++] =
+                (VkPushConstantRange){
+                    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                    .offset = vertex_push_offset,
+                    .size = num_uniform_attributes * 4 * sizeof(float),
+                };
+        }
+    }
+
+    if (num_push_constant_ranges > 0) {
+        pipeline_layout_info.pushConstantRangeCount = num_push_constant_ranges;
+        pipeline_layout_info.pPushConstantRanges = push_constant_ranges;
     }
 
     VkPipelineLayout layout;
@@ -1168,11 +1202,26 @@ static void create_pipeline(PGRAPHState *pg)
     NV2A_VK_DGROUP_END();
 }
 
+static bool can_push_vertex_attr_values(PGRAPHVkState *r)
+{
+    if (!r->use_push_constants_for_uniform_attrs) {
+        return false;
+    }
+#if OPT_BINDLESS_TEXTURES
+    if (r->bindless_textures_supported &&
+        __builtin_popcount(r->shader_binding->state.vsh.uniform_attrs) >
+            r->max_vertex_push_attrs) {
+        return false;
+    }
+#endif
+    return true;
+}
+
 static void push_vertex_attr_values(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
 
-    if (!r->use_push_constants_for_uniform_attrs) {
+    if (!can_push_vertex_attr_values(r)) {
         return;
     }
 
@@ -1185,8 +1234,16 @@ static void push_vertex_attr_values(PGRAPHState *pg)
                              values, &num_uniform_attrs);
 
     if (num_uniform_attrs > 0) {
+#if OPT_BINDLESS_TEXTURES
+        uint32_t vertex_push_offset =
+            r->bindless_textures_supported && r->tex_push_offset == 0
+                ? NV2A_MAX_TEXTURES * sizeof(uint32_t)
+                : 0;
+#else
+        uint32_t vertex_push_offset = 0;
+#endif
         vkCmdPushConstants(r->command_buffer, r->pipeline_binding->layout,
-                           VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           VK_SHADER_STAGE_VERTEX_BIT, vertex_push_offset,
                            num_uniform_attrs * 4 * sizeof(float),
                            &values);
     }
@@ -1198,10 +1255,45 @@ static void bind_descriptor_sets(PGRAPHState *pg)
     assert(r->descriptor_set_index >= 1);
 
     vkCmdBindDescriptorSets(r->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            r->pipeline_binding->layout, 0, 1,
+                            r->pipeline_binding->layout,
+#if OPT_BINDLESS_TEXTURES
+                            r->bindless_textures_supported ? 1 : 0,
+#else
+                            0,
+#endif
+                            1,
                             &r->descriptor_sets[r->descriptor_set_index - 1], 0,
                             NULL);
 }
+
+#if OPT_BINDLESS_TEXTURES
+static void bind_bindless_set(PGRAPHState *pg)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
+    if (!r->bindless_textures_supported) {
+        return;
+    }
+
+    vkCmdBindDescriptorSets(r->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            r->pipeline_binding->layout, 0, 1,
+                            &r->bindless_descriptor_set, 0, NULL);
+}
+
+static void push_texture_indices(PGRAPHState *pg)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
+    if (!r->bindless_textures_supported) {
+        return;
+    }
+
+    vkCmdPushConstants(r->command_buffer, r->pipeline_binding->layout,
+                       VK_SHADER_STAGE_FRAGMENT_BIT, r->tex_push_offset,
+                       sizeof(r->tex_bindless_indices),
+                       r->tex_bindless_indices);
+}
+#endif
 
 static void begin_query(PGRAPHVkState *r)
 {
@@ -1490,6 +1582,9 @@ void pgraph_vk_begin_command_buffer(PGRAPHState *pg)
                                   &command_buffer_begin_info));
     r->command_buffer_start_time = pg->draw_time;
     r->in_command_buffer = true;
+#if OPT_BINDLESS_TEXTURES
+    r->bindless_set_bound = false;
+#endif
 }
 
 // FIXME: Refactor below
@@ -1699,8 +1794,17 @@ static void begin_draw(PGRAPHState *pg)
     }
 
     if (!pg->clearing && !r->pre_draw_skipped) {
+#if OPT_BINDLESS_TEXTURES
+        if (r->bindless_textures_supported && !r->bindless_set_bound) {
+            bind_bindless_set(pg);
+            r->bindless_set_bound = true;
+        }
+#endif
         bind_descriptor_sets(pg);
         push_vertex_attr_values(pg);
+#if OPT_BINDLESS_TEXTURES
+        push_texture_indices(pg);
+#endif
     }
 
     r->in_draw = true;
