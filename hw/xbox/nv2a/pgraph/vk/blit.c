@@ -164,7 +164,6 @@ void pgraph_vk_image_blit(NV2AState *d)
             // download should be discarded.
             surf_dest->download_pending = false;
             surf_dest->draw_dirty = false;
-            surf_dest->download_generation = surf_dest->draw_generation;
         }
         surf_dest->upload_pending = true;
         pg->draw_time++;
