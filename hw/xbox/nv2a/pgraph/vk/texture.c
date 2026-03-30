@@ -1898,6 +1898,24 @@ static bool check_textures_dirty(PGRAPHState *pg)
     return false;
 }
 
+bool pgraph_vk_check_textures_fast_skip(PGRAPHState *pg)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
+    for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
+        if (!r->texture_bindings[i] || pg->texture_dirty[i] ||
+            r->tex_surface_direct[i]) {
+            return false;
+        }
+        if (r->texture_bindings[i] != &r->dummy_texture &&
+            r->texture_bindings[i]->possibly_dirty) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static void update_timestamps(PGRAPHVkState *r)
 {
     for (int i = 0; i < ARRAY_SIZE(r->texture_bindings); i++) {

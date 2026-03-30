@@ -427,6 +427,10 @@ typedef struct PGRAPHVkState {
     size_t num_vertex_ram_buffer_syncs;
     unsigned long *uploaded_bitmap;
     size_t bitmap_size;
+    uint32_t pipeline_vertex_attr_gen;
+    uint32_t last_shader_state_gen;
+    uint32_t last_pipeline_state_gen;
+    uint32_t last_any_reg_gen;
 
     VkVertexInputAttributeDescription vertex_attribute_descriptions[NV2A_VERTEXSHADER_ATTRIBUTES];
     int vertex_attribute_to_description_location[NV2A_VERTEXSHADER_ATTRIBUTES];
@@ -454,6 +458,7 @@ typedef struct PGRAPHVkState {
     VkImageView tex_surface_direct_views[NV2A_MAX_TEXTURES];
     VkImageLayout tex_surface_direct_layout[NV2A_MAX_TEXTURES];
     TextureBinding dummy_texture;
+    uint32_t last_texture_state_gen;
     bool texture_bindings_changed;
     VkFormatProperties *texture_format_properties;
 
@@ -472,6 +477,7 @@ typedef struct PGRAPHVkState {
     uint64_t uniform_buffer_hashes[2];
     size_t uniform_buffer_offsets[2];
     bool uniforms_changed;
+    bool pre_draw_skipped;
 
     VkQueryPool query_pool;
     int max_queries_in_flight; // FIXME: Move out to constant
@@ -618,6 +624,7 @@ bool pgraph_vk_gl_external_memory_available(void);
 void pgraph_vk_init_textures(PGRAPHState *pg);
 void pgraph_vk_finalize_textures(PGRAPHState *pg);
 void pgraph_vk_bind_textures(NV2AState *d);
+bool pgraph_vk_check_textures_fast_skip(PGRAPHState *pg);
 void pgraph_vk_mark_textures_possibly_dirty(NV2AState *d, hwaddr addr,
                                             hwaddr size);
 void pgraph_vk_trim_texture_cache(PGRAPHState *pg);
