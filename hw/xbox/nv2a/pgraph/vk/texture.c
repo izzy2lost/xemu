@@ -1422,16 +1422,36 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     uint32_t sampler_max_anisotropy =
         MIN(r->device_props.limits.maxSamplerAnisotropy, max_anisotropy);
 
+    VkSamplerAddressMode wrap_u = lookup_texture_address_mode(
+        GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRU));
+    VkSamplerAddressMode wrap_v = lookup_texture_address_mode(
+        GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRV));
+    VkSamplerAddressMode wrap_w = (state.dimensionality > 2) ?
+        lookup_texture_address_mode(
+            GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRP)) :
+        0;
+
+#ifdef __ANDROID__
+    if (!r->custom_border_color_extension_enabled) {
+        if (wrap_u == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER) {
+            wrap_u = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        }
+        if (wrap_v == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER) {
+            wrap_v = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        }
+        if (wrap_w == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER) {
+            wrap_w = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        }
+    }
+#endif
+
     VkSamplerCreateInfo sampler_create_info = {
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .magFilter = vk_mag_filter,
         .minFilter = vk_min_filter,
-        .addressModeU = lookup_texture_address_mode(
-            GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRU)),
-        .addressModeV = lookup_texture_address_mode(
-            GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRV)),
-        .addressModeW = (state.dimensionality > 2) ? lookup_texture_address_mode(
-            GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRP)) : 0,
+        .addressModeU = wrap_u,
+        .addressModeV = wrap_v,
+        .addressModeW = wrap_w,
         .anisotropyEnable =
             r->enabled_physical_device_features.samplerAnisotropy &&
             sampler_max_anisotropy > 1,
