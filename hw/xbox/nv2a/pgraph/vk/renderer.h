@@ -48,6 +48,7 @@
 #define FB_CACHE_MAX 32
 #define OPT_BINDLESS_TEXTURES 1
 #define OPT_REORDER_SAFE_WINDOWS 1
+#define OPT_ASYNC_COMPILE 1
 #define REORDER_WINDOW_MAX 64
 #define MAX_BINDLESS_TEXTURES 1024
 #define BINDLESS_STAGE_SLOT_BASE (MAX_BINDLESS_TEXTURES - NV2A_MAX_TEXTURES)
@@ -87,6 +88,9 @@ typedef struct PipelineBinding {
     VkRenderPass render_pass;
     unsigned int draw_time;
     bool has_dynamic_line_width;
+#if OPT_ASYNC_COMPILE
+    bool pending;
+#endif
 } PipelineBinding;
 
 enum Buffer {
@@ -205,11 +209,21 @@ typedef struct ShaderModuleCacheEntry {
     LruNode node;
     ShaderModuleCacheKey key;
     ShaderModuleInfo *module_info;
+#if OPT_ASYNC_COMPILE
+    bool ready;
+    unsigned int pending_users;
+#endif
 } ShaderModuleCacheEntry;
 
 typedef struct ShaderBinding {
     LruNode node;
     ShaderState state;
+#if OPT_ASYNC_COMPILE
+    bool ready;
+    struct ShaderModuleCacheEntry *pending_vsh_entry;
+    struct ShaderModuleCacheEntry *pending_geom_entry;
+    struct ShaderModuleCacheEntry *pending_psh_entry;
+#endif
     struct {
         ShaderModuleInfo *module_info;
         VshUniformLocs uniform_locs;
@@ -222,6 +236,64 @@ typedef struct ShaderBinding {
         PshUniformLocs uniform_locs;
     } psh;
 } ShaderBinding;
+
+#if OPT_ASYNC_COMPILE
+typedef struct PipelineCreateParams {
+    VkDevice device;
+    VkPipelineCache vk_pipeline_cache;
+
+    VkPipelineShaderStageCreateInfo shader_stages[3];
+    int num_shader_stages;
+
+    ShaderModuleInfo *module_infos[3];
+    int num_module_infos;
+
+    VkVertexInputBindingDescription
+        binding_descs[NV2A_VERTEXSHADER_ATTRIBUTES];
+    VkVertexInputAttributeDescription
+        attr_descs[NV2A_VERTEXSHADER_ATTRIBUTES];
+    uint32_t num_binding_descs;
+    uint32_t num_attr_descs;
+
+    VkPrimitiveTopology topology;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer;
+    VkPipelineDepthStencilStateCreateInfo depth_stencil;
+    bool has_zeta;
+
+    VkPipelineColorBlendAttachmentState color_blend_attachment;
+    bool has_color;
+    float blend_constants[4];
+
+    VkDynamicState dynamic_states[8];
+    int num_dynamic_states;
+
+    bool has_dynamic_line_width;
+
+    VkPipelineLayout layout;
+    VkRenderPass render_pass;
+} PipelineCreateParams;
+
+typedef enum {
+    COMPILE_JOB_SHADER_MODULE,
+    COMPILE_JOB_PIPELINE,
+} CompileJobType;
+
+typedef struct CompileJob {
+    CompileJobType type;
+    QSIMPLEQ_ENTRY(CompileJob) entry;
+    union {
+        struct {
+            ShaderModuleCacheEntry *target;
+            ShaderModuleCacheKey key;
+        } shader_module;
+        struct {
+            PipelineBinding *target;
+            PipelineCreateParams params;
+        } pipeline;
+    };
+} CompileJob;
+#endif
 
 typedef struct TextureKey {
     TextureShape state;
@@ -488,6 +560,18 @@ typedef struct PGRAPHVkState {
     PipelineBinding *pipeline_binding;
     bool pipeline_binding_changed;
     int64_t pipeline_cache_last_save_us;
+#if OPT_ASYNC_COMPILE
+    bool async_draw_skip;
+    struct {
+        QemuMutex lock;
+        QemuCond cond;
+        QemuThread thread;
+        QSIMPLEQ_HEAD(, CompileJob) queue;
+        bool shutdown;
+        bool initialized;
+        int queue_depth;
+    } compile_worker;
+#endif
 
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layout;
@@ -720,6 +804,11 @@ void pgraph_vk_init_shaders(PGRAPHState *pg);
 void pgraph_vk_finalize_shaders(PGRAPHState *pg);
 void pgraph_vk_update_descriptor_sets(PGRAPHState *pg);
 void pgraph_vk_bind_shaders(PGRAPHState *pg);
+#if OPT_ASYNC_COMPILE
+void pgraph_vk_compile_worker_init(PGRAPHVkState *r);
+void pgraph_vk_compile_worker_shutdown(PGRAPHVkState *r);
+void pgraph_vk_compile_worker_enqueue(PGRAPHVkState *r, CompileJob *job);
+#endif
 
 // reports.c
 void pgraph_vk_init_reports(PGRAPHState *pg);

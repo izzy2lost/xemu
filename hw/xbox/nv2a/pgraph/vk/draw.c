@@ -35,6 +35,19 @@
 #if OPT_REORDER_SAFE_WINDOWS
 static bool g_xemu_draw_reorder = true;
 #endif
+#if OPT_ASYNC_COMPILE
+static bool g_xemu_async_compile = true;
+
+void xemu_set_async_compile(bool enable)
+{
+    g_xemu_async_compile = enable;
+}
+
+bool xemu_get_async_compile(void)
+{
+    return g_xemu_async_compile;
+}
+#endif
 
 void pgraph_vk_draw_begin(NV2AState *d)
 {
@@ -102,7 +115,18 @@ static void pipeline_cache_entry_init(Lru *lru, LruNode *node,
     snode->layout = VK_NULL_HANDLE;
     snode->pipeline = VK_NULL_HANDLE;
     snode->draw_time = 0;
+#if OPT_ASYNC_COMPILE
+    snode->pending = false;
+#endif
 }
+
+#if OPT_ASYNC_COMPILE
+static bool pipeline_cache_pre_evict(Lru *lru, LruNode *node)
+{
+    PipelineBinding *snode = container_of(node, PipelineBinding, node);
+    return !snode->pending;
+}
+#endif
 
 static void pipeline_cache_entry_post_evict(Lru *lru, LruNode *node)
 {
@@ -257,6 +281,9 @@ static void init_pipeline_cache(PGRAPHState *pg)
     r->pipeline_cache.init_node = pipeline_cache_entry_init;
     r->pipeline_cache.compare_nodes = pipeline_cache_entry_compare;
     r->pipeline_cache.post_node_evict = pipeline_cache_entry_post_evict;
+#if OPT_ASYNC_COMPILE
+    r->pipeline_cache.pre_node_evict = pipeline_cache_pre_evict;
+#endif
 }
 
 static void finalize_pipeline_cache(PGRAPHState *pg)
@@ -350,6 +377,10 @@ void pgraph_vk_init_pipelines(PGRAPHState *pg)
 void pgraph_vk_finalize_pipelines(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
+
+#if OPT_ASYNC_COMPILE
+    pgraph_vk_compile_worker_shutdown(r);
+#endif
 
     finalize_clear_shaders(pg);
     finalize_pipeline_cache(pg);
@@ -779,7 +810,12 @@ static bool check_pipeline_dirty(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
 
-    if (!r->pipeline_binding || r->shader_bindings_changed ||
+    if (!r->pipeline_binding ||
+#if OPT_ASYNC_COMPILE
+        r->pipeline_binding->pending ||
+#endif
+        r->pipeline_binding->pipeline == VK_NULL_HANDLE ||
+        r->shader_bindings_changed ||
         r->texture_bindings_changed || check_render_pass_dirty(pg)) {
         return true;
     }
@@ -840,6 +876,10 @@ static void create_pipeline(PGRAPHState *pg)
     bool textures_clean = pgraph_vk_check_textures_fast_skip(pg);
 
     if (r->pipeline_binding &&
+#if OPT_ASYNC_COMPILE
+        !r->pipeline_binding->pending &&
+#endif
+        r->pipeline_binding->pipeline != VK_NULL_HANDLE &&
         pg->texture_state_gen == r->last_texture_state_gen &&
         textures_clean &&
         !check_render_pass_dirty(pg) &&
@@ -875,6 +915,18 @@ static void create_pipeline(PGRAPHState *pg)
 
     LruNode *node = lru_lookup(&r->pipeline_cache, hash, &key);
     PipelineBinding *snode = container_of(node, PipelineBinding, node);
+    memcpy(&snode->key, &key, sizeof(key));
+
+#if OPT_ASYNC_COMPILE
+    if (snode->pending) {
+        NV2A_VK_DPRINTF("Pending pipeline");
+        r->pipeline_binding_changed = r->pipeline_binding != snode;
+        r->pipeline_binding = snode;
+        NV2A_VK_DGROUP_END();
+        return;
+    }
+#endif
+
     if (snode->pipeline != VK_NULL_HANDLE) {
         NV2A_VK_DPRINTF("Cache hit");
         r->pipeline_binding_changed = r->pipeline_binding != snode;
@@ -886,13 +938,28 @@ static void create_pipeline(PGRAPHState *pg)
     NV2A_VK_DPRINTF("Cache miss");
     nv2a_profile_inc_counter(NV2A_PROF_PIPELINE_GEN);
 
-    memcpy(&snode->key, &key, sizeof(key));
+#if OPT_ASYNC_COMPILE
+    if (xemu_get_async_compile() &&
+        (!r->shader_binding || !qatomic_read(&r->shader_binding->ready))) {
+        r->pipeline_binding_changed = r->pipeline_binding != snode;
+        r->pipeline_binding = snode;
+        NV2A_VK_DGROUP_END();
+        return;
+    }
+#endif
 
     uint32_t control_0 = pgraph_reg_r(pg, NV_PGRAPH_CONTROL_0);
     bool depth_test = control_0 & NV_PGRAPH_CONTROL_0_ZENABLE;
     bool depth_write = !!(control_0 & NV_PGRAPH_CONTROL_0_ZWRITEENABLE);
     bool stencil_test =
         pgraph_reg_r(pg, NV_PGRAPH_CONTROL_1) & NV_PGRAPH_CONTROL_1_STENCIL_TEST_ENABLE;
+
+    if (!r->shader_binding ||
+        !r->shader_binding->vsh.module_info ||
+        !r->shader_binding->psh.module_info) {
+        NV2A_VK_DGROUP_END();
+        return;
+    }
 
     int num_active_shader_stages = 0;
     VkPipelineShaderStageCreateInfo shader_stages[3];
@@ -1203,6 +1270,62 @@ static void create_pipeline(PGRAPHState *pg)
         .subpass = 0,
         .basePipelineHandle = VK_NULL_HANDLE,
     };
+
+#if OPT_ASYNC_COMPILE
+    if (xemu_get_async_compile()) {
+        CompileJob *job = g_malloc0(sizeof(*job));
+        PipelineCreateParams *p = &job->pipeline.params;
+
+        job->type = COMPILE_JOB_PIPELINE;
+        job->pipeline.target = snode;
+        p->device = r->device;
+        p->vk_pipeline_cache = r->vk_pipeline_cache;
+        memcpy(p->shader_stages, shader_stages,
+               num_active_shader_stages * sizeof(shader_stages[0]));
+        p->num_shader_stages = num_active_shader_stages;
+        p->num_module_infos = 0;
+        p->module_infos[p->num_module_infos] = r->shader_binding->vsh.module_info;
+        pgraph_vk_ref_shader_module(p->module_infos[p->num_module_infos++]);
+        if (r->shader_binding->geom.module_info) {
+            p->module_infos[p->num_module_infos] =
+                r->shader_binding->geom.module_info;
+            pgraph_vk_ref_shader_module(p->module_infos[p->num_module_infos++]);
+        }
+        p->module_infos[p->num_module_infos] = r->shader_binding->psh.module_info;
+        pgraph_vk_ref_shader_module(p->module_infos[p->num_module_infos++]);
+        memcpy(p->binding_descs, r->vertex_binding_descriptions,
+               r->num_active_vertex_binding_descriptions *
+                   sizeof(VkVertexInputBindingDescription));
+        memcpy(p->attr_descs, r->vertex_attribute_descriptions,
+               r->num_active_vertex_attribute_descriptions *
+                   sizeof(VkVertexInputAttributeDescription));
+        p->num_binding_descs = r->num_active_vertex_binding_descriptions;
+        p->num_attr_descs = r->num_active_vertex_attribute_descriptions;
+        p->topology = input_assembly.topology;
+        p->rasterizer = rasterizer;
+        p->depth_stencil = depth_stencil;
+        p->has_zeta = r->zeta_binding != NULL;
+        p->color_blend_attachment = color_blend_attachment;
+        p->has_color = r->color_binding != NULL;
+        memcpy(p->blend_constants, color_blending.blendConstants,
+               sizeof(p->blend_constants));
+        memcpy(p->dynamic_states, dynamic_states,
+               num_dynamic_states * sizeof(dynamic_states[0]));
+        p->num_dynamic_states = num_dynamic_states;
+        p->has_dynamic_line_width = snode->has_dynamic_line_width;
+        p->layout = layout;
+        p->render_pass = pipeline_create_info.renderPass;
+
+        snode->draw_time = pg->draw_time;
+        snode->pending = true;
+        r->pipeline_binding = snode;
+        r->pipeline_binding_changed = true;
+        pgraph_vk_compile_worker_enqueue(r, job);
+        NV2A_VK_DGROUP_END();
+        return;
+    }
+#endif
+
     VkPipeline pipeline;
     VK_CHECK(vkCreateGraphicsPipelines(r->device, r->vk_pipeline_cache, 1,
                                        &pipeline_create_info, NULL, &pipeline));
@@ -1689,6 +1812,10 @@ static void begin_pre_draw(PGRAPHState *pg)
     PGRAPHVkState *r = pg->vk_renderer_state;
     bool textures_clean = pgraph_vk_check_textures_fast_skip(pg);
 
+#if OPT_ASYNC_COMPILE
+    r->async_draw_skip = false;
+#endif
+
     assert(r->color_binding || r->zeta_binding);
     assert(!r->color_binding || r->color_binding->initialized);
     assert(!r->zeta_binding || r->zeta_binding->initialized);
@@ -1724,6 +1851,25 @@ static void begin_pre_draw(PGRAPHState *pg)
         create_pipeline(pg);
         r->pipeline_vertex_attr_gen = pg->vertex_attr_gen;
     }
+
+#if OPT_ASYNC_COMPILE
+    if (!pg->clearing && xemu_get_async_compile() && r->pipeline_binding) {
+        bool skip = false;
+        if (!r->shader_binding || !qatomic_read(&r->shader_binding->ready)) {
+            skip = true;
+        } else if (r->pipeline_binding->pending) {
+            skip = true;
+        } else if (r->pipeline_binding->pipeline == VK_NULL_HANDLE) {
+            skip = true;
+        }
+        if (skip) {
+            r->async_draw_skip = true;
+            r->pre_draw_skipped = true;
+            pgraph_vk_ensure_command_buffer(pg);
+            return;
+        }
+    }
+#endif
 
     bool render_pass_dirty = r->pipeline_binding->render_pass != r->render_pass;
 
@@ -2501,7 +2647,8 @@ static bool try_snapshot_draw_arrays(NV2AState *d, ReorderWindowEntry *entry)
     }
 
     begin_pre_draw(pg);
-    if (reorder_uses_bindless_direct_surface_textures(r) ||
+    if (r->async_draw_skip ||
+        reorder_uses_bindless_direct_surface_textures(r) ||
         !r->pipeline_binding || r->descriptor_set_index == 0) {
         return false;
     }
@@ -2614,7 +2761,8 @@ static bool try_snapshot_inline_elements(NV2AState *d,
     VertexBufferRemap remap = remap_unaligned_attributes(pg, max_element + 1);
 
     begin_pre_draw(pg);
-    if (reorder_uses_bindless_direct_surface_textures(r) ||
+    if (r->async_draw_skip ||
+        reorder_uses_bindless_direct_surface_textures(r) ||
         !r->pipeline_binding || r->descriptor_set_index == 0) {
         return false;
     }
@@ -3115,6 +3263,10 @@ void pgraph_vk_flush_draw(NV2AState *d)
         }
 
         begin_pre_draw(pg);
+        if (r->async_draw_skip) {
+            NV2A_VK_DGROUP_END();
+            return;
+        }
         copy_remapped_attributes_to_inline_buffer(pg, remap, 0, max_element);
         pgraph_vk_begin_debug_marker(r, r->command_buffer, RGBA_BLUE,
                                      "Draw Arrays");
@@ -3176,6 +3328,10 @@ void pgraph_vk_flush_draw(NV2AState *d)
         VertexBufferRemap remap = remap_unaligned_attributes(pg, max_element + 1);
 
         begin_pre_draw(pg);
+        if (r->async_draw_skip) {
+            NV2A_VK_DGROUP_END();
+            return;
+        }
         copy_remapped_attributes_to_inline_buffer(pg, remap, 0, max_element + 1);
         VkDeviceSize buffer_offset = pgraph_vk_update_index_buffer(
             pg, draw_indices, index_data_size);
@@ -3224,6 +3380,10 @@ void pgraph_vk_flush_draw(NV2AState *d)
         }
 
         begin_pre_draw(pg);
+        if (r->async_draw_skip) {
+            NV2A_VK_DGROUP_END();
+            return;
+        }
         VkDeviceSize buffer_offset = pgraph_vk_update_vertex_inline_buffer(
             pg, data, sizes, r->num_active_vertex_attribute_descriptions);
         pgraph_vk_begin_debug_marker(r, r->command_buffer, RGBA_BLUE,
@@ -3288,6 +3448,10 @@ void pgraph_vk_flush_draw(NV2AState *d)
         }
 
         begin_pre_draw(pg);
+        if (r->async_draw_skip) {
+            NV2A_VK_DGROUP_END();
+            return;
+        }
         void *inline_array_data = pg->inline_array;
         VkDeviceSize buffer_offset = pgraph_vk_update_vertex_inline_buffer(
             pg, &inline_array_data, &inline_array_data_size, 1);
