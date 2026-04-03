@@ -185,7 +185,7 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
         .alloc_info = device_alloc_create_info,
         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        .buffer_size = 8 * 1024 * 1024,
+        .buffer_size = 64 * 1024 * 1024,
     };
 
     r->storage_buffers[BUFFER_UNIFORM_STAGING] = (StorageBuffer){
