@@ -50,7 +50,25 @@ typedef struct BasicColorFormatInfo {
     bool depth;
 } BasicColorFormatInfo;
 
+enum PgraphTextureSignedChannel {
+    PGRAPH_TEXTURE_SIGNED_R = 1 << 0,
+    PGRAPH_TEXTURE_SIGNED_G = 1 << 1,
+    PGRAPH_TEXTURE_SIGNED_B = 1 << 2,
+    PGRAPH_TEXTURE_SIGNED_A = 1 << 3,
+};
+
 extern const BasicColorFormatInfo kelvin_color_format_info_map[66];
+
+static inline uint8_t
+pgraph_get_texture_signed_component_mask_from_filter(uint32_t filter)
+{
+    uint8_t mask = 0;
+    if (filter & NV_PGRAPH_TEXFILTER0_RSIGNED) mask |= PGRAPH_TEXTURE_SIGNED_R;
+    if (filter & NV_PGRAPH_TEXFILTER0_GSIGNED) mask |= PGRAPH_TEXTURE_SIGNED_G;
+    if (filter & NV_PGRAPH_TEXFILTER0_BSIGNED) mask |= PGRAPH_TEXTURE_SIGNED_B;
+    if (filter & NV_PGRAPH_TEXFILTER0_ASIGNED) mask |= PGRAPH_TEXTURE_SIGNED_A;
+    return mask;
+}
 
 uint8_t *pgraph_convert_texture_data(const TextureShape s, const uint8_t *data,
                                      const uint8_t *palette_data,

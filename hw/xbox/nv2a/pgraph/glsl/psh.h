@@ -47,6 +47,7 @@ typedef struct PshState {
     bool point_sprite;
     bool rect_tex[4];
     bool snorm_tex[4];
+    uint8_t tex_signed[4];
     bool compare_mode[4][4];
     bool alphakill[4];
     int colorkey_mode[4];
