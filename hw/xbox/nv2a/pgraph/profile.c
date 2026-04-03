@@ -23,11 +23,6 @@ NV2AStats g_nv2a_stats;
 
 void nv2a_profile_increment(void)
 {
-#ifdef __ANDROID__
-    /* Skip profiling on Android — stats are never displayed and the
-     * qemu_clock_get_us() syscalls add unnecessary overhead per frame. */
-    return;
-#else
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
     const int64_t fps_update_interval = 250000;
     g_nv2a_stats.last_flip_time = now;
@@ -42,14 +37,10 @@ void nv2a_profile_increment(void)
         ts = now;
         frame_count = 0;
     }
-#endif
 }
 
 void nv2a_profile_flip_stall(void)
 {
-#ifdef __ANDROID__
-    return;
-#else
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
     int64_t render_time = (now-g_nv2a_stats.last_flip_time)/1000;
 
@@ -60,7 +51,6 @@ void nv2a_profile_flip_stall(void)
         (g_nv2a_stats.frame_ptr + 1) % NV2A_PROF_NUM_FRAMES;
     g_nv2a_stats.frame_count++;
     memset(&g_nv2a_stats.frame_working, 0, sizeof(g_nv2a_stats.frame_working));
-#endif
 }
 
 const char *nv2a_profile_get_counter_name(unsigned int cnt)

@@ -407,6 +407,13 @@ struct TCGContext {
     /* Threshold to flush the translated code buffer.  */
     void *code_gen_highwater;
 
+#ifdef XBOX
+    /* Hot arena for tier-1 TBs — keeps hot code packed within L1I. */
+    void *hot_arena_start;
+    void *hot_arena_end;
+    void *hot_arena_ptr;
+#endif
+
     /* Track which vCPU triggers events */
     CPUState *cpu;                      /* *_trans */
 
@@ -466,6 +473,21 @@ struct TCGContext {
     sigjmp_buf jmp_trans;
 
     void *disas_ctx;
+
+#ifdef XBOX
+    /*
+     * When true, translator_loop suppresses gen_tb_start() and
+     * gen_tb_end() so that a second call to translate_code() appends
+     * IR to the existing ops list (used for superblock formation).
+     */
+    bool superblock_append;
+    /*
+     * For cross-TB dead flag elimination: cc_defines_first mask of
+     * each known successor TB (exit 0 and exit 1).  Populated in
+     * translate-all.c before tcg_gen_code; consumed in tier1-opt.c.
+     */
+    uint8_t succ_cc_defines[2];
+#endif
 };
 
 static inline bool temp_readonly(TCGTemp *ts)
@@ -483,6 +505,18 @@ extern __thread TCGContext *tcg_ctx;
 extern const void *tcg_code_gen_epilogue;
 extern uintptr_t tcg_splitwx_diff;
 extern TCGv_env tcg_env;
+
+#ifdef XBOX
+typedef struct {
+    uintptr_t host_base;          /* offset 0: host pointer to guest RAM */
+    volatile int32_t active;      /* offset 8: 1 = fast path usable (boot done, no callbacks) */
+    volatile int32_t cb_count;    /* offset 12: >0 when mem-access callbacks active */
+    uintptr_t vram_pci_base;     /* offset 16: NV2A VRAM PCI BAR address, 0 = not configured */
+} XboxRamFPState;
+
+extern XboxRamFPState xbox_ram_fp;
+extern uint64_t  xbox_ram_size;
+#endif
 
 bool in_code_gen_buffer(const void *p);
 
@@ -694,6 +728,9 @@ static inline bool tcg_op_buf_full(void)
 void *tcg_malloc_internal(TCGContext *s, int size);
 void tcg_pool_reset(TCGContext *s);
 TranslationBlock *tcg_tb_alloc(TCGContext *s);
+#ifdef XBOX
+TranslationBlock *tcg_tb_alloc_hot(TCGContext *s);
+#endif
 
 void tcg_region_reset_all(void);
 

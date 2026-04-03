@@ -83,7 +83,7 @@ object FrontendLaunchHelper {
     val extras = intent.extras
     if (extras != null) {
       for (key in stringExtraKeys) {
-        when (val value = extras.get(key)) {
+        when (val value = @Suppress("DEPRECATION") extras.get(key)) {
           is Uri -> candidates += "extra:$key" to value
           is String -> candidates += "extra:$key" to value
           is CharSequence -> candidates += "extra:$key" to value.toString()

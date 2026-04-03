@@ -28,25 +28,12 @@
 #include <math.h>
 #ifdef __ANDROID__
 #include <android/log.h>
-#include <EGL/egl.h>
-/* EGL_EGLEXT_PROTOTYPES enables KHR function declarations in eglext.h.
- * We use KHR variants because eglCreateSync (EGL 1.5) is only in
- * libEGL.so stubs from API 29+; the KHR equivalents exist from API 21. */
-#define EGL_EGLEXT_PROTOTYPES
-#include <EGL/eglext.h>
-#undef EGL_EGLEXT_PROTOTYPES
 #endif
 
 #ifdef __ANDROID__
-extern bool xemu_android_is_debug_logging_enabled(void);
-
 static void gl_log_errors(const char *ctx)
 {
     GLenum gl_err;
-
-    if (!xemu_android_is_debug_logging_enabled()) {
-        return;
-    }
 
     while ((gl_err = glGetError()) != GL_NO_ERROR) {
         __android_log_print(ANDROID_LOG_WARN, "xemu-android",
@@ -515,6 +502,7 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
         return;
     }
 
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
     glBindVertexArray(r->disp_rndr.vao);
     glBindBuffer(GL_ARRAY_BUFFER, r->disp_rndr.vbo);
@@ -546,23 +534,8 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
 static void gl_fence(void)
 {
 #ifdef __ANDROID__
-    /* GL sync objects fail with GL_INVALID_OPERATION on Adreno when shared
-     * across EGL contexts. EGL_KHR_fence_sync operates at the EGL level and
-     * is not context-specific, so it is immune to this bug.
-     * We use the KHR variants because they are present in libEGL.so from
-     * API 21+; the EGL 1.5 core equivalents only appear from API 29. */
-    EGLDisplay dpy = eglGetCurrentDisplay();
-    if (dpy != EGL_NO_DISPLAY) {
-        EGLSyncKHR sync = eglCreateSyncKHR(dpy, EGL_SYNC_FENCE_KHR, NULL);
-        if (sync != EGL_NO_SYNC_KHR) {
-            eglClientWaitSyncKHR(dpy, sync,
-                                 EGL_SYNC_FLUSH_COMMANDS_BIT_KHR,
-                                 EGL_FOREVER_KHR);
-            eglDestroySyncKHR(dpy, sync);
-            return;
-        }
-    }
-    /* Fallback: EGL sync unavailable */
+    /* Shared-context sync objects are still producing invalid-operation
+     * failures on Adreno. Favor correctness over throughput here. */
     glFinish();
 #else
     GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);

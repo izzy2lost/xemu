@@ -30,10 +30,21 @@
 #include "access.h"
 
 /* float macros */
+#if defined(USE_HARD_FPU) && defined(__aarch64__)
+#define USE_NATIVE_DOUBLE_STORAGE 1
+#define FT0    (env->ft0_native)
+#define ST0    (env->fpregs[env->fpstt].native_d)
+#define ST(n)  (env->fpregs[(env->fpstt + (n)) & 7].native_d)
+#define ST1    ST(1)
+#define FPREG_VAL(fpreg) ((fpreg).native_d)
+#else
+#define USE_NATIVE_DOUBLE_STORAGE 0
 #define FT0    (env->ft0)
 #define ST0    (env->fpregs[env->fpstt].d)
 #define ST(n)  (env->fpregs[(env->fpstt + (n)) & 7].d)
 #define ST1    ST(1)
+#define FPREG_VAL(fpreg) ((fpreg).d)
+#endif
 
 #define FPU_RC_SHIFT        10
 #define FPU_RC_MASK         (3 << FPU_RC_SHIFT)
@@ -73,6 +84,277 @@
 #define floatx80_ln2_d make_floatx80(0x3ffe, 0xb17217f7d1cf79abLL)
 #define floatx80_pi_d make_floatx80(0x4000, 0xc90fdaa22168c234LL)
 
+/*
+ * ARM64 FPU: convert floatx80 <-> double via inline bit manipulation,
+ * then use the native ARM64 double-precision FPU for arithmetic.
+ *
+ * Two acceleration mechanisms exist on ARM64:
+ *
+ * 1) fp_jit (compile-time): fpu_helper.c is compiled twice via
+ *    fpu_helper_hard.c producing helper_*__soft and helper_*__hard symbols.
+ *    The __hard helpers always use native double (no runtime branch).
+ *    Selection is made once at TCG translation time via g_use_fp_jit.
+ *
+ * 2) fp_safe (runtime): When fp_jit is off, the __soft helpers use
+ *    floatx80_*_rt wrappers that check g_xemu_fp_safe on every call.
+ *    Can be toggled at runtime via xemu_set_fp_safe().
+ */
+#if defined(XBOX) && defined(__aarch64__)
+
+#include <string.h>
+
+#ifndef USE_HARD_FPU
+#endif
+
+static inline double fx80_to_f64(floatx80 a)
+{
+    uint64_t mant = a.low;
+    uint16_t exp_sign = a.high;
+    int sign = (exp_sign >> 15) & 1;
+    int exp = exp_sign & 0x7FFF;
+
+    if (exp == 0x7FFF) {
+        uint64_t d_bits = ((uint64_t)sign << 63) | (UINT64_C(0x7FF) << 52);
+        if (mant & UINT64_C(0x7FFFFFFFFFFFFFFF)) {
+            d_bits |= UINT64_C(0x8000000000000);
+        }
+        double d;
+        memcpy(&d, &d_bits, sizeof(d));
+        return d;
+    }
+
+    if (exp == 0 || !(mant & UINT64_C(0x8000000000000000))) {
+        return sign ? -0.0 : 0.0;
+    }
+
+    int d_exp = exp - 16383 + 1023;
+    if (d_exp >= 0x7FF) {
+        return sign ? -INFINITY : INFINITY;
+    }
+    if (d_exp <= 0) {
+        return sign ? -0.0 : 0.0;
+    }
+
+    uint64_t d_mant = (mant & UINT64_C(0x7FFFFFFFFFFFFFFF)) >> 11;
+    uint64_t d_bits = ((uint64_t)sign << 63) | ((uint64_t)d_exp << 52) | d_mant;
+    double d;
+    memcpy(&d, &d_bits, sizeof(d));
+    return d;
+}
+
+static inline floatx80 f64_to_fx80(double d)
+{
+    uint64_t d_bits;
+    memcpy(&d_bits, &d, sizeof(d_bits));
+    int sign = (d_bits >> 63) & 1;
+    int d_exp = (d_bits >> 52) & 0x7FF;
+    uint64_t d_mant = d_bits & UINT64_C(0xFFFFFFFFFFFFF);
+
+    if (d_exp == 0x7FF) {
+        uint64_t low = UINT64_C(0x8000000000000000);
+        if (d_mant) {
+            low |= (d_mant << 11) | UINT64_C(0x4000000000000000);
+        }
+        return make_floatx80((sign << 15) | 0x7FFF, low);
+    }
+
+    if (d_exp == 0) {
+        return make_floatx80((uint16_t)(sign << 15), 0);
+    }
+
+    int x_exp = d_exp - 1023 + 16383;
+    uint64_t low = UINT64_C(0x8000000000000000) | (d_mant << 11);
+    return make_floatx80((sign << 15) | x_exp, low);
+}
+
+static inline floatx80 pack_arm64(floatx80 v, float_status *status)
+{
+    switch (status->floatx80_rounding_precision) {
+    case floatx80_precision_s: {
+        float f = (float)fx80_to_f64(v);
+        return f64_to_fx80((double)f);
+    }
+    case floatx80_precision_d:
+    default:
+        return v;
+    }
+}
+
+#ifndef USE_HARD_FPU
+#endif /* !USE_HARD_FPU */
+
+#ifdef USE_HARD_FPU
+/*
+ * Native double storage: ST0/FT0 are now `double`, so all floatx80_*
+ * operations become native double operations and conversions are trivial.
+ */
+
+static inline FloatRelation floatx80_compare_nds(double a, double b, float_status *s)
+{
+    (void)s;
+    if (a < b) return float_relation_less;
+    if (a > b) return float_relation_greater;
+    if (a == b) return float_relation_equal;
+    return float_relation_unordered;
+}
+
+static inline float32 floatx80_to_float32_nds(double a, float_status *s)
+{
+    (void)s;
+    union { float f; float32 i; } u;
+    u.f = (float)a;
+    return u.i;
+}
+
+static inline double float32_to_floatx80_nds(float32 val, float_status *s)
+{
+    (void)s;
+    union { float32 i; float f; } u;
+    u.i = val;
+    return (double)u.f;
+}
+
+static inline double float64_to_floatx80_nds(float64 val, float_status *s)
+{
+    (void)s;
+    union { float64 i; double d; } u;
+    u.i = val;
+    return u.d;
+}
+
+static inline float64 floatx80_to_float64_nds(double a, float_status *s)
+{
+    (void)s;
+    union { double d; float64 i; } u;
+    u.d = a;
+    return u.i;
+}
+
+#define floatx80_add(a, b, s)          ((void)(s), (a) + (b))
+#define floatx80_sub(a, b, s)          ((void)(s), (a) - (b))
+#define floatx80_mul(a, b, s)          ((void)(s), (a) * (b))
+#define floatx80_div(a, b, s)          ((void)(s), (a) / (b))
+#define floatx80_compare               floatx80_compare_nds
+#define floatx80_compare_quiet         floatx80_compare_nds
+#define float32_to_floatx80            float32_to_floatx80_nds
+#define floatx80_to_float32            floatx80_to_float32_nds
+#define float64_to_floatx80            float64_to_floatx80_nds
+#define floatx80_to_float64            floatx80_to_float64_nds
+#define int32_to_floatx80(a, s)        ((void)(s), (double)(a))
+#define int64_to_floatx80(a, s)        ((void)(s), (double)(a))
+#define floatx80_to_int32(a, s)        ((void)(s), (int32_t)(a))
+#define floatx80_to_int64(a, s)        ((void)(s), (int64_t)(a))
+#define floatx80_to_int32_round_to_zero(a, s) ((void)(s), (int32_t)(a))
+#define floatx80_to_int64_round_to_zero(a, s) ((void)(s), (int64_t)(a))
+
+#define floatx80_is_neg(a)             signbit(a)
+#define floatx80_is_zero(a)            ((a) == 0.0)
+#define floatx80_is_zero_or_denormal(a) ((a) == 0.0)
+#define floatx80_is_any_nan(a)         isnan(a)
+#define floatx80_is_infinity(a, ...)    isinf(a)
+#define floatx80_is_signaling_nan(a, s) 0
+#define floatx80_silence_nan(a, s)     (a)
+#define floatx80_invalid_encoding(a, ...) 0
+
+#define floatx80_chs(a)                (-(a))
+#define floatx80_abs(a)                fabs(a)
+#define floatx80_sqrt(a, s)            ((void)(s), sqrt(a))
+
+#define floatx80_round(a, s)           ((void)(s), rint(a))
+#define floatx80_round_to_int(a, s)    ((void)(s), rint(a))
+
+#undef floatx80_zero
+#undef floatx80_one
+#undef floatx80_half
+#undef floatx80_lg2
+#undef floatx80_lg2_d
+#undef floatx80_l2e
+#undef floatx80_l2e_d
+#undef floatx80_l2t
+#undef floatx80_l2t_u
+#undef floatx80_ln2
+#undef floatx80_ln2_d
+#undef floatx80_pi
+#undef floatx80_pi_d
+
+#define floatx80_zero                  0.0
+#define floatx80_one                   1.0
+#define floatx80_pi                    M_PI
+#define floatx80_pi_d                  M_PI
+#define floatx80_half                  0.5
+#define floatx80_ln2                   M_LN2
+#define floatx80_ln2_d                 M_LN2
+#define floatx80_l2e                   M_LOG2E
+#define floatx80_l2e_d                 M_LOG2E
+#define floatx80_l2t                   3.32192809488736234787
+#define floatx80_l2t_u                 3.32192809488736234787
+#define floatx80_lg2                   (M_LN2/M_LN10)
+#define floatx80_lg2_d                 (M_LN2/M_LN10)
+
+#define floatx80_lt(a, b, s)           ((void)(s), (a) < (b))
+#define floatx80_le(a, b, s)           ((void)(s), (a) <= (b))
+#define floatx80_eq(a, b, s)           ((void)(s), (a) == (b))
+
+#define make_floatx80(hi, lo)          fx80_to_f64((floatx80){.low=(lo), .high=(hi)})
+
+#define floatx80_to_double(env, a)     (a)
+#define double_to_floatx80(env, a)     (a)
+
+#define floatx80_default_nan(s)        ((void)(s), NAN)
+#define floatx80_default_inf(sign, s)  ((void)(s), (sign) ? -INFINITY : INFINITY)
+
+static inline double floatx80_scalbn_nds(double a, int n, float_status *s)
+{
+    (void)s;
+    return scalbn(a, n);
+}
+#define floatx80_scalbn floatx80_scalbn_nds
+
+static inline double floatx80_modrem_nds(double a, double b, bool mod,
+                                         uint64_t *quotient, float_status *s)
+{
+    (void)s;
+    double q = (mod) ? fmod(a, b) : remainder(a, b);
+    if (quotient) {
+        double full_q = trunc(a / b);
+        *quotient = (uint64_t)(int64_t)full_q;
+    }
+    return q;
+}
+#define floatx80_modrem floatx80_modrem_nds
+
+#define floatx80_mod(a, b, s) ((void)(s), fmod((a), (b)))
+
+#else /* !USE_HARD_FPU: pure softfloat (no runtime dispatch) */
+
+#endif /* USE_HARD_FPU */
+
+#endif /* XBOX && __aarch64__ */
+
+#if defined(XBOX) && !defined(USE_HARD_FPU)
+void xemu_set_fp_safe(bool enable)
+{
+    (void)enable;
+}
+
+bool xemu_get_fp_safe(void)
+{
+    return false;
+}
+#endif /* XBOX && !USE_HARD_FPU */
+
+/*
+ * FP JIT: dual-compilation via fpu_helper_hard.c.
+ *
+ * fpu_helper.c is compiled twice on x86_64 and aarch64:
+ *   1) Normally (without USE_HARD_FPU) -> produces helper_*__soft symbols
+ *   2) Via fpu_helper_hard.c (with USE_HARD_FPU) -> produces helper_*__hard symbols
+ *
+ * On x86_64, __hard helpers use native long double (80-bit x87).
+ * On aarch64, __hard helpers use native double via fx80_to_f64/f64_to_fx80.
+ *
+ * The MAP_HELPER_SOFT_HARD macro renames helpers to the appropriate variant.
+ */
 #if defined(XBOX) && defined(__x86_64__)
 #ifdef USE_HARD_FPU
 /*
@@ -176,11 +458,16 @@ floatx80 int32_to_floatx80__hard(int32_t a, float_status *status)
 #define floatx80_to_float64   floatx80_to_float64__hard
 #define int32_to_floatx80     int32_to_floatx80__hard
 #endif /* USE_HARD_FPU */
+#endif /* XBOX && __x86_64__ */
 
+#if defined(XBOX) && (defined(__x86_64__) || defined(__aarch64__))
 #ifdef USE_HARD_FPU
 #define MAP_HELPER_SOFT_HARD(func) helper_ ## func ## __hard
+extern int g_fpu_helper_calls;
+#define FPU_HELPER_COUNT() (g_fpu_helper_calls++)
 #else
 #define MAP_HELPER_SOFT_HARD(func) helper_ ## func ## __soft
+#define FPU_HELPER_COUNT() ((void)0)
 #endif
 
 #define helper_flds_FT0       MAP_HELPER_SOFT_HARD(flds_FT0)
@@ -264,7 +551,7 @@ floatx80 int32_to_floatx80__hard(int32_t a, float_status *status)
 #define helper_fsave          MAP_HELPER_SOFT_HARD(fsave)
 #define helper_frstor         MAP_HELPER_SOFT_HARD(frstor)
 
-#endif /* defined(XBOX) && defined(__x86_64__) */
+#endif /* defined(XBOX) && (__x86_64__ || __aarch64__) */
 
 static inline void fpush(CPUX86State *env)
 {
@@ -298,6 +585,7 @@ static void do_fstt(X86Access *ac, target_ulong ptr, floatx80 f)
 
 /* x87 FPU helpers */
 
+#if !USE_NATIVE_DOUBLE_STORAGE
 static inline double floatx80_to_double(CPUX86State *env, floatx80 a)
 {
     union {
@@ -319,6 +607,7 @@ static inline floatx80 double_to_floatx80(CPUX86State *env, double a)
     u.d = a;
     return float64_to_floatx80(u.f64, &env->fp_status);
 }
+#endif
 
 #ifndef USE_HARD_FPU
 static void fpu_set_exception(CPUX86State *env, int mask)
@@ -415,6 +704,15 @@ static void merge_exception_flags(CPUX86State *env, int old_flags)
 #endif
 }
 
+#if USE_NATIVE_DOUBLE_STORAGE
+static inline double helper_fdiv(CPUX86State *env, double a, double b)
+{
+    int old_flags = save_exception_flags(env);
+    double ret = a / b;
+    merge_exception_flags(env, old_flags);
+    return ret;
+}
+#else
 static inline floatx80 helper_fdiv(CPUX86State *env, floatx80 a, floatx80 b)
 {
     int old_flags = save_exception_flags(env);
@@ -422,6 +720,7 @@ static inline floatx80 helper_fdiv(CPUX86State *env, floatx80 a, floatx80 b)
     merge_exception_flags(env, old_flags);
     return ret;
 }
+#endif
 
 static void fpu_raise_exception(CPUX86State *env, uintptr_t retaddr)
 {
@@ -477,7 +776,7 @@ void helper_flds_ST0(CPUX86State *env, uint32_t val)
 
     new_fpstt = (env->fpstt - 1) & 7;
     u.i = val;
-    env->fpregs[new_fpstt].d = float32_to_floatx80(u.f, &env->fp_status);
+    FPREG_VAL(env->fpregs[new_fpstt]) = float32_to_floatx80(u.f, &env->fp_status);
     env->fpstt = new_fpstt;
     env->fptags[new_fpstt] = 0; /* validate stack entry */
     merge_exception_flags(env, old_flags);
@@ -494,7 +793,7 @@ void helper_fldl_ST0(CPUX86State *env, uint64_t val)
 
     new_fpstt = (env->fpstt - 1) & 7;
     u.i = val;
-    env->fpregs[new_fpstt].d = float64_to_floatx80(u.f, &env->fp_status);
+    FPREG_VAL(env->fpregs[new_fpstt]) = float64_to_floatx80(u.f, &env->fp_status);
     env->fpstt = new_fpstt;
     env->fptags[new_fpstt] = 0; /* validate stack entry */
     merge_exception_flags(env, old_flags);
@@ -513,7 +812,7 @@ void helper_fildl_ST0(CPUX86State *env, int32_t val)
     FloatX80RoundPrec old = tmp_maximise_precision(&env->fp_status);
 
     new_fpstt = (env->fpstt - 1) & 7;
-    env->fpregs[new_fpstt].d = int32_to_floatx80(val, &env->fp_status);
+    FPREG_VAL(env->fpregs[new_fpstt]) = int32_to_floatx80(val, &env->fp_status);
     env->fpstt = new_fpstt;
     env->fptags[new_fpstt] = 0; /* validate stack entry */
 
@@ -526,7 +825,7 @@ void helper_fildll_ST0(CPUX86State *env, int64_t val)
     FloatX80RoundPrec old = tmp_maximise_precision(&env->fp_status);
 
     new_fpstt = (env->fpstt - 1) & 7;
-    env->fpregs[new_fpstt].d = int64_to_floatx80(val, &env->fp_status);
+    FPREG_VAL(env->fpregs[new_fpstt]) = int64_to_floatx80(val, &env->fp_status);
     env->fpstt = new_fpstt;
     env->fptags[new_fpstt] = 0; /* validate stack entry */
 
@@ -647,7 +946,11 @@ void helper_fldt_ST0(CPUX86State *env, target_ulong ptr)
     access_prepare(&ac, env, ptr, 10, MMU_DATA_LOAD, GETPC());
 
     new_fpstt = (env->fpstt - 1) & 7;
+#if USE_NATIVE_DOUBLE_STORAGE
+    env->fpregs[new_fpstt].native_d = fx80_to_f64(do_fldt(&ac, ptr));
+#else
     env->fpregs[new_fpstt].d = do_fldt(&ac, ptr);
+#endif
     env->fpstt = new_fpstt;
     env->fptags[new_fpstt] = 0; /* validate stack entry */
 }
@@ -657,7 +960,11 @@ void helper_fstt_ST0(CPUX86State *env, target_ulong ptr)
     X86Access ac;
 
     access_prepare(&ac, env, ptr, 10, MMU_DATA_STORE, GETPC());
+#if USE_NATIVE_DOUBLE_STORAGE
+    do_fstt(&ac, ptr, f64_to_fx80(ST0));
+#else
     do_fstt(&ac, ptr, ST0);
+#endif
 }
 
 void helper_fpush(CPUX86State *env)
@@ -711,9 +1018,11 @@ void helper_fmov_STN_ST0(CPUX86State *env, int st_index)
 
 void helper_fxchg_ST0_STN(CPUX86State *env, int st_index)
 {
-    floatx80 tmp;
-
-    tmp = ST(st_index);
+#if USE_NATIVE_DOUBLE_STORAGE
+    double tmp = ST(st_index);
+#else
+    floatx80 tmp = ST(st_index);
+#endif
     ST(st_index) = ST0;
     ST0 = tmp;
 }
@@ -772,6 +1081,7 @@ void helper_fucomi_ST0_FT0(CPUX86State *env)
 
 void helper_fadd_ST0_FT0(CPUX86State *env)
 {
+    FPU_HELPER_COUNT();
     int old_flags = save_exception_flags(env);
     ST0 = floatx80_add(ST0, FT0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -779,6 +1089,7 @@ void helper_fadd_ST0_FT0(CPUX86State *env)
 
 void helper_fmul_ST0_FT0(CPUX86State *env)
 {
+    FPU_HELPER_COUNT();
     int old_flags = save_exception_flags(env);
     ST0 = floatx80_mul(ST0, FT0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -786,6 +1097,7 @@ void helper_fmul_ST0_FT0(CPUX86State *env)
 
 void helper_fsub_ST0_FT0(CPUX86State *env)
 {
+    FPU_HELPER_COUNT();
     int old_flags = save_exception_flags(env);
     ST0 = floatx80_sub(ST0, FT0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -793,6 +1105,7 @@ void helper_fsub_ST0_FT0(CPUX86State *env)
 
 void helper_fsubr_ST0_FT0(CPUX86State *env)
 {
+    FPU_HELPER_COUNT();
     int old_flags = save_exception_flags(env);
     ST0 = floatx80_sub(FT0, ST0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -800,11 +1113,13 @@ void helper_fsubr_ST0_FT0(CPUX86State *env)
 
 void helper_fdiv_ST0_FT0(CPUX86State *env)
 {
+    FPU_HELPER_COUNT();
     ST0 = helper_fdiv(env, ST0, FT0);
 }
 
 void helper_fdivr_ST0_FT0(CPUX86State *env)
 {
+    FPU_HELPER_COUNT();
     ST0 = helper_fdiv(env, FT0, ST0);
 }
 
@@ -840,18 +1155,12 @@ void helper_fsubr_STN_ST0(CPUX86State *env, int st_index)
 
 void helper_fdiv_STN_ST0(CPUX86State *env, int st_index)
 {
-    floatx80 *p;
-
-    p = &ST(st_index);
-    *p = helper_fdiv(env, *p, ST0);
+    ST(st_index) = helper_fdiv(env, ST(st_index), ST0);
 }
 
 void helper_fdivr_STN_ST0(CPUX86State *env, int st_index)
 {
-    floatx80 *p;
-
-    p = &ST(st_index);
-    *p = helper_fdiv(env, ST0, *p);
+    ST(st_index) = helper_fdiv(env, ST0, ST(st_index));
 }
 
 /* misc FPU operations */
@@ -1038,7 +1347,6 @@ void helper_fninit(CPUX86State *env)
 void helper_fbld_ST0(CPUX86State *env, target_ulong ptr)
 {
     X86Access ac;
-    floatx80 tmp;
     uint64_t val;
     unsigned int v;
     int i;
@@ -1050,12 +1358,11 @@ void helper_fbld_ST0(CPUX86State *env, target_ulong ptr)
         v = access_ldb(&ac, ptr + i);
         val = (val * 100) + ((v >> 4) * 10) + (v & 0xf);
     }
-    tmp = int64_to_floatx80(val, &env->fp_status);
-    if (access_ldb(&ac, ptr + 9) & 0x80) {
-        tmp = floatx80_chs(tmp);
-    }
     fpush(env);
-    ST0 = tmp;
+    ST0 = int64_to_floatx80(val, &env->fp_status);
+    if (access_ldb(&ac, ptr + 9) & 0x80) {
+        ST0 = floatx80_chs(ST0);
+    }
 }
 
 void helper_fbst_ST0(CPUX86State *env, target_ulong ptr)
@@ -1064,11 +1371,9 @@ void helper_fbst_ST0(CPUX86State *env, target_ulong ptr)
     int v;
     target_ulong mem_ref, mem_end;
     int64_t val;
-    CPU_LDoubleU temp;
     X86Access ac;
 
     access_prepare(&ac, env, ptr, 10, MMU_DATA_STORE, GETPC());
-    temp.d = ST0;
 
     val = floatx80_to_int64(ST0, &env->fp_status);
     mem_ref = ptr;
@@ -1084,7 +1389,7 @@ void helper_fbst_ST0(CPUX86State *env, target_ulong ptr)
         return;
     }
     mem_end = mem_ref + 9;
-    if (SIGND(temp)) {
+    if (floatx80_is_neg(ST0)) {
         access_stb(&ac, mem_end, 0x80);
         val = -val;
     } else {
@@ -1336,6 +1641,10 @@ static const struct f2xm1_data f2xm1_table[65] = {
 void helper_f2xm1(CPUX86State *env)
 {
     int old_flags = save_exception_flags(env);
+#if USE_NATIVE_DOUBLE_STORAGE
+    ST0 = exp2(ST0) - 1.0;
+#else
+    {
     uint64_t sig = extractFloatx80Frac(ST0);
     int32_t exp = extractFloatx80Exp(ST0);
     bool sign = extractFloatx80Sign(ST0);
@@ -1491,6 +1800,8 @@ void helper_f2xm1(CPUX86State *env)
 
         env->fp_status.floatx80_rounding_precision = save_prec;
     }
+    }
+#endif
     merge_exception_flags(env, old_flags);
 }
 
@@ -1569,6 +1880,11 @@ static const struct fpatan_data fpatan_table[9] = {
 void helper_fpatan(CPUX86State *env)
 {
     int old_flags = save_exception_flags(env);
+#if USE_NATIVE_DOUBLE_STORAGE
+    ST1 = atan2(ST1, ST0);
+    fpop(env);
+#else
+    {
     uint64_t arg0_sig = extractFloatx80Frac(ST0);
     int32_t arg0_exp = extractFloatx80Exp(ST0);
     bool arg0_sign = extractFloatx80Sign(ST0);
@@ -2001,23 +2317,29 @@ void helper_fpatan(CPUX86State *env)
                                             rsig0, rsig1, &env->fp_status);
     }
 
+    }
     fpop(env);
+#endif
     merge_exception_flags(env, old_flags);
 }
 
 void helper_fxtract(CPUX86State *env)
 {
     int old_flags = save_exception_flags(env);
-    CPU_LDoubleU temp;
-
-    temp.d = ST0;
 
     if (floatx80_is_zero(ST0)) {
-        /* Easy way to generate -inf and raising division by 0 exception */
         ST0 = floatx80_div(floatx80_chs(floatx80_one), floatx80_zero,
                            &env->fp_status);
         fpush(env);
-        ST0 = temp.d;
+#if USE_NATIVE_DOUBLE_STORAGE
+        ST0 = 0.0;
+#else
+        {
+            CPU_LDoubleU temp;
+            temp.d = ST1; /* ST1 after push = old ST0 value captured before div */
+            ST0 = temp.d;
+        }
+#endif
     } else if (floatx80_invalid_encoding(ST0, &env->fp_status)) {
         float_raise(float_flag_invalid, &env->fp_status);
         ST0 = floatx80_default_nan(&env->fp_status);
@@ -2035,8 +2357,18 @@ void helper_fxtract(CPUX86State *env)
         ST0 = ST1;
         ST1 = floatx80_default_inf(0, &env->fp_status);
     } else {
+#if USE_NATIVE_DOUBLE_STORAGE
+        int exponent;
+        double significand = frexp(ST0, &exponent);
+        exponent--;
+        ST0 = (double)exponent;
+        fpush(env);
+        ST0 = ldexp(significand, 1);
+#else
+        CPU_LDoubleU temp;
         int expdif;
 
+        temp.d = ST0;
         if (EXPD(temp) == 0) {
             int shift = clz64(temp.l.lower);
             temp.l.lower <<= shift;
@@ -2045,11 +2377,11 @@ void helper_fxtract(CPUX86State *env)
         } else {
             expdif = EXPD(temp) - EXPBIAS;
         }
-        /* DP exponent bias */
         ST0 = int32_to_floatx80(expdif, &env->fp_status);
         fpush(env);
         BIASEXPONENT(temp);
         ST0 = temp.d;
+#endif
     }
     merge_exception_flags(env, old_flags);
 }
@@ -2058,6 +2390,34 @@ static void helper_fprem_common(CPUX86State *env, bool mod)
 {
     int old_flags = save_exception_flags(env);
     uint64_t quotient;
+
+#if USE_NATIVE_DOUBLE_STORAGE
+    int exp0, exp1, expdiff;
+    double d0 = ST0, d1 = ST1;
+
+    frexp(d0, &exp0);
+    frexp(d1, &exp1);
+
+    env->fpus &= ~0x4700;
+    if (floatx80_is_zero(ST0) || floatx80_is_zero(ST1) ||
+        floatx80_is_any_nan(ST0) || floatx80_is_any_nan(ST1) ||
+        (isinf(d0) || isinf(d1))) {
+        ST0 = floatx80_modrem(ST0, ST1, mod, &quotient, &env->fp_status);
+    } else {
+        expdiff = exp0 - exp1;
+        if (expdiff < 64) {
+            ST0 = floatx80_modrem(ST0, ST1, mod, &quotient, &env->fp_status);
+            env->fpus |= (quotient & 0x4) << (8 - 2);
+            env->fpus |= (quotient & 0x2) << (14 - 1);
+            env->fpus |= (quotient & 0x1) << (9 - 0);
+        } else {
+            int n = 32 + (expdiff % 32);
+            double scaled = scalbn(d1, expdiff - n);
+            ST0 = fmod(ST0, scaled);
+            env->fpus |= 0x400;
+        }
+    }
+#else
     CPU_LDoubleU temp0, temp1;
     int exp0, exp1, expdiff;
 
@@ -2086,22 +2446,13 @@ static void helper_fprem_common(CPUX86State *env, bool mod)
             env->fpus |= (quotient & 0x2) << (14 - 1); /* (C3) <-- q1 */
             env->fpus |= (quotient & 0x1) << (9 - 0);  /* (C1) <-- q0 */
         } else {
-            /*
-             * Partial remainder.  This choice of how many bits to
-             * process at once is specified in AMD instruction set
-             * manuals, and empirically is followed by Intel
-             * processors as well; it ensures that the final remainder
-             * operation in a loop does produce the correct low three
-             * bits of the quotient.  AMD manuals specify that the
-             * flags other than C2 are cleared, and empirically Intel
-             * processors clear them as well.
-             */
             int n = 32 + (expdiff % 32);
             temp1.d = floatx80_scalbn(temp1.d, expdiff - n, &env->fp_status);
             ST0 = floatx80_mod(ST0, temp1.d, &env->fp_status);
             env->fpus |= 0x400;  /* C2 <-- 1 */
         }
     }
+#endif
     merge_exception_flags(env, old_flags);
 }
 
@@ -2119,6 +2470,7 @@ void helper_fprem(CPUX86State *env)
 #define log2_e_sig_high 0xb8aa3b295c17f0bbULL
 #define log2_e_sig_low 0xbe87fed0691d3e89ULL
 
+#if !USE_NATIVE_DOUBLE_STORAGE
 /*
  * Polynomial coefficients for an approximation to log2((1+x)/(1-x)),
  * with only odd powers of x used, for x in the interval [2*sqrt(2)-3,
@@ -2249,10 +2601,16 @@ static void helper_fyl2x_common(CPUX86State *env, floatx80 arg, int32_t *exp,
     *sig0 = asig0;
     *sig1 = asig1;
 }
+#endif /* !USE_NATIVE_DOUBLE_STORAGE */
 
 void helper_fyl2xp1(CPUX86State *env)
 {
     int old_flags = save_exception_flags(env);
+#if USE_NATIVE_DOUBLE_STORAGE
+    ST1 = ST1 * log2(ST0 + 1.0);
+    fpop(env);
+#else
+    {
     uint64_t arg0_sig = extractFloatx80Frac(ST0);
     int32_t arg0_exp = extractFloatx80Exp(ST0);
     bool arg0_sign = extractFloatx80Sign(ST0);
@@ -2344,13 +2702,19 @@ void helper_fyl2xp1(CPUX86State *env)
                                             asig0, asig1, &env->fp_status);
         env->fp_status.floatx80_rounding_precision = save_prec;
     }
+    }
     fpop(env);
+#endif
     merge_exception_flags(env, old_flags);
 }
 
 void helper_fyl2x(CPUX86State *env)
 {
     int old_flags = save_exception_flags(env);
+#if USE_NATIVE_DOUBLE_STORAGE
+    ST1 = ST1 * log2(ST0);
+    fpop(env);
+#else
     uint64_t arg0_sig = extractFloatx80Frac(ST0);
     int32_t arg0_exp = extractFloatx80Exp(ST0);
     bool arg0_sign = extractFloatx80Sign(ST0);
@@ -2492,6 +2856,7 @@ void helper_fyl2x(CPUX86State *env)
         env->fp_status.floatx80_rounding_precision = save_prec;
     }
     fpop(env);
+#endif
     merge_exception_flags(env, old_flags);
 }
 
@@ -2607,6 +2972,27 @@ void helper_fcos(CPUX86State *env)
 
 void helper_fxam_ST0(CPUX86State *env)
 {
+#if USE_NATIVE_DOUBLE_STORAGE
+    double val = ST0;
+
+    env->fpus &= ~0x4700;
+    if (signbit(val)) {
+        env->fpus |= 0x200; /* C1 <-- 1 */
+    }
+
+    if (env->fptags[env->fpstt]) {
+        env->fpus |= 0x4100; /* Empty */
+        return;
+    }
+
+    switch (fpclassify(val)) {
+    case FP_NAN:       env->fpus |= 0x100;  break; /* NaN */
+    case FP_INFINITE:  env->fpus |= 0x500;  break; /* Infinity */
+    case FP_ZERO:      env->fpus |= 0x4000; break; /* Zero */
+    case FP_SUBNORMAL: env->fpus |= 0x4400; break; /* Denormal */
+    case FP_NORMAL:    env->fpus |= 0x400;  break; /* Normal */
+    }
+#else
     CPU_LDoubleU temp;
     int expdif;
 
@@ -2638,14 +3024,13 @@ void helper_fxam_ST0(CPUX86State *env)
     } else if (MANTD(temp) & 0x8000000000000000ULL) {
         env->fpus |= 0x400;
     }
+#endif
 }
 
 static void do_fstenv(X86Access *ac, target_ulong ptr, int data32)
 {
     CPUX86State *env = ac->env;
-    int fpus, fptag, exp, i;
-    uint64_t mant;
-    CPU_LDoubleU tmp;
+    int fpus, fptag, i;
 
     fpus = (env->fpus & ~0x3800) | (env->fpstt & 0x7) << 11;
     fptag = 0;
@@ -2654,6 +3039,17 @@ static void do_fstenv(X86Access *ac, target_ulong ptr, int data32)
         if (env->fptags[i]) {
             fptag |= 3;
         } else {
+#if USE_NATIVE_DOUBLE_STORAGE
+            double d = env->fpregs[i].native_d;
+            if (d == 0.0) {
+                fptag |= 1;
+            } else if (!isnormal(d)) {
+                fptag |= 2;
+            }
+#else
+            CPU_LDoubleU tmp;
+            int exp;
+            uint64_t mant;
             tmp.d = env->fpregs[i].d;
             exp = EXPD(tmp);
             mant = MANTD(tmp);
@@ -2665,6 +3061,7 @@ static void do_fstenv(X86Access *ac, target_ulong ptr, int data32)
                 /* NaNs, infinity, denormal */
                 fptag |= 2;
             }
+#endif
         }
     }
     if (data32) {
@@ -2744,8 +3141,12 @@ static void do_fsave(X86Access *ac, target_ulong ptr, int data32)
     ptr += 14 << data32;
 
     for (int i = 0; i < 8; i++) {
+#if USE_NATIVE_DOUBLE_STORAGE
+        do_fstt(ac, ptr, f64_to_fx80(ST(i)));
+#else
         floatx80 tmp = ST(i);
         do_fstt(ac, ptr, tmp);
+#endif
         ptr += 10;
     }
 
@@ -2769,8 +3170,12 @@ static void do_frstor(X86Access *ac, target_ulong ptr, int data32)
     ptr += 14 << data32;
 
     for (int i = 0; i < 8; i++) {
+#if USE_NATIVE_DOUBLE_STORAGE
+        ST(i) = fx80_to_f64(do_fldt(ac, ptr));
+#else
         floatx80 tmp = do_fldt(ac, ptr);
         ST(i) = tmp;
+#endif
         ptr += 10;
     }
 }

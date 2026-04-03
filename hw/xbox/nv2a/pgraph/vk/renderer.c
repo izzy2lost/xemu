@@ -19,7 +19,6 @@
 
 #include "hw/xbox/nv2a/nv2a_int.h"
 #include "renderer.h"
-#include "qapi/error.h"
 
 #include "gloffscreen.h"
 
@@ -50,6 +49,8 @@ static void pgraph_vk_init(NV2AState *d, Error **errp)
 {
     PGRAPHState *pg = &d->pgraph;
 
+    pg->vk_renderer_state = (PGRAPHVkState *)g_malloc0(sizeof(PGRAPHVkState));
+
 #if HAVE_EXTERNAL_MEMORY
     bool use_external_memory = false;
 #ifdef __ANDROID__
@@ -69,27 +70,17 @@ static void pgraph_vk_init(NV2AState *d, Error **errp)
         glo_set_current(g_gl_context);
         use_external_memory = pgraph_vk_gl_external_memory_available();
     }
-#ifdef __ANDROID__
     if (!use_external_memory) {
+#ifdef __ANDROID__
         __android_log_print(ANDROID_LOG_WARN, "xemu-android",
-                            "pgraph_vk_init: external memory interop unavailable, using CPU display downloads");
-        if (g_gl_context) {
-            glo_context_destroy(g_gl_context);
-            g_gl_context = NULL;
-        }
-    } else {
-        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                            "pgraph_vk_init: external memory interop=enabled");
+                            "pgraph_vk_init: external memory interop unavailable, using download fallback");
+#endif
     }
-#endif
-#elif defined(__ANDROID__)
+#ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                        "pgraph_vk_init: using CPU display downloads (external memory interop disabled at build time)");
+                        "pgraph_vk_init: external memory interop=%s",
+                        use_external_memory ? "enabled" : "disabled");
 #endif
-
-    pg->vk_renderer_state = (PGRAPHVkState *)g_malloc0(sizeof(PGRAPHVkState));
-
-#if HAVE_EXTERNAL_MEMORY
     pg->vk_renderer_state->display.use_external_memory = use_external_memory;
 #endif
 
@@ -192,7 +183,6 @@ static void pgraph_vk_flush(NV2AState *d)
 {
     PGRAPHState *pg = &d->pgraph;
 
-    pgraph_vk_flush_reorder_window(d);
     pgraph_vk_finish(pg, VK_FINISH_REASON_FLUSH);
     pgraph_vk_surface_flush(d);
     pgraph_vk_mark_textures_possibly_dirty(d, 0, memory_region_size(d->vram));

@@ -24,25 +24,6 @@
 #include "debug.h"
 #include "renderer.h"
 
-#ifdef __ANDROID__
-#include <android/log.h>
-
-static void android_log_gl_errors(const char *ctx)
-{
-    GLenum err;
-
-    while ((err = glGetError()) != GL_NO_ERROR) {
-        __android_log_print(ANDROID_LOG_WARN, "xemu-android",
-                            "GL error 0x%X at %s", err, ctx);
-    }
-}
-#else
-static inline void android_log_gl_errors(const char *ctx)
-{
-    (void)ctx;
-}
-#endif
-
 static void update_memory_buffer(NV2AState *d, hwaddr addr, hwaddr size,
                                  bool quick)
 {
@@ -224,7 +205,6 @@ void pgraph_gl_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
         pgraph_update_inline_value(attr, last_entry);
     }
 
-    android_log_gl_errors("pgraph_gl_bind_vertex_attributes");
     NV2A_GL_DGROUP_END();
 }
 
@@ -285,7 +265,7 @@ void pgraph_gl_init_buffers(NV2AState *d)
     PGRAPHState *pg = &d->pgraph;
     PGRAPHGLState *r = pg->gl_renderer_state;
 
-    lru_init(&r->element_cache, 1 << 16);
+    lru_init(&r->element_cache, 1u << 16);
     r->element_cache_entries = g_malloc_n(element_cache_size, sizeof(VertexLruNode));
     assert(r->element_cache_entries != NULL);
     GLuint element_cache_buffers[element_cache_size];
@@ -328,7 +308,6 @@ void pgraph_gl_finalize_buffers(PGRAPHState *pg)
     }
     glDeleteBuffers(element_cache_size, element_cache_buffers);
     lru_flush(&r->element_cache);
-    lru_destroy(&r->element_cache);
 
     g_free(r->element_cache_entries);
     r->element_cache_entries = NULL;

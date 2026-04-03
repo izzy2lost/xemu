@@ -40,7 +40,7 @@ static void xemu_settings_apply_defaults(void)
 
     g_config.general.show_welcome = true;
     g_config.general.updates.check = true;
-    g_config.general.skip_boot_anim = false;
+    g_config.general.skip_boot_anim = true;
     g_config.general.last_viewed_menu_index = 0;
 
     g_config.input.auto_bind = true;
@@ -72,8 +72,8 @@ static void xemu_settings_apply_defaults(void)
     g_config.input.keyboard_controller_scancode_map.rstick_down = 14;
     g_config.input.keyboard_controller_scancode_map.rtrigger = 18;
 
-    g_config.display.renderer = CONFIG_DISPLAY_RENDERER_OPENGL;
-    g_config.display.filtering = CONFIG_DISPLAY_FILTERING_LINEAR;
+    g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
+    g_config.display.filtering = CONFIG_DISPLAY_FILTERING_NEAREST;
     g_config.display.quality.surface_scale = 1;
     g_config.display.window.fullscreen_on_startup = false;
     g_config.display.window.fullscreen_exclusive = false;
@@ -81,7 +81,7 @@ static void xemu_settings_apply_defaults(void)
         CONFIG_DISPLAY_WINDOW_STARTUP_SIZE_1280X960;
     g_config.display.window.last_width = 640;
     g_config.display.window.last_height = 480;
-    g_config.display.window.vsync = false;
+    g_config.display.window.vsync = true;
     g_config.display.ui.show_menubar = true;
     g_config.display.ui.show_notifications = true;
     g_config.display.ui.hide_cursor = true;
@@ -105,7 +105,7 @@ static void xemu_settings_apply_defaults(void)
     g_config.sys.mem_limit = CONFIG_SYS_MEM_LIMIT_64;
     g_config.sys.avpack = CONFIG_SYS_AVPACK_HDTV;
 
-    g_config.perf.hard_fpu = true;
+    g_config.perf.fp_jit = true;
     g_config.perf.cache_shaders = true;
 }
 
@@ -287,10 +287,10 @@ bool xemu_settings_load(void)
 
     xemu_settings_apply_defaults();
     error_msg.clear();
+    setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
     setenv("XEMU_ANDROID_TCG_TUNING", "1", 1);
     setenv("XEMU_ANDROID_TCG_THREAD", "multi", 1);
     setenv("XEMU_ANDROID_TCG_TB_SIZE", "128", 1);
-    setenv("XEMU_ANDROID_TARGET_FPS", "60", 1);
 
     const char *path = xemu_settings_get_path();
     if (!path || *path == '\0') {
@@ -361,9 +361,35 @@ bool xemu_settings_load(void)
             g_config.display.window.vsync = *vsync;
         }
 
+        auto display_ui = display["ui"];
+        if (auto aspect_ratio =
+                display_ui["aspect_ratio"].value<std::string>()) {
+            if (*aspect_ratio == "fit") {
+                g_config.display.ui.fit = CONFIG_DISPLAY_UI_FIT_STRETCH;
+            } else if (*aspect_ratio == "auto") {
+                g_config.display.ui.fit = CONFIG_DISPLAY_UI_FIT_SCALE;
+                g_config.display.ui.aspect_ratio =
+                    CONFIG_DISPLAY_UI_ASPECT_RATIO_AUTO;
+            } else if (*aspect_ratio == "native") {
+                g_config.display.ui.fit = CONFIG_DISPLAY_UI_FIT_SCALE;
+                g_config.display.ui.aspect_ratio =
+                    CONFIG_DISPLAY_UI_ASPECT_RATIO_NATIVE;
+            } else if (*aspect_ratio == "4:3") {
+                g_config.display.ui.fit = CONFIG_DISPLAY_UI_FIT_SCALE;
+                g_config.display.ui.aspect_ratio =
+                    CONFIG_DISPLAY_UI_ASPECT_RATIO_4X3;
+            } else if (*aspect_ratio == "16:9") {
+                g_config.display.ui.fit = CONFIG_DISPLAY_UI_FIT_SCALE;
+                g_config.display.ui.aspect_ratio =
+                    CONFIG_DISPLAY_UI_ASPECT_RATIO_16X9;
+            }
+        }
+
         // Performance settings
-        if (auto hard_fpu = perf["hard_fpu"].value<bool>()) {
-            g_config.perf.hard_fpu = *hard_fpu;
+        if (auto fp_jit = perf["fp_jit"].value<bool>()) {
+            g_config.perf.fp_jit = *fp_jit;
+        } else if (auto hard_fpu = perf["hard_fpu"].value<bool>()) {
+            g_config.perf.fp_jit = *hard_fpu;
         }
         if (auto cache_shaders = perf["cache_shaders"].value<bool>()) {
             g_config.perf.cache_shaders = *cache_shaders;
@@ -768,4 +794,54 @@ void xemu_settings_reset_controller_mapping(const char *guid)
 
 void xemu_settings_reset_keyboard_mapping(void)
 {
+}
+
+extern "C" void xemu_set_fp_jit(bool enable)
+{
+    g_config.perf.fp_jit = enable;
+}
+
+extern "C" bool xemu_get_fp_jit(void)
+{
+    return g_config.perf.fp_jit;
+}
+
+/*
+ * Android still exposes a few runtime Vulkan toggles from an older fork, but
+ * the synced hakuX renderer does not consume them anymore. Keep the exports so
+ * JNI/front-end code links cleanly without reintroducing fork-only behavior.
+ */
+extern "C" void xemu_set_fast_fences(bool enable)
+{
+    (void)enable;
+}
+
+extern "C" void xemu_set_draw_reorder(bool enable)
+{
+    (void)enable;
+}
+
+extern "C" void xemu_set_draw_merge(bool enable)
+{
+    (void)enable;
+}
+
+extern "C" void xemu_set_bindless_textures(bool enable)
+{
+    (void)enable;
+}
+
+extern "C" void xemu_set_async_compile(bool enable)
+{
+    (void)enable;
+}
+
+extern "C" void xemu_set_frame_skip(bool enable)
+{
+    (void)enable;
+}
+
+extern "C" void xemu_set_submit_frames(int count)
+{
+    (void)count;
 }

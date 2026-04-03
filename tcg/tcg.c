@@ -250,6 +250,14 @@ bool tcg_use_softmmu;
 TCGContext tcg_init_ctx;
 __thread TCGContext *tcg_ctx;
 
+#ifdef XBOX
+XboxRamFPState xbox_ram_fp;
+uint64_t  xbox_ram_size;
+volatile int32_t *xbox_ram_fp_cb_count_ptr = &xbox_ram_fp.cb_count;
+volatile int32_t *xbox_ram_fp_active_ptr = &xbox_ram_fp.active;
+uintptr_t *xbox_ram_fp_vram_base_ptr = &xbox_ram_fp.vram_pci_base;
+#endif
+
 TCGContext **tcg_ctxs;
 unsigned int tcg_cur_ctxs;
 unsigned int tcg_max_ctxs;
@@ -1904,6 +1912,27 @@ TranslationBlock *tcg_tb_alloc(TCGContext *s)
     return tb;
 }
 
+#ifdef XBOX
+TranslationBlock *tcg_tb_alloc_hot(TCGContext *s)
+{
+    if (!s->hot_arena_start) {
+        return NULL;
+    }
+    uintptr_t align = qemu_icache_linesize;
+    TranslationBlock *tb;
+    void *next;
+
+    tb = (void *)ROUND_UP((uintptr_t)s->hot_arena_ptr, align);
+    next = (void *)ROUND_UP((uintptr_t)(tb + 1), align);
+
+    if (next > s->hot_arena_end) {
+        return NULL;
+    }
+    s->hot_arena_ptr = next;
+    return tb;
+}
+#endif
+
 void tcg_prologue_init(void)
 {
     TCGContext *s = tcg_ctx;
@@ -2008,6 +2037,9 @@ void tcg_func_start(TCGContext *s)
     QTAILQ_INIT(&s->free_ops);
     s->emit_before_op = NULL;
     QSIMPLEQ_INIT(&s->labels);
+#ifdef XBOX
+    s->superblock_append = false;
+#endif
 
     tcg_debug_assert(s->addr_type <= TCG_TYPE_REG);
 }
@@ -6999,6 +7031,15 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb, uint64_t pc_start)
 
     tcg_optimize(s);
 
+#ifdef XBOX
+    s->gen_tb->cc_defines_first = tier1_compute_cc_defines_first(s);
+
+    if (tb_cflags(s->gen_tb) & CF_TIER1) {
+        tier1_dead_flag_elimination(s);
+        tier1_cross_tb_dead_flag_elimination(s);
+    }
+#endif
+
     reachable_code_pass(s);
     liveness_pass_0(s);
     liveness_pass_1(s);
@@ -7038,6 +7079,11 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb, uint64_t pc_start)
     tb->jmp_reset_offset[1] = TB_JMP_OFFSET_INVALID;
     tb->jmp_insn_offset[0] = TB_JMP_OFFSET_INVALID;
     tb->jmp_insn_offset[1] = TB_JMP_OFFSET_INVALID;
+
+    /* tier1_global_register_pinning and tier1_instruction_scheduling
+     * removed: register preferences are ignored for short-lived values,
+     * and O(n^2) scheduling on 5-15 op blocks adds overhead with no
+     * measurable benefit.  Dead flag elimination (above) is retained. */
 
     tcg_reg_alloc_start(s);
 

@@ -248,7 +248,7 @@ class PerGameSettingsActivity : AppCompatActivity() {
   private fun readGlobalValue(key: String): String {
     val prefs = getSharedPreferences("x1box_prefs", MODE_PRIVATE)
     return when (key) {
-      "setting_renderer" -> prefs.getString(key, "opengl") ?: "opengl"
+      "setting_renderer" -> prefs.getString(key, "vulkan") ?: "vulkan"
       "setting_filtering" -> prefs.getString(key, "linear") ?: "linear"
       "setting_vsync" -> prefs.getBoolean(key, false).toString()
       "setting_surface_scale" -> prefs.getInt(key, 1).toString()

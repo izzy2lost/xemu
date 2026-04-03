@@ -224,4 +224,12 @@ void pgraph_vk_image_blit(NV2AState *d)
                                    DIRTY_MEMORY_VGA);
     memory_region_set_client_dirty(d->vram, dest_addr, clipped_dest_size,
                                    DIRTY_MEMORY_NV2A_TEX);
+    /*
+     * Also mark NV2A surface dirty so that update_surface_part() detects
+     * the blit write and sets upload_pending on any surface bound at this
+     * address. Without this, the surface's VkImage retains stale GPU-
+     * rendered content while VRAM has fresh blit data.
+     */
+    memory_region_set_client_dirty(d->vram, dest_addr, clipped_dest_size,
+                                   DIRTY_MEMORY_NV2A);
 }

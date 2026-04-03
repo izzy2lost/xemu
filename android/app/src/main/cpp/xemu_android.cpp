@@ -27,7 +27,39 @@
 #include <errno.h>
 #include <unistd.h>
 
+#ifdef CONFIG_VULKAN
+#include <adrenotools/driver.h>
+#include <dlfcn.h>
+#include <volk.h>
+
+static void *g_custom_vulkan_library = nullptr;
+static void *g_system_vulkan_library = nullptr;
+
+extern "C" PFN_vkGetInstanceProcAddr xemu_android_get_vk_proc_addr(void)
+{
+    void *handle = g_custom_vulkan_library ? g_custom_vulkan_library
+                                           : g_system_vulkan_library;
+    if (!handle) {
+        return nullptr;
+    }
+    return reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        dlsym(handle, "vkGetInstanceProcAddr"));
+}
+#endif
+
 #include "xemu-settings.h"
+
+extern "C" void xemu_set_fp_safe(bool enable);
+extern "C" void xemu_set_fp_jit(bool enable);
+extern "C" bool xemu_get_fp_safe(void);
+extern "C" bool xemu_get_fp_jit(void);
+extern "C" void xemu_set_fast_fences(bool enable);
+extern "C" void xemu_set_draw_reorder(bool enable);
+extern "C" void xemu_set_draw_merge(bool enable);
+extern "C" void xemu_set_bindless_textures(bool enable);
+extern "C" void xemu_set_async_compile(bool enable);
+extern "C" void xemu_set_frame_skip(bool enable);
+extern "C" void xemu_set_submit_frames(int count);
 
 struct Error;
 struct AddfdInfo;
@@ -67,6 +99,8 @@ static void ConfigureNativeDebugLogging(JNIEnv* env, jobject activity);
 static void ApplyHrtfDefaultOffMigration(JNIEnv* env, jobject activity);
 static bool NativeDebugLoggingEnabled();
 static void AppendNativeDebugLog(const char* level, const char* message);
+static std::string GetPreferredPersistentStoragePath();
+static std::string GetInternalPersistentStoragePath();
 
 static void LogInfo(const char* msg) {
   if (!NativeDebugLoggingEnabled()) {
@@ -134,6 +168,25 @@ static bool EnsureDirExists(const std::string& path) {
   if (path.empty()) return false;
   if (mkdir(path.c_str(), 0755) == 0) return true;
   return errno == EEXIST;
+}
+
+static std::string GetInternalPersistentStoragePath() {
+  const char* internal = SDL_AndroidGetInternalStoragePath();
+  if (!internal || internal[0] == '\0') {
+    return {};
+  }
+  return std::string(internal);
+}
+
+static std::string GetPreferredPersistentStoragePath() {
+  int extState = SDL_AndroidGetExternalStorageState();
+  if (extState & SDL_ANDROID_EXTERNAL_STORAGE_WRITE) {
+    const char* external = SDL_AndroidGetExternalStoragePath();
+    if (external && external[0] != '\0') {
+      return std::string(external);
+    }
+  }
+  return GetInternalPersistentStoragePath();
 }
 
 static bool FileExists(const std::string& path) {
@@ -737,6 +790,40 @@ static int GetPrefInt(JNIEnv* env, jobject activity, const char* key, int defVal
   return out;
 }
 
+static bool PrefContainsKey(JNIEnv* env, jobject activity, const char* key) {
+  if (!env || !activity || !key || key[0] == '\0') {
+    return false;
+  }
+  bool containsKey = false;
+  jclass activityClass = env->GetObjectClass(activity);
+  if (!activityClass) return false;
+  jmethodID getPrefs = env->GetMethodID(activityClass, "getSharedPreferences",
+                                        "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
+  env->DeleteLocalRef(activityClass);
+  if (!getPrefs) return false;
+  jstring prefsName = env->NewStringUTF(kPrefsName);
+  if (!prefsName) return false;
+  jobject prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
+  env->DeleteLocalRef(prefsName);
+  if (HasException(env, "getSharedPreferences") || !prefs) return false;
+  jclass prefsClass = env->GetObjectClass(prefs);
+  if (prefsClass) {
+    jmethodID contains = env->GetMethodID(prefsClass, "contains",
+                                          "(Ljava/lang/String;)Z");
+    if (contains) {
+      jstring jkey = env->NewStringUTF(key);
+      if (jkey) {
+        containsKey = env->CallBooleanMethod(prefs, contains, jkey) == JNI_TRUE;
+        HasException(env, "contains");
+        env->DeleteLocalRef(jkey);
+      }
+    }
+    env->DeleteLocalRef(prefsClass);
+  }
+  env->DeleteLocalRef(prefs);
+  return containsKey;
+}
+
 static std::string BuildRuntimeOverrideKey(const char* key) {
   if (!key || key[0] == '\0') {
     return {};
@@ -803,6 +890,25 @@ static int GetEffectivePrefInt(JNIEnv* env, jobject activity, const char* key,
     }
   }
   return GetPrefInt(env, activity, key, defValue);
+}
+
+static bool GetEffectiveFpJitPref(JNIEnv* env, jobject activity,
+                                  bool defValue) {
+  const std::string runtimeKey = BuildRuntimeOverrideKey("setting_fp_jit");
+  if (!runtimeKey.empty()) {
+    const std::string overrideValue =
+        GetPrefString(env, activity, runtimeKey.c_str());
+    bool parsed = false;
+    if (ParseOverrideBool(overrideValue, &parsed)) {
+      return parsed;
+    }
+  }
+
+  if (PrefContainsKey(env, activity, "setting_fp_jit")) {
+    return GetPrefBool(env, activity, "setting_fp_jit", defValue);
+  }
+
+  return GetEffectivePrefBool(env, activity, "setting_hard_fpu", defValue);
 }
 
 static void ConfigureNativeDebugLogging(JNIEnv* env, jobject activity) {
@@ -1119,8 +1225,9 @@ struct EmulatorSettings {
   int surface_scale    = 1;           // 1, 2, or 3
   int system_memory_mib = 64;         // 64 or 128
   std::string tcg_thread = "multi";   // "single" or "multi"
-  std::string renderer = "opengl";    // "vulkan" or "opengl"
+  std::string renderer = "vulkan";    // "vulkan" or "opengl"
   std::string filtering = "linear";   // "linear" or "nearest"
+  int display_mode     = 0;           // 0=stretch, 1=4:3, 2=16:9
   bool use_dsp         = false;
   bool hrtf            = false;
   bool cache_shaders   = true;
@@ -1172,6 +1279,7 @@ static bool WriteConfigToml(const std::string& config_path,
   toml::table* general = EnsureTable(tbl, "general");
   toml::table* display = EnsureTable(tbl, "display");
   toml::table* display_quality = EnsureTable(*display, "quality");
+  toml::table* display_ui = EnsureTable(*display, "ui");
   toml::table* display_window = EnsureTable(*display, "window");
   toml::table* audio = EnsureTable(tbl, "audio");
   toml::table* audio_vp = EnsureTable(*audio, "vp");
@@ -1181,8 +1289,9 @@ static bool WriteConfigToml(const std::string& config_path,
   toml::table* sys = EnsureTable(tbl, "sys");
   toml::table* perf = EnsureTable(tbl, "perf");
   toml::table* files = EnsureTable(*sys, "files");
-  if (!general || !display || !display_quality || !display_window || !audio ||
-      !audio_vp || !android || !net || !net_nat || !sys || !perf || !files) {
+  if (!general || !display || !display_quality || !display_ui ||
+      !display_window || !audio || !audio_vp || !android || !net ||
+      !net_nat || !sys || !perf || !files) {
     LogErrorFmt("Failed to build config tables at %s", config_path.c_str());
     return false;
   }
@@ -1203,10 +1312,19 @@ static bool WriteConfigToml(const std::string& config_path,
     if (scale > 3) scale = 3;
     display_quality->insert_or_assign("surface_scale", scale);
   }
+  {
+    const char *aspect_ratio = "fit";
+    if (settings.display_mode == 1) {
+      aspect_ratio = "4:3";
+    } else if (settings.display_mode == 2) {
+      aspect_ratio = "16:9";
+    }
+    display_ui->insert_or_assign("aspect_ratio", aspect_ratio);
+  }
   audio->insert_or_assign("use_dsp", settings.use_dsp);
   audio->insert_or_assign("hrtf", settings.hrtf);
   perf->insert_or_assign("cache_shaders", settings.cache_shaders);
-  perf->insert_or_assign("hard_fpu", settings.hard_fpu);
+  perf->insert_or_assign("fp_jit", settings.hard_fpu);
   android->insert_or_assign("tcg_thread",
     (settings.tcg_thread == "single") ? "single" : "multi");
   android->insert_or_assign("frame_rate_limit", 60);
@@ -1245,8 +1363,6 @@ static bool WriteConfigToml(const std::string& config_path,
   out.close();
   return true;
 }
-
-extern "C" void xemu_android_set_display_mode_setting(int mode);
 
 static SetupFiles SyncSetupFiles() {
   SetupFiles out{};
@@ -1363,8 +1479,7 @@ static SetupFiles SyncSetupFiles() {
       GetEffectivePrefBool(env, activity, kHrtfPrefKey, false);
   emuSettings.cache_shaders =
       GetEffectivePrefBool(env, activity, "setting_cache_shaders", true);
-  emuSettings.hard_fpu =
-      GetEffectivePrefBool(env, activity, "setting_hard_fpu", true);
+  emuSettings.hard_fpu = GetEffectiveFpJitPref(env, activity, true);
   emuSettings.skip_boot_anim =
       GetEffectivePrefBool(env, activity, "setting_skip_boot_anim", false);
   emuSettings.network_enabled =
@@ -1403,35 +1518,53 @@ static SetupFiles SyncSetupFiles() {
     }
   }
 
-  int displayMode = GetEffectivePrefInt(env, activity, "setting_display_mode", 0);
-  xemu_android_set_display_mode_setting(displayMode);
-
-  unsetenv("XEMU_VULKAN_DRIVER");
-  const std::string vulkanDriverPath =
-      GetPrefString(env, activity, "setting_vulkan_driver_path");
-  if (!vulkanDriverPath.empty() && FileExists(vulkanDriverPath)) {
-    chmod(vulkanDriverPath.c_str(), 0755);
-    setenv("XEMU_VULKAN_DRIVER", vulkanDriverPath.c_str(), 1);
-    LogInfoFmt("Custom Vulkan driver staged: %s", vulkanDriverPath.c_str());
-  } else {
-    if (!vulkanDriverPath.empty()) {
-      LogErrorFmt("Configured Vulkan driver not found: %s",
-                  vulkanDriverPath.c_str());
-    }
-
-    const std::string vulkanDriverUri =
-        GetPrefString(env, activity, "setting_vulkan_driver_uri");
-    if (!vulkanDriverUri.empty()) {
-      std::string driverPath = base + "/vulkan_driver.so";
-      if (CopyUriToPath(env, activity, vulkanDriverUri, driverPath)) {
-        chmod(driverPath.c_str(), 0755);
-        setenv("XEMU_VULKAN_DRIVER", driverPath.c_str(), 1);
-        LogInfoFmt("Custom Vulkan driver staged: %s", driverPath.c_str());
-      } else {
-        LogError("Failed to copy custom Vulkan driver; using system default");
-      }
-    }
+  emuSettings.display_mode =
+      GetEffectivePrefInt(env, activity, "setting_display_mode", 0);
+  if (emuSettings.display_mode < 0 || emuSettings.display_mode > 2) {
+    emuSettings.display_mode = 0;
   }
+
+  const bool fpSafe = GetEffectivePrefBool(env, activity, "fp_safe", true);
+  const bool fpJit =
+      GetEffectivePrefBool(env, activity, "fp_jit", emuSettings.hard_fpu);
+  const bool fastFences =
+      GetEffectivePrefBool(env, activity, "fast_fences", false);
+  const bool drawReorder =
+      GetEffectivePrefBool(env, activity, "draw_reorder", false);
+  const bool drawMerge =
+      GetEffectivePrefBool(env, activity, "draw_merge", false);
+  const bool bindlessTextures =
+      GetEffectivePrefBool(env, activity, "bindless_textures", false);
+  const bool asyncCompile =
+      GetEffectivePrefBool(env, activity, "async_compile", false);
+  const bool frameSkip =
+      GetEffectivePrefBool(env, activity, "frame_skip", false);
+  const int submitFrames =
+      GetEffectivePrefInt(env, activity, "submit_frames", 2);
+
+  xemu_set_fp_safe(fpSafe);
+  xemu_set_fp_jit(fpJit);
+  xemu_set_fast_fences(fastFences);
+  xemu_set_draw_reorder(drawReorder);
+  xemu_set_draw_merge(drawMerge);
+  xemu_set_bindless_textures(bindlessTextures);
+  xemu_set_async_compile(asyncCompile);
+  xemu_set_frame_skip(frameSkip);
+  xemu_set_submit_frames(submitFrames);
+
+  LogInfoInt("Config runtime fp_safe=%d", fpSafe ? 1 : 0);
+  LogInfoInt("Config runtime fp_jit_pref=%d", fpJit ? 1 : 0);
+  LogInfoInt("Config runtime fast_fences=%d", fastFences ? 1 : 0);
+  LogInfoInt("Config runtime draw_reorder=%d", drawReorder ? 1 : 0);
+  LogInfoInt("Config runtime draw_merge=%d", drawMerge ? 1 : 0);
+  LogInfoInt("Config runtime bindless_textures=%d",
+             bindlessTextures ? 1 : 0);
+  LogInfoInt("Config runtime async_compile=%d", asyncCompile ? 1 : 0);
+  LogInfoInt("Config runtime frame_skip=%d", frameSkip ? 1 : 0);
+  LogInfoInt("Config runtime submit_frames=%d", submitFrames);
+
+  // Custom Vulkan driver loading is handled by GpuDriverHelper via adrenotools
+  // in MainActivity.loadLibraries(), before the native library initializes.
 
   out.config_path = base + "/xemu.toml";
   WriteConfigToml(out.config_path, out.mcpx, out.flash, out.hdd, out.dvd, out.eeprom, emuSettings);
@@ -1452,6 +1585,19 @@ extern "C" void xemu_android_display_preinit(void);
 extern "C" void xemu_android_display_wait_ready(void);
 extern "C" void xemu_android_display_loop(void);
 extern "C" void xemu_android_set_inline_aio_crash_flag_path(const char* path);
+
+#ifndef XEMU_OPT_TB_CACHE_HINTS
+#define XEMU_OPT_TB_CACHE_HINTS 1
+#endif
+
+#if XEMU_OPT_TB_CACHE_HINTS
+extern "C" void tb_cache_set_save_target(const char* path, uint32_t game_hash);
+extern "C" void tb_cache_save(const char* path, uint32_t game_hash);
+extern "C" int tb_cache_load(const char* path, uint32_t game_hash);
+extern "C" uint32_t tb_cache_compute_game_hash(const char* bootrom_path,
+                                               const char* flashrom_path);
+extern "C" void tb_cache_cleanup(void);
+#endif
 
 struct QemuLaunchContext {
   int argc;
@@ -1481,9 +1627,62 @@ extern "C" int xemu_android_main(int argc, char** argv) {
   }
   LogInfo("xemu_android_main: qemu_init");
   qemu_init(argc, argv);
+
+#if XEMU_OPT_TB_CACHE_HINTS
+  std::string cache_storage = GetPreferredPersistentStoragePath();
+  std::string internal_storage = GetInternalPersistentStoragePath();
+  if (!cache_storage.empty()) {
+    std::string cache_dir = cache_storage + "/x1box";
+    EnsureDirExists(cache_dir);
+    char cache_path[PATH_MAX];
+    snprintf(cache_path, sizeof(cache_path), "%s/tb_cache.bin",
+             cache_dir.c_str());
+    std::string load_path = cache_path;
+    if (load_path != internal_storage + "/x1box/tb_cache.bin" &&
+        !FileExists(load_path) && !internal_storage.empty()) {
+      std::string internal_cache_dir = internal_storage + "/x1box";
+      std::string internal_cache_path = internal_cache_dir + "/tb_cache.bin";
+      if (FileExists(internal_cache_path)) {
+        load_path = internal_cache_path;
+      }
+    }
+    uint32_t game_hash = tb_cache_compute_game_hash(
+        g_config.sys.files.bootrom_path, g_config.sys.files.flashrom_path);
+    game_hash ^= (xemu_get_fp_safe() ? 0x1u : 0u)
+              |  (xemu_get_fp_jit() ? 0x2u : 0u);
+    tb_cache_set_save_target(cache_path, game_hash);
+    int nhints = tb_cache_load(load_path.c_str(), game_hash);
+    if (NativeDebugLoggingEnabled()) {
+      char tb_cache_msg[PATH_MAX + 64] = {};
+      std::snprintf(tb_cache_msg, sizeof(tb_cache_msg),
+                    "TB cache loaded %d hints from %s", nhints,
+                    load_path.c_str());
+      LogInfo(tb_cache_msg);
+    }
+  }
+#endif
+
   LogInfo("xemu_android_main: qemu_main");
   int rc = qemu_main();
   LogErrorInt("xemu_android_main: qemu_main returned %d", rc);
+
+#if XEMU_OPT_TB_CACHE_HINTS
+  std::string save_storage = GetPreferredPersistentStoragePath();
+  if (!save_storage.empty()) {
+    std::string cache_dir = save_storage + "/x1box";
+    EnsureDirExists(cache_dir);
+    char cache_path[PATH_MAX];
+    snprintf(cache_path, sizeof(cache_path), "%s/tb_cache.bin",
+             cache_dir.c_str());
+    uint32_t game_hash = tb_cache_compute_game_hash(
+        g_config.sys.files.bootrom_path, g_config.sys.files.flashrom_path);
+    game_hash ^= (xemu_get_fp_safe() ? 0x1u : 0u)
+              |  (xemu_get_fp_jit() ? 0x2u : 0u);
+    tb_cache_save(cache_path, game_hash);
+  }
+  tb_cache_cleanup();
+#endif
+
   return rc;
 }
 
@@ -1591,6 +1790,7 @@ extern "C" int SDL_main(int argc, char* argv[]) {
     g_config.perf.cache_shaders = true;
     LogInfoInt("Config final show_welcome=%d", g_config.general.show_welcome ? 1 : 0);
     LogInfoInt("Config final cache_shaders=%d", g_config.perf.cache_shaders ? 1 : 0);
+    LogInfoInt("Config final fp_jit=%d", g_config.perf.fp_jit ? 1 : 0);
     LogInfoFmt("Config final renderer=%s",
                RendererName(g_config.display.renderer));
     LogInfoFmt("Config final bootrom=%s", g_config.sys.files.bootrom_path ? g_config.sys.files.bootrom_path : "(null)");
@@ -1707,4 +1907,98 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   SDL_DestroyWindow(window);
   SDL_Quit();
   return 0;
+}
+
+#ifdef CONFIG_VULKAN
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_izzy2lost_x1box_GpuDriverHelper_nativeSupportsCustomDriverLoading(JNIEnv *, jclass)
+{
+    return access("/dev/kgsl-3d0", F_OK) == 0 ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_x1box_GpuDriverHelper_nativeInitializeDriver(
+    JNIEnv *env, jclass,
+    jstring hookLibDir, jstring customDriverDir,
+    jstring customDriverName)
+{
+    const char *hook_dir = hookLibDir ? env->GetStringUTFChars(hookLibDir, nullptr) : nullptr;
+    const char *driver_dir = customDriverDir ? env->GetStringUTFChars(customDriverDir, nullptr) : nullptr;
+    const char *driver_name = customDriverName ? env->GetStringUTFChars(customDriverName, nullptr) : nullptr;
+
+    void *handle = nullptr;
+    g_custom_vulkan_library = nullptr;
+    g_system_vulkan_library = nullptr;
+
+    if (driver_name && driver_name[0] != '\0') {
+        __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                            "Loading custom Vulkan driver: %s from %s",
+                            driver_name, driver_dir ? driver_dir : "(null)");
+        handle = adrenotools_open_libvulkan(
+            RTLD_NOW,
+            ADRENOTOOLS_DRIVER_CUSTOM,
+            nullptr,
+            hook_dir,
+            driver_dir,
+            driver_name,
+            nullptr,
+            nullptr);
+
+        if (handle) {
+            g_custom_vulkan_library = handle;
+            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                                "Custom Vulkan driver loaded successfully via adrenotools");
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                                "adrenotools failed to load custom driver, will fall back to system default");
+        }
+    } else {
+        __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                            "No custom driver specified, initializing system Vulkan via adrenotools");
+        handle = adrenotools_open_libvulkan(
+            RTLD_NOW,
+            0,
+            nullptr,
+            hook_dir,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr);
+
+        if (handle) {
+            g_system_vulkan_library = handle;
+            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                                "System Vulkan initialized via adrenotools; exposing hooked vkGetInstanceProcAddr");
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                                "adrenotools failed to initialize system Vulkan driver, using plain system loader");
+        }
+    }
+
+    if (driver_name) env->ReleaseStringUTFChars(customDriverName, driver_name);
+    if (driver_dir) env->ReleaseStringUTFChars(customDriverDir, driver_dir);
+    if (hook_dir) env->ReleaseStringUTFChars(hookLibDir, hook_dir);
+}
+#endif
+
+extern "C" void xemu_android_pause_emulation(void);
+extern "C" void xemu_android_resume_emulation(void);
+extern "C" void xemu_android_request_exit(void);
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_x1box_MainActivity_nativePauseEmulation(JNIEnv *, jobject)
+{
+    xemu_android_pause_emulation();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_x1box_MainActivity_nativeResumeEmulation(JNIEnv *, jobject)
+{
+    xemu_android_resume_emulation();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_x1box_MainActivity_nativeExitEmulation(JNIEnv *, jobject)
+{
+    xemu_android_request_exit();
 }

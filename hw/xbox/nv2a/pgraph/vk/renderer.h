@@ -43,15 +43,6 @@
 #include "glsl.h"
 
 #define HAVE_EXTERNAL_MEMORY 0
-#define NUM_GFX_DESCRIPTOR_SETS 8192
-#define MAX_FRAMEBUFFERS 256
-#define FB_CACHE_MAX 32
-#define OPT_BINDLESS_TEXTURES 1
-#define OPT_REORDER_SAFE_WINDOWS 1
-#define OPT_ASYNC_COMPILE 1
-#define REORDER_WINDOW_MAX 64
-#define MAX_BINDLESS_TEXTURES 1024
-#define BINDLESS_STAGE_SLOT_BASE (MAX_BINDLESS_TEXTURES - NV2A_MAX_TEXTURES)
 
 typedef struct QueueFamilyIndices {
     int queue_family;
@@ -88,9 +79,6 @@ typedef struct PipelineBinding {
     VkRenderPass render_pass;
     unsigned int draw_time;
     bool has_dynamic_line_width;
-#if OPT_ASYNC_COMPILE
-    bool pending;
-#endif
 } PipelineBinding;
 
 enum Buffer {
@@ -142,15 +130,12 @@ typedef struct SurfaceBinding {
     bool draw_dirty;
     bool download_pending;
     bool upload_pending;
-    uint32_t draw_generation;
-    uint32_t download_generation;
 
     BasicSurfaceFormatInfo fmt;
     SurfaceFormatInfo host_fmt;
 
     VkImage image;
     VkImageView image_view;
-    VkImageLayout image_layout;
     VmaAllocation allocation;
 
     // Used for scaling
@@ -160,21 +145,6 @@ typedef struct SurfaceBinding {
 
     bool initialized;
 } SurfaceBinding;
-
-typedef struct SurfaceImageConfig {
-    VkFormat format;
-    uint32_t width, height;
-    VkImageUsageFlags usage;
-} SurfaceImageConfig;
-
-typedef struct PooledSurfaceImage {
-    QTAILQ_ENTRY(PooledSurfaceImage) entry;
-    SurfaceImageConfig config;
-    VkImage image;
-    VmaAllocation allocation;
-    VkImage image_scratch;
-    VmaAllocation allocation_scratch;
-} PooledSurfaceImage;
 
 typedef struct ShaderModuleInfo {
     int refcnt;
@@ -209,21 +179,11 @@ typedef struct ShaderModuleCacheEntry {
     LruNode node;
     ShaderModuleCacheKey key;
     ShaderModuleInfo *module_info;
-#if OPT_ASYNC_COMPILE
-    bool ready;
-    unsigned int pending_users;
-#endif
 } ShaderModuleCacheEntry;
 
 typedef struct ShaderBinding {
     LruNode node;
     ShaderState state;
-#if OPT_ASYNC_COMPILE
-    bool ready;
-    struct ShaderModuleCacheEntry *pending_vsh_entry;
-    struct ShaderModuleCacheEntry *pending_geom_entry;
-    struct ShaderModuleCacheEntry *pending_psh_entry;
-#endif
     struct {
         ShaderModuleInfo *module_info;
         VshUniformLocs uniform_locs;
@@ -236,64 +196,6 @@ typedef struct ShaderBinding {
         PshUniformLocs uniform_locs;
     } psh;
 } ShaderBinding;
-
-#if OPT_ASYNC_COMPILE
-typedef struct PipelineCreateParams {
-    VkDevice device;
-    VkPipelineCache vk_pipeline_cache;
-
-    VkPipelineShaderStageCreateInfo shader_stages[3];
-    int num_shader_stages;
-
-    ShaderModuleInfo *module_infos[3];
-    int num_module_infos;
-
-    VkVertexInputBindingDescription
-        binding_descs[NV2A_VERTEXSHADER_ATTRIBUTES];
-    VkVertexInputAttributeDescription
-        attr_descs[NV2A_VERTEXSHADER_ATTRIBUTES];
-    uint32_t num_binding_descs;
-    uint32_t num_attr_descs;
-
-    VkPrimitiveTopology topology;
-
-    VkPipelineRasterizationStateCreateInfo rasterizer;
-    VkPipelineDepthStencilStateCreateInfo depth_stencil;
-    bool has_zeta;
-
-    VkPipelineColorBlendAttachmentState color_blend_attachment;
-    bool has_color;
-    float blend_constants[4];
-
-    VkDynamicState dynamic_states[8];
-    int num_dynamic_states;
-
-    bool has_dynamic_line_width;
-
-    VkPipelineLayout layout;
-    VkRenderPass render_pass;
-} PipelineCreateParams;
-
-typedef enum {
-    COMPILE_JOB_SHADER_MODULE,
-    COMPILE_JOB_PIPELINE,
-} CompileJobType;
-
-typedef struct CompileJob {
-    CompileJobType type;
-    QSIMPLEQ_ENTRY(CompileJob) entry;
-    union {
-        struct {
-            ShaderModuleCacheEntry *target;
-            ShaderModuleCacheKey key;
-        } shader_module;
-        struct {
-            PipelineBinding *target;
-            PipelineCreateParams params;
-        } pipeline;
-    };
-} CompileJob;
-#endif
 
 typedef struct TextureKey {
     TextureShape state;
@@ -322,71 +224,7 @@ typedef struct TextureBinding {
     uint64_t hash;
     unsigned int draw_time;
     uint32_t submit_time;
-    unsigned int dirty_check_frame;
-    bool dirty_check_result;
-#if OPT_BINDLESS_TEXTURES
-    uint32_t bindless_slot;
-    uint32_t bindless_binding;
-#endif
 } TextureBinding;
-
-#if OPT_REORDER_SAFE_WINDOWS
-typedef enum ReorderDrawMode {
-    RW_DRAW_INDEXED,
-    RW_DRAW_INDIRECT,
-    RW_DRAW_DIRECT,
-} ReorderDrawMode;
-
-typedef struct ReorderWindowEntry {
-    PipelineBinding *pipeline_binding;
-    VkDescriptorSet descriptor_set;
-
-    VkBuffer vertex_buffers[NV2A_VERTEXSHADER_ATTRIBUTES];
-    VkDeviceSize vertex_offsets[NV2A_VERTEXSHADER_ATTRIBUTES];
-    int num_vertex_bindings;
-
-    ReorderDrawMode draw_mode;
-    VkDeviceSize index_indirect_offset;
-    uint32_t draw_count;
-    uint32_t vertex_count;
-    int32_t first_vertex;
-
-    bool has_dynamic_line_width;
-    float line_width;
-
-    VkViewport viewport;
-    VkRect2D scissor;
-
-    float push_values[NV2A_VERTEXSHADER_ATTRIBUTES * 4];
-    int num_push_values;
-    bool use_push_constants;
-    bool use_bindless_textures;
-#if OPT_BINDLESS_TEXTURES
-    uint32_t tex_bindless_indices[NV2A_MAX_TEXTURES];
-#endif
-    VkPipelineLayout layout;
-
-    int sequence_number;
-    int group_order;
-
-    bool color_write;
-    bool depth_test;
-    bool stencil_test;
-} ReorderWindowEntry;
-
-#define REORDER_MAX_PIPELINES 32
-
-typedef struct ReorderWindow {
-    ReorderWindowEntry entries[REORDER_WINDOW_MAX];
-    int count;
-    bool active;
-
-    PipelineBinding *seen_pipelines[REORDER_MAX_PIPELINES];
-    int seen_pipeline_group[REORDER_MAX_PIPELINES];
-    int num_seen_pipelines;
-    int next_group;
-} ReorderWindow;
-#endif
 
 typedef struct QueryReport {
     QSIMPLEQ_ENTRY(QueryReport) entry;
@@ -462,16 +300,10 @@ typedef struct PGRAPHVkDisplayState {
     GLuint gl_texture_id;
 } PGRAPHVkDisplayState;
 
-typedef enum {
-    COMPUTE_TYPE_DEPTH_STENCIL = 0,
-    COMPUTE_TYPE_DEPTH_STENCIL_DIRECT = 1,
-} ComputeType;
-
 typedef struct ComputePipelineKey {
     VkFormat host_fmt;
     bool pack;
     int workgroup_size;
-    ComputeType compute_type;
 } ComputePipelineKey;
 
 typedef struct ComputePipeline {
@@ -488,13 +320,6 @@ typedef struct PGRAPHVkComputeState {
     VkPipelineLayout pipeline_layout;
     Lru pipeline_cache;
     ComputePipeline *pipeline_cache_entries;
-
-    VkDescriptorPool direct_descriptor_pool;
-    VkDescriptorSetLayout direct_descriptor_set_layout;
-    VkDescriptorSet direct_descriptor_sets[1024];
-    int direct_descriptor_set_index;
-    VkPipelineLayout direct_pipeline_layout;
-    VkSampler direct_depth_sampler;
 } PGRAPHVkComputeState;
 
 typedef struct PGRAPHVkState {
@@ -505,11 +330,6 @@ typedef struct PGRAPHVkState {
     bool debug_utils_extension_enabled;
     bool custom_border_color_extension_enabled;
     bool memory_budget_extension_enabled;
-#if OPT_BINDLESS_TEXTURES
-    bool bindless_textures_supported;
-    uint32_t tex_push_offset;
-    int max_vertex_push_attrs;
-#endif
 
     VkPhysicalDevice physical_device;
     VkPhysicalDeviceFeatures enabled_physical_device_features;
@@ -527,27 +347,14 @@ typedef struct PGRAPHVkState {
     VkFence command_buffer_fence;
     unsigned int command_buffer_start_time;
     bool in_command_buffer;
-#if OPT_BINDLESS_TEXTURES
-    bool bindless_set_bound;
-#endif
     uint32_t submit_count;
 
     VkCommandBuffer aux_command_buffer;
     bool in_aux_command_buffer;
 
-    VkFramebuffer framebuffers[MAX_FRAMEBUFFERS];
+    VkFramebuffer framebuffers[50];
     int framebuffer_index;
     bool framebuffer_dirty;
-    struct {
-        VkRenderPass render_pass;
-        VkImageView color_view;
-        VkImageView zeta_view;
-        uint32_t width;
-        uint32_t height;
-        VkFramebuffer framebuffer;
-    } fb_cache[FB_CACHE_MAX];
-    int fb_cache_count;
-    VkFramebuffer current_framebuffer;
 
     VkRenderPass render_pass;
     GArray *render_passes; // RenderPass
@@ -559,32 +366,11 @@ typedef struct PGRAPHVkState {
     PipelineBinding *pipeline_cache_entries;
     PipelineBinding *pipeline_binding;
     bool pipeline_binding_changed;
-    int64_t pipeline_cache_last_save_us;
-#if OPT_ASYNC_COMPILE
-    bool async_draw_skip;
-    struct {
-        QemuMutex lock;
-        QemuCond cond;
-        QemuThread thread;
-        QSIMPLEQ_HEAD(, CompileJob) queue;
-        bool shutdown;
-        bool initialized;
-        int queue_depth;
-    } compile_worker;
-#endif
 
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layout;
-    VkDescriptorSet *descriptor_sets;
-    int descriptor_set_count;
+    VkDescriptorSet descriptor_sets[1024];
     int descriptor_set_index;
-#if OPT_BINDLESS_TEXTURES
-    VkDescriptorPool bindless_descriptor_pool;
-    VkDescriptorSetLayout bindless_set_layout;
-    VkDescriptorSet bindless_descriptor_set;
-    uint64_t bindless_slot_bitmap[MAX_BINDLESS_TEXTURES / 64];
-    uint32_t tex_bindless_indices[NV2A_MAX_TEXTURES];
-#endif
 
     StorageBuffer storage_buffers[BUFFER_COUNT];
     PrimRewriteBuf prim_rewrite_buf;
@@ -593,10 +379,6 @@ typedef struct PGRAPHVkState {
     size_t num_vertex_ram_buffer_syncs;
     unsigned long *uploaded_bitmap;
     size_t bitmap_size;
-    uint32_t pipeline_vertex_attr_gen;
-    uint32_t last_shader_state_gen;
-    uint32_t last_pipeline_state_gen;
-    uint32_t last_any_reg_gen;
 
     VkVertexInputAttributeDescription vertex_attribute_descriptions[NV2A_VERTEXSHADER_ATTRIBUTES];
     int vertex_attribute_to_description_location[NV2A_VERTEXSHADER_ATTRIBUTES];
@@ -609,8 +391,6 @@ typedef struct PGRAPHVkState {
     QTAILQ_HEAD(, SurfaceBinding) surfaces;
     QTAILQ_HEAD(, SurfaceBinding) invalid_surfaces;
     QTAILQ_HEAD(, SurfaceBinding) shelved_surfaces;
-    QTAILQ_HEAD(, PooledSurfaceImage) surface_image_pool;
-    int surface_image_pool_count;
     SurfaceBinding *color_binding, *zeta_binding;
     bool downloads_pending;
     QemuEvent downloads_complete;
@@ -622,9 +402,7 @@ typedef struct PGRAPHVkState {
     TextureBinding *texture_bindings[NV2A_MAX_TEXTURES];
     bool tex_surface_direct[NV2A_MAX_TEXTURES];
     VkImageView tex_surface_direct_views[NV2A_MAX_TEXTURES];
-    VkImageLayout tex_surface_direct_layout[NV2A_MAX_TEXTURES];
     TextureBinding dummy_texture;
-    uint32_t last_texture_state_gen;
     bool texture_bindings_changed;
     VkFormatProperties *texture_format_properties;
 
@@ -635,19 +413,13 @@ typedef struct PGRAPHVkState {
     bool shader_bindings_changed;
     bool use_push_constants_for_uniform_attrs;
 
-#if OPT_REORDER_SAFE_WINDOWS
-    ReorderWindow reorder_window;
-#endif
-
     Lru shader_module_cache;
     ShaderModuleCacheEntry *shader_module_cache_entries;
-    size_t shader_module_cache_target;
 
     // FIXME: Merge these into a structure
     uint64_t uniform_buffer_hashes[2];
     size_t uniform_buffer_offsets[2];
     bool uniforms_changed;
-    bool pre_draw_skipped;
 
     VkQueryPool query_pool;
     int max_queries_in_flight; // FIXME: Move out to constant
@@ -746,8 +518,6 @@ VkDeviceSize pgraph_vk_update_vertex_inline_buffer(PGRAPHState *pg, void **data,
 void pgraph_vk_init_surfaces(PGRAPHState *pg);
 void pgraph_vk_finalize_surfaces(PGRAPHState *pg);
 void pgraph_vk_surface_flush(NV2AState *d);
-void pgraph_vk_surface_image_pool_init(PGRAPHVkState *r);
-void pgraph_vk_surface_image_pool_drain(PGRAPHVkState *r);
 void pgraph_vk_process_pending_downloads(NV2AState *d);
 void pgraph_vk_surface_download_if_dirty(NV2AState *d, SurfaceBinding *surface);
 SurfaceBinding *pgraph_vk_surface_get_within(NV2AState *d, hwaddr addr);
@@ -772,14 +542,6 @@ void pgraph_vk_finalize_compute(PGRAPHState *pg);
 void pgraph_vk_pack_depth_stencil(PGRAPHState *pg, SurfaceBinding *surface,
                                   VkCommandBuffer cmd, VkBuffer src,
                                   VkBuffer dst, bool downscale);
-void pgraph_vk_pack_depth_stencil_direct(PGRAPHState *pg,
-                                         SurfaceBinding *surface,
-                                         VkCommandBuffer cmd,
-                                         VkImageView depth_view,
-                                         VkBuffer stencil_buf,
-                                         VkDeviceSize stencil_offset,
-                                         VkDeviceSize stencil_size,
-                                         VkBuffer dst, bool downscale);
 void pgraph_vk_unpack_depth_stencil(PGRAPHState *pg, SurfaceBinding *surface,
                                     VkCommandBuffer cmd, VkBuffer src,
                                     VkBuffer dst);
@@ -794,7 +556,6 @@ bool pgraph_vk_gl_external_memory_available(void);
 void pgraph_vk_init_textures(PGRAPHState *pg);
 void pgraph_vk_finalize_textures(PGRAPHState *pg);
 void pgraph_vk_bind_textures(NV2AState *d);
-bool pgraph_vk_check_textures_fast_skip(PGRAPHState *pg);
 void pgraph_vk_mark_textures_possibly_dirty(NV2AState *d, hwaddr addr,
                                             hwaddr size);
 void pgraph_vk_trim_texture_cache(PGRAPHState *pg);
@@ -804,11 +565,6 @@ void pgraph_vk_init_shaders(PGRAPHState *pg);
 void pgraph_vk_finalize_shaders(PGRAPHState *pg);
 void pgraph_vk_update_descriptor_sets(PGRAPHState *pg);
 void pgraph_vk_bind_shaders(PGRAPHState *pg);
-#if OPT_ASYNC_COMPILE
-void pgraph_vk_compile_worker_init(PGRAPHVkState *r);
-void pgraph_vk_compile_worker_shutdown(PGRAPHVkState *r);
-void pgraph_vk_compile_worker_enqueue(PGRAPHVkState *r, CompileJob *job);
-#endif
 
 // reports.c
 void pgraph_vk_init_reports(PGRAPHState *pg);
@@ -838,7 +594,6 @@ void pgraph_vk_draw_begin(NV2AState *d);
 void pgraph_vk_draw_end(NV2AState *d);
 void pgraph_vk_finish(PGRAPHState *pg, FinishReason why);
 void pgraph_vk_flush_draw(NV2AState *d);
-void pgraph_vk_flush_reorder_window(NV2AState *d);
 void pgraph_vk_begin_command_buffer(PGRAPHState *pg);
 void pgraph_vk_ensure_command_buffer(PGRAPHState *pg);
 void pgraph_vk_ensure_not_in_render_pass(PGRAPHState *pg);

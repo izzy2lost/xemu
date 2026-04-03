@@ -158,12 +158,6 @@ typedef struct PGRAPHState {
 
     hwaddr dma_a, dma_b;
     bool texture_dirty[NV2A_MAX_TEXTURES];
-    uint32_t texture_state_gen;
-    uint32_t vertex_attr_gen;
-    uint32_t shader_state_gen;
-    uint32_t pipeline_state_gen;
-    uint32_t any_reg_gen;
-    uint32_t non_dynamic_reg_gen;
 
     bool texture_matrix_enable[NV2A_MAX_TEXTURES];
 
@@ -187,18 +181,14 @@ typedef struct PGRAPHState {
 
     uint32_t vsh_constants[NV2A_VERTEXSHADER_CONSTANTS][4];
     bool vsh_constants_dirty[NV2A_VERTEXSHADER_CONSTANTS];
-    bool vsh_constants_any_dirty;
 
     /* lighting constant arrays */
     uint32_t ltctxa[NV2A_LTCTXA_COUNT][4];
     bool ltctxa_dirty[NV2A_LTCTXA_COUNT];
-    bool ltctxa_any_dirty;
     uint32_t ltctxb[NV2A_LTCTXB_COUNT][4];
     bool ltctxb_dirty[NV2A_LTCTXB_COUNT];
-    bool ltctxb_any_dirty;
     uint32_t ltc1[NV2A_LTC1_COUNT][4];
     bool ltc1_dirty[NV2A_LTC1_COUNT];
-    bool ltc1_any_dirty;
 
     float material_alpha;
 
@@ -300,13 +290,6 @@ extern NV2AState *g_nv2a;
 
 // FIXME: Add new function pgraph_is_texture_sampler_active()
 
-#define REG_CAT_SHADER   (1 << 0)
-#define REG_CAT_PIPELINE (1 << 1)
-#define REG_CAT_TEXTURE  (1 << 2)
-extern uint8_t pgraph_reg_category_table[];
-extern uint32_t pgraph_reg_dynamic_mask_table[];
-void pgraph_init_reg_dynamic_masks(bool eds1, bool eds3);
-
 static inline uint32_t pgraph_reg_r(PGRAPHState *pg, unsigned int r)
 {
     assert(r % 4 == 0);
@@ -316,23 +299,8 @@ static inline uint32_t pgraph_reg_r(PGRAPHState *pg, unsigned int r)
 static inline void pgraph_reg_w(PGRAPHState *pg, unsigned int r, uint32_t v)
 {
     assert(r % 4 == 0);
-    uint32_t old = pg->regs_[r];
-    if (old != v) {
+    if (pg->regs_[r] != v) {
         bitmap_set(pg->regs_dirty, r / sizeof(uint32_t), 1);
-        uint8_t cat = pgraph_reg_category_table[r / 4];
-        uint32_t dyn_mask = pgraph_reg_dynamic_mask_table[r / 4];
-        uint32_t non_dyn_changed = (old ^ v) & ~dyn_mask;
-        if (cat & REG_CAT_SHADER) {
-            pg->shader_state_gen++;
-        }
-        if (cat & REG_CAT_PIPELINE) {
-            pg->pipeline_state_gen++;
-        }
-        if (cat & REG_CAT_TEXTURE)  pg->texture_state_gen++;
-        bool tex_only = cat && !(cat & ~REG_CAT_TEXTURE);
-        if (non_dyn_changed && !tex_only)
-            pg->non_dynamic_reg_gen++;
-        pg->any_reg_gen++;
     }
     pg->regs_[r] = v;
 }
@@ -342,14 +310,6 @@ void pgraph_clear_dirty_reg_map(PGRAPHState *pg);
 static inline bool pgraph_is_reg_dirty(PGRAPHState *pg, unsigned int reg)
 {
     return test_bit(reg / sizeof(uint32_t), pg->regs_dirty);
-}
-
-static inline bool pgraph_has_dirty_regs(PGRAPHState *pg)
-{
-    for (int i = 0; i < ARRAY_SIZE(pg->regs_dirty); i++) {
-        if (pg->regs_dirty[i]) return true;
-    }
-    return false;
 }
 
 static inline bool pgraph_is_texture_stage_active(PGRAPHState *pg, unsigned int stage)

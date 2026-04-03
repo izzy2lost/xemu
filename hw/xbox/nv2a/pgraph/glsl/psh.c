@@ -29,7 +29,6 @@
 #include "qemu/osdep.h"
 #include "hw/xbox/nv2a/debug.h"
 #include "hw/xbox/nv2a/pgraph/pgraph.h"
-#include "hw/xbox/nv2a/pgraph/texture.h"
 #include "psh.h"
 
 DEF_UNIFORM_INFO_ARR(PshUniform, PSH_UNIFORM_DECL_X)
@@ -180,24 +179,13 @@ void pgraph_glsl_set_psh_state(PGRAPHState *pg, PshState *state)
             }
         }
 
-        /* Keep track of whether texture data has been loaded as signed
-         * normalized integers or not. This dictates whether or not we will need
-         * to re-map in fragment shader for certain texture modes (e.g.
-         * bumpenvmap).
-         *
-         * FIXME: When signed texture data is loaded as unsigned and remapped in
-         * fragment shader, there may be interpolation artifacts. Fix this to
-         * support signed textures more appropriately.
-         */
-#if 0 // FIXME
-        psh->snorm_tex[i] = (f.gl_internal_format == GL_RGB8_SNORM)
-                                 || (f.gl_internal_format == GL_RG8_SNORM);
-#endif
+        /* Keep track of textures that are uploaded as signed normalized data.
+         * Those must not be remapped a second time in the fragment shader. */
+        state->snorm_tex[i] =
+            color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R6G5B5;
         state->shadow_map[i] = f.depth;
 
         uint32_t filter = pgraph_reg_r(pg, NV_PGRAPH_TEXFILTER0 + i * 4);
-        state->tex_signed[i] =
-            pgraph_get_texture_signed_component_mask_from_filter(filter);
         unsigned int min_filter = GET_MASK(filter, NV_PGRAPH_TEXFILTER0_MIN);
         enum ConvolutionFilter kernel = CONVOLUTION_FILTER_DISABLED;
         /* FIXME: We do not distinguish between min and mag when
@@ -805,31 +793,6 @@ static void define_colorkey_comparator(MString *preflight)
     // clang-format on
 }
 
-static bool texture_channels_are_signed(const struct PixelShader *ps, int tex,
-                                        uint8_t mask)
-{
-    return (ps->state->tex_signed[tex] & mask) == mask;
-}
-
-static void apply_signed_texture_remap(const struct PixelShader *ps,
-                                       MString *vars, int tex)
-{
-    uint8_t mask = ps->state->tex_signed[tex];
-
-    if (mask & PGRAPH_TEXTURE_SIGNED_R) {
-        mstring_append_fmt(vars, "t%d.r = sign3(t%d.r);\n", tex, tex);
-    }
-    if (mask & PGRAPH_TEXTURE_SIGNED_G) {
-        mstring_append_fmt(vars, "t%d.g = sign3(t%d.g);\n", tex, tex);
-    }
-    if (mask & PGRAPH_TEXTURE_SIGNED_B) {
-        mstring_append_fmt(vars, "t%d.b = sign3(t%d.b);\n", tex, tex);
-    }
-    if (mask & PGRAPH_TEXTURE_SIGNED_A) {
-        mstring_append_fmt(vars, "t%d.a = sign3(t%d.a);\n", tex, tex);
-    }
-}
-
 static MString* psh_convert(struct PixelShader *ps)
 {
     MString *preflight = mstring_new();
@@ -837,19 +800,11 @@ static MString* psh_convert(struct PixelShader *ps)
                              ps->state->smooth_shading, true, false, false);
 
     if (ps->opts.vulkan) {
-        if (ps->opts.ubo_set > 0) {
-            mstring_append_fmt(
-                preflight,
-                "layout(location = 0) out vec4 fragColor;\n"
-                "layout(set = %d, binding = %d, std140) uniform PshUniforms {\n",
-                ps->opts.ubo_set, ps->opts.ubo_binding);
-        } else {
-            mstring_append_fmt(
-                preflight,
-                "layout(location = 0) out vec4 fragColor;\n"
-                "layout(binding = %d, std140) uniform PshUniforms {\n",
-                ps->opts.ubo_binding);
-        }
+        mstring_append_fmt(
+            preflight,
+            "layout(location = 0) out vec4 fragColor;\n"
+            "layout(binding = %d, std140) uniform PshUniforms {\n",
+            ps->opts.ubo_binding);
     } else {
         mstring_append_fmt(preflight,
                            "layout(location = 0) out vec4 fragColor;\n");
@@ -876,18 +831,6 @@ static MString* psh_convert(struct PixelShader *ps)
 
     if (ps->opts.vulkan) {
         mstring_append(preflight, "};\n");
-    }
-
-    if (ps->opts.bindless) {
-        mstring_append(preflight,
-            "layout(set = 0, binding = 0) uniform sampler2D texArray2D[1024];\n"
-            "layout(set = 0, binding = 1) uniform sampler3D texArray3D[1024];\n"
-            "layout(set = 0, binding = 2) uniform samplerCube texArrayCube[1024];\n");
-        mstring_append_fmt(preflight,
-            "layout(push_constant) uniform TexPushData {\n"
-            "    layout(offset = %d) uint texIdx[4];\n"
-            "};\n",
-            ps->opts.tex_push_offset);
     }
 
     const char *dotmap_funcs[] = {
@@ -1221,10 +1164,7 @@ static MString* psh_convert(struct PixelShader *ps)
         case PS_TEXTUREMODES_BUMPENVMAP:
             assert(i >= 1);
 
-            if (ps->state->snorm_tex[ps->input_tex[i]] ||
-                texture_channels_are_signed(
-                    ps, ps->input_tex[i],
-                    PGRAPH_TEXTURE_SIGNED_G | PGRAPH_TEXTURE_SIGNED_B)) {
+            if (ps->state->snorm_tex[ps->input_tex[i]]) {
                 /* Input color channels already signed (FIXME: May not always want signed textures in this case) */
                 mstring_append_fmt(vars, "vec2 dsdt%d = t%d.bg;\n",
                                    i, ps->input_tex[i]);
@@ -1250,28 +1190,15 @@ static MString* psh_convert(struct PixelShader *ps)
         case PS_TEXTUREMODES_BUMPENVMAP_LUM:
             assert(i >= 1);
 
-        {
-            bool bg_signed =
-                ps->state->snorm_tex[ps->input_tex[i]] ||
-                texture_channels_are_signed(
-                    ps, ps->input_tex[i],
-                    PGRAPH_TEXTURE_SIGNED_G | PGRAPH_TEXTURE_SIGNED_B);
-            bool r_signed =
-                ps->state->snorm_tex[ps->input_tex[i]] ||
-                texture_channels_are_signed(
-                    ps, ps->input_tex[i], PGRAPH_TEXTURE_SIGNED_R);
-            g_autofree gchar *b_expr = g_strdup_printf(
-                bg_signed ? "t%d.b" : "sign3(t%d.b)", ps->input_tex[i]);
-            g_autofree gchar *g_expr = g_strdup_printf(
-                bg_signed ? "t%d.g" : "sign3(t%d.g)", ps->input_tex[i]);
-            g_autofree gchar *r_expr = g_strdup_printf(
-                r_signed ? "sign3_to_0_to_1(t%d.r)" : "t%d.r",
-                ps->input_tex[i]);
-
-            mstring_append_fmt(vars,
-                               "vec3 dsdtl%d = vec3(%s, %s, %s);\n", i,
-                               b_expr, g_expr, r_expr);
-        }
+            if (ps->state->snorm_tex[ps->input_tex[i]]) {
+                /* Input color channels already signed (FIXME: May not always want signed textures in this case) */
+                mstring_append_fmt(vars, "vec3 dsdtl%d = vec3(t%d.bg, sign3_to_0_to_1(t%d.r));\n",
+                                   i, ps->input_tex[i], ps->input_tex[i]);
+            } else {
+                /* Convert to signed (FIXME: loss of accuracy due to filtering/interpolation) */
+                mstring_append_fmt(vars, "vec3 dsdtl%d = vec3(sign3(t%d.b), sign3(t%d.g), t%d.r);\n",
+                                   i, ps->input_tex[i], ps->input_tex[i], ps->input_tex[i]);
+            }
 
             mstring_append_fmt(vars, "dsdtl%d.st = bumpMat[%d] * dsdtl%d.st;\n",
                                i, i, i);
@@ -1422,26 +1349,10 @@ static MString* psh_convert(struct PixelShader *ps)
         }
 
         if (sampler_type != NULL) {
-            if (ps->opts.bindless) {
-                const char *array_name;
-                if (strcmp(sampler_type, "sampler3D") == 0) {
-                    array_name = "texArray3D";
-                } else if (strcmp(sampler_type, "samplerCube") == 0) {
-                    array_name = "texArrayCube";
-                } else {
-                    array_name = "texArray2D";
-                }
-                mstring_append_fmt(preflight,
-                    "#define texSamp%d %s[texIdx[%d]]\n",
-                    i, array_name, i);
-            } else {
-                if (ps->opts.vulkan) {
-                    mstring_append_fmt(preflight, "layout(binding = %d) ",
-                                       ps->opts.tex_binding + i);
-                }
-                mstring_append_fmt(preflight, "uniform %s texSamp%d;\n",
-                                   sampler_type, i);
+            if (ps->opts.vulkan) {
+                mstring_append_fmt(preflight, "layout(binding = %d) ", ps->opts.tex_binding + i);
             }
+            mstring_append_fmt(preflight, "uniform %s texSamp%d;\n", sampler_type, i);
 
             /* As this means a texture fetch does happen, do alphakill */
             if (ps->state->alphakill[i]) {
@@ -1481,10 +1392,6 @@ static MString* psh_convert(struct PixelShader *ps)
                 }
 
                 mstring_append(vars, "}\n");
-            }
-
-            if (!ps->state->shadow_map[i] && !ps->state->tex_x8y24[i]) {
-                apply_signed_texture_remap(ps, vars, i);
             }
 
             if (ps->state->rect_tex[i]) {

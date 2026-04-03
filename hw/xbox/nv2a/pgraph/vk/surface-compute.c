@@ -118,25 +118,6 @@ const char *unpack_z24s8_to_d32_sfloat_s8_uint_glsl =
     "    }\n"
     "}\n";
 
-static const char *pack_depth_stencil_direct_glsl =
-    "layout(push_constant) uniform PushConstants { uint width_in, width_out; };\n"
-    "layout(set = 0, binding = 0) uniform sampler2D depth_tex;\n"
-    "layout(set = 0, binding = 1) readonly buffer StencilIn { uint stencil_in[]; };\n"
-    "layout(set = 0, binding = 2) writeonly buffer PackedOut { uint packed_out[]; };\n"
-    "void main() {\n"
-    "    uint idx_out = gl_GlobalInvocationID.x;\n"
-    "    uint scale = width_in / width_out;\n"
-    "    uint out_x = idx_out % width_out;\n"
-    "    uint out_y = idx_out / width_out;\n"
-    "    uint in_x = out_x * scale;\n"
-    "    uint in_y = out_y * scale;\n"
-    "    uint idx_in = in_y * width_in + in_x;\n"
-    "    float depth = texelFetch(depth_tex, ivec2(in_x, in_y), 0).r;\n"
-    "    uint depth_value = uint(depth * float(0xFFFFFF));\n"
-    "    uint stencil_value = (stencil_in[idx_in / 4] >> ((idx_in % 4) * 8)) & 0xFFu;\n"
-    "    packed_out[idx_out] = depth_value << 8 | stencil_value;\n"
-    "}\n";
-
 static gchar *get_compute_shader_glsl(VkFormat host_fmt, bool pack,
                                       int workgroup_size)
 {
@@ -188,46 +169,12 @@ static void create_descriptor_pool(PGRAPHState *pg)
                                     &r->compute.descriptor_pool));
 }
 
-static void create_direct_descriptor_pool(PGRAPHState *pg)
-{
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    VkDescriptorPoolSize pool_sizes[] = {
-        {
-            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = ARRAY_SIZE(r->compute.direct_descriptor_sets),
-        },
-        {
-            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 2 * ARRAY_SIZE(r->compute.direct_descriptor_sets),
-        },
-    };
-
-    VkDescriptorPoolCreateInfo pool_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = ARRAY_SIZE(pool_sizes),
-        .pPoolSizes = pool_sizes,
-        .maxSets = ARRAY_SIZE(r->compute.direct_descriptor_sets),
-        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-    };
-    VK_CHECK(vkCreateDescriptorPool(r->device, &pool_info, NULL,
-                                    &r->compute.direct_descriptor_pool));
-}
-
 static void destroy_descriptor_pool(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
 
     vkDestroyDescriptorPool(r->device, r->compute.descriptor_pool, NULL);
     r->compute.descriptor_pool = VK_NULL_HANDLE;
-}
-
-static void destroy_direct_descriptor_pool(PGRAPHState *pg)
-{
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    vkDestroyDescriptorPool(r->device, r->compute.direct_descriptor_pool, NULL);
-    r->compute.direct_descriptor_pool = VK_NULL_HANDLE;
 }
 
 static void create_descriptor_set_layout(PGRAPHState *pg)
@@ -254,40 +201,6 @@ static void create_descriptor_set_layout(PGRAPHState *pg)
                                          &r->compute.descriptor_set_layout));
 }
 
-static void create_direct_descriptor_set_layout(PGRAPHState *pg)
-{
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    VkDescriptorSetLayoutBinding bindings[] = {
-        {
-            .binding = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-        },
-        {
-            .binding = 1,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-        },
-        {
-            .binding = 2,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-        },
-    };
-
-    VkDescriptorSetLayoutCreateInfo layout_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = ARRAY_SIZE(bindings),
-        .pBindings = bindings,
-    };
-    VK_CHECK(vkCreateDescriptorSetLayout(
-        r->device, &layout_info, NULL, &r->compute.direct_descriptor_set_layout));
-}
-
 static void destroy_descriptor_set_layout(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -295,16 +208,6 @@ static void destroy_descriptor_set_layout(PGRAPHState *pg)
     vkDestroyDescriptorSetLayout(r->device, r->compute.descriptor_set_layout,
                                  NULL);
     r->compute.descriptor_set_layout = VK_NULL_HANDLE;
-}
-
-static void destroy_direct_descriptor_set_layout(PGRAPHState *pg)
-{
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    vkDestroyDescriptorSetLayout(r->device,
-                                 r->compute.direct_descriptor_set_layout,
-                                 NULL);
-    r->compute.direct_descriptor_set_layout = VK_NULL_HANDLE;
 }
 
 static void create_descriptor_sets(PGRAPHState *pg)
@@ -325,24 +228,6 @@ static void create_descriptor_sets(PGRAPHState *pg)
                                       r->compute.descriptor_sets));
 }
 
-static void create_direct_descriptor_sets(PGRAPHState *pg)
-{
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    VkDescriptorSetLayout layouts[ARRAY_SIZE(r->compute.direct_descriptor_sets)];
-    for (int i = 0; i < ARRAY_SIZE(layouts); i++) {
-        layouts[i] = r->compute.direct_descriptor_set_layout;
-    }
-    VkDescriptorSetAllocateInfo alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = r->compute.direct_descriptor_pool,
-        .descriptorSetCount = ARRAY_SIZE(r->compute.direct_descriptor_sets),
-        .pSetLayouts = layouts,
-    };
-    VK_CHECK(vkAllocateDescriptorSets(r->device, &alloc_info,
-                                      r->compute.direct_descriptor_sets));
-}
-
 static void destroy_descriptor_sets(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -352,18 +237,6 @@ static void destroy_descriptor_sets(PGRAPHState *pg)
                          r->compute.descriptor_sets);
     for (int i = 0; i < ARRAY_SIZE(r->compute.descriptor_sets); i++) {
         r->compute.descriptor_sets[i] = VK_NULL_HANDLE;
-    }
-}
-
-static void destroy_direct_descriptor_sets(PGRAPHState *pg)
-{
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    vkFreeDescriptorSets(r->device, r->compute.direct_descriptor_pool,
-                         ARRAY_SIZE(r->compute.direct_descriptor_sets),
-                         r->compute.direct_descriptor_sets);
-    for (int i = 0; i < ARRAY_SIZE(r->compute.direct_descriptor_sets); i++) {
-        r->compute.direct_descriptor_sets[i] = VK_NULL_HANDLE;
     }
 }
 
@@ -386,74 +259,20 @@ static void create_compute_pipeline_layout(PGRAPHState *pg)
                                     &r->compute.pipeline_layout));
 }
 
-static void create_direct_compute_pipeline_layout(PGRAPHState *pg)
-{
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    VkPushConstantRange push_constant_range = {
-        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-        .size = 2 * sizeof(uint32_t),
-    };
-    VkPipelineLayoutCreateInfo pipeline_layout_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &r->compute.direct_descriptor_set_layout,
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &push_constant_range,
-    };
-    VK_CHECK(vkCreatePipelineLayout(
-        r->device, &pipeline_layout_info, NULL, &r->compute.direct_pipeline_layout));
-}
-
 static void destroy_compute_pipeline_layout(PGRAPHVkState *r)
 {
     vkDestroyPipelineLayout(r->device, r->compute.pipeline_layout, NULL);
     r->compute.pipeline_layout = VK_NULL_HANDLE;
 }
 
-static void destroy_direct_compute_pipeline_layout(PGRAPHVkState *r)
-{
-    vkDestroyPipelineLayout(r->device, r->compute.direct_pipeline_layout, NULL);
-    r->compute.direct_pipeline_layout = VK_NULL_HANDLE;
-}
-
-static void create_direct_depth_sampler(PGRAPHVkState *r)
-{
-    VkSamplerCreateInfo sampler_info = {
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_NEAREST,
-        .minFilter = VK_FILTER_NEAREST,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .anisotropyEnable = VK_FALSE,
-        .compareEnable = VK_FALSE,
-        .compareOp = VK_COMPARE_OP_ALWAYS,
-        .minLod = 0.0f,
-        .maxLod = 0.0f,
-        .maxAnisotropy = 1.0f,
-        .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
-    };
-    VK_CHECK(vkCreateSampler(r->device, &sampler_info, NULL,
-                             &r->compute.direct_depth_sampler));
-}
-
-static void destroy_direct_depth_sampler(PGRAPHVkState *r)
-{
-    vkDestroySampler(r->device, r->compute.direct_depth_sampler, NULL);
-    r->compute.direct_depth_sampler = VK_NULL_HANDLE;
-}
-
-static VkPipeline create_compute_pipeline(PGRAPHVkState *r, const char *glsl,
-                                          VkPipelineLayout layout)
+static VkPipeline create_compute_pipeline(PGRAPHVkState *r, const char *glsl)
 {
     ShaderModuleInfo *module = pgraph_vk_create_shader_module_from_glsl(
         r, VK_SHADER_STAGE_COMPUTE_BIT, glsl);
 
     VkComputePipelineCreateInfo pipeline_info = {
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .layout = layout,
+        .layout = r->compute.pipeline_layout,
         .stage =
             (VkPipelineShaderStageCreateInfo){
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -504,17 +323,13 @@ bool pgraph_vk_compute_needs_finish(PGRAPHVkState *r)
 {
     bool need_descriptor_write_reset = (r->compute.descriptor_set_index >=
                                         ARRAY_SIZE(r->compute.descriptor_sets));
-    bool need_direct_descriptor_write_reset =
-        (r->compute.direct_descriptor_set_index >=
-         ARRAY_SIZE(r->compute.direct_descriptor_sets));
 
-    return need_descriptor_write_reset || need_direct_descriptor_write_reset;
+    return need_descriptor_write_reset;
 }
 
 void pgraph_vk_compute_finish_complete(PGRAPHVkState *r)
 {
     r->compute.descriptor_set_index = 0;
-    r->compute.direct_descriptor_set_index = 0;
 }
 
 static int get_workgroup_size_for_output_units(PGRAPHVkState *r, int output_units)
@@ -548,7 +363,6 @@ static ComputePipeline *get_compute_pipeline(PGRAPHVkState *r, VkFormat host_fmt
     key.host_fmt = host_fmt;
     key.pack = pack;
     key.workgroup_size = workgroup_size;
-    key.compute_type = COMPUTE_TYPE_DEPTH_STENCIL;
 
     LruNode *node = lru_lookup(&r->compute.pipeline_cache,
                       fast_hash((void *)&key, sizeof(key)), &key);
@@ -711,107 +525,6 @@ void pgraph_vk_unpack_depth_stencil(PGRAPHState *pg, SurfaceBinding *surface,
     pgraph_vk_end_debug_marker(r, cmd);
 }
 
-void pgraph_vk_pack_depth_stencil_direct(PGRAPHState *pg,
-                                         SurfaceBinding *surface,
-                                         VkCommandBuffer cmd,
-                                         VkImageView depth_view,
-                                         VkBuffer stencil_buf,
-                                         VkDeviceSize stencil_offset,
-                                         VkDeviceSize stencil_size,
-                                         VkBuffer dst, bool downscale)
-{
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    unsigned int input_width = surface->width, input_height = surface->height;
-    pgraph_apply_scaling_factor(pg, &input_width, &input_height);
-
-    unsigned int output_width = surface->width, output_height = surface->height;
-    if (!downscale) {
-        pgraph_apply_scaling_factor(pg, &output_width, &output_height);
-    }
-
-    size_t output_size = output_width * output_height * 4;
-
-    assert(r->compute.direct_descriptor_set_index <
-           ARRAY_SIZE(r->compute.direct_descriptor_sets));
-
-    int ds_idx = r->compute.direct_descriptor_set_index++;
-    VkDescriptorSet ds = r->compute.direct_descriptor_sets[ds_idx];
-
-    VkDescriptorImageInfo image_info = {
-        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-        .imageView = depth_view,
-        .sampler = r->compute.direct_depth_sampler,
-    };
-    VkDescriptorBufferInfo stencil_buf_info = {
-        .buffer = stencil_buf,
-        .offset = stencil_offset,
-        .range = stencil_size,
-    };
-    VkDescriptorBufferInfo output_buf_info = {
-        .buffer = dst,
-        .offset = 0,
-        .range = output_size,
-    };
-    VkWriteDescriptorSet writes[] = {
-        {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = ds,
-            .dstBinding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .pImageInfo = &image_info,
-        },
-        {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = ds,
-            .dstBinding = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 1,
-            .pBufferInfo = &stencil_buf_info,
-        },
-        {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = ds,
-            .dstBinding = 2,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 1,
-            .pBufferInfo = &output_buf_info,
-        },
-    };
-    vkUpdateDescriptorSets(r->device, ARRAY_SIZE(writes), writes, 0, NULL);
-
-    size_t output_units = output_width * output_height;
-    int workgroup_size = get_workgroup_size_for_output_units(r, output_units);
-
-    ComputePipelineKey key;
-    memset(&key, 0, sizeof(key));
-    key.workgroup_size = workgroup_size;
-    key.compute_type = COMPUTE_TYPE_DEPTH_STENCIL_DIRECT;
-
-    LruNode *node = lru_lookup(&r->compute.pipeline_cache,
-                               fast_hash((void *)&key, sizeof(key)), &key);
-    ComputePipeline *pipeline = container_of(node, ComputePipeline, node);
-    assert(pipeline);
-
-    size_t group_count = output_units / workgroup_size;
-
-    pgraph_vk_begin_debug_marker(r, cmd, RGBA_PINK, __func__);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            r->compute.direct_pipeline_layout, 0, 1, &ds, 0,
-                            NULL);
-
-    uint32_t push_constants[2] = { input_width, output_width };
-    assert(sizeof(push_constants) == 8);
-    vkCmdPushConstants(cmd, r->compute.direct_pipeline_layout,
-                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_constants),
-                       push_constants);
-
-    vkCmdDispatch(cmd, group_count, 1, 1);
-    pgraph_vk_end_debug_marker(r, cmd);
-}
-
 static void pipeline_cache_entry_init(Lru *lru, LruNode *node,
                                       const void *state)
 {
@@ -825,25 +538,10 @@ static void pipeline_cache_entry_init(Lru *lru, LruNode *node,
                 "Warning: Needed compute shader with workgroup size = 1\n");
     }
 
-    gchar *glsl;
-    VkPipelineLayout layout;
-    switch (snode->key.compute_type) {
-    case COMPUTE_TYPE_DEPTH_STENCIL_DIRECT:
-        glsl = g_strdup_printf(
-            "#version 450\n"
-            "layout(local_size_x = %d, local_size_y = 1, local_size_z = 1) in;\n"
-            "%s", snode->key.workgroup_size, pack_depth_stencil_direct_glsl);
-        layout = r->compute.direct_pipeline_layout;
-        break;
-    case COMPUTE_TYPE_DEPTH_STENCIL:
-    default:
-        glsl = get_compute_shader_glsl(
-            snode->key.host_fmt, snode->key.pack, snode->key.workgroup_size);
-        layout = r->compute.pipeline_layout;
-        break;
-    }
+    gchar *glsl = get_compute_shader_glsl(
+        snode->key.host_fmt, snode->key.pack, snode->key.workgroup_size);
     assert(glsl);
-    snode->pipeline = create_compute_pipeline(r, glsl, layout);
+    snode->pipeline = create_compute_pipeline(r, glsl);
     g_free(glsl);
 }
 
@@ -869,8 +567,8 @@ static bool pipeline_cache_entry_compare(Lru *lru, LruNode *node,
 
 static void pipeline_cache_init(PGRAPHVkState *r)
 {
-    const size_t pipeline_cache_size = 100;
-    lru_init(&r->compute.pipeline_cache, 256);
+    const size_t pipeline_cache_size = 100; // FIXME: Trim
+    lru_init(&r->compute.pipeline_cache, 1u << 16);
     r->compute.pipeline_cache_entries = g_malloc_n(pipeline_cache_size, sizeof(ComputePipeline));
     assert(r->compute.pipeline_cache_entries != NULL);
     for (int i = 0; i < pipeline_cache_size; i++) {
@@ -884,7 +582,6 @@ static void pipeline_cache_init(PGRAPHVkState *r)
 static void pipeline_cache_finalize(PGRAPHVkState *r)
 {
     lru_flush(&r->compute.pipeline_cache);
-    lru_destroy(&r->compute.pipeline_cache);
     g_free(r->compute.pipeline_cache_entries);
     r->compute.pipeline_cache_entries = NULL;
 }
@@ -897,11 +594,6 @@ void pgraph_vk_init_compute(PGRAPHState *pg)
     create_descriptor_set_layout(pg);
     create_descriptor_sets(pg);
     create_compute_pipeline_layout(pg);
-    create_direct_descriptor_pool(pg);
-    create_direct_descriptor_set_layout(pg);
-    create_direct_descriptor_sets(pg);
-    create_direct_compute_pipeline_layout(pg);
-    create_direct_depth_sampler(r);
     pipeline_cache_init(r);
 }
 
@@ -912,13 +604,8 @@ void pgraph_vk_finalize_compute(PGRAPHState *pg)
     assert(!r->in_command_buffer);
 
     pipeline_cache_finalize(r);
-    destroy_direct_depth_sampler(r);
-    destroy_direct_compute_pipeline_layout(r);
     destroy_compute_pipeline_layout(r);
-    destroy_direct_descriptor_sets(pg);
     destroy_descriptor_sets(pg);
-    destroy_direct_descriptor_set_layout(pg);
     destroy_descriptor_set_layout(pg);
-    destroy_direct_descriptor_pool(pg);
     destroy_descriptor_pool(pg);
 }

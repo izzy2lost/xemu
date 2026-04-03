@@ -18,6 +18,9 @@
  */
 
 #include "qemu/osdep.h"
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 #include "qemu/interval-tree.h"
 #include "qemu/qtree.h"
 #include "exec/cputlb.h"
@@ -34,6 +37,7 @@
 #include "tb-context.h"
 #include "tb-internal.h"
 #include "internal-common.h"
+#include "tb-cache-hints.h"
 #ifdef CONFIG_USER_ONLY
 #include "user/page-protection.h"
 #define runstate_is_running()  true
@@ -795,6 +799,23 @@ void tb_flush__exclusive_or_serial(void)
     tcg_region_reset_all();
     /* XXX: flush processor icache at this point if cache flush is expensive */
     qatomic_inc(&tb_ctx.tb_flush_count);
+
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_WARN, "hakuX-tb",
+                        "TB FLUSH #%u -- all translations destroyed",
+                        qatomic_read(&tb_ctx.tb_flush_count));
+#endif
+
+    /*
+     * Re-translate the most important blocks immediately so the
+     * emulator doesn't stutter while rebuilding on demand.
+     */
+#ifndef __ANDROID__
+    if (current_cpu) {
+        tb_cache_rewarm_after_flush(current_cpu);
+    }
+#endif
+
     qemu_plugin_flush_cb();
 }
 
@@ -968,6 +989,20 @@ static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
 
     qatomic_set(&tb_ctx.tb_phys_invalidate_count,
                 tb_ctx.tb_phys_invalidate_count + 1);
+
+#ifdef XBOX
+    /* Free superblock metadata if this was a merged superblock. */
+    if (tb->superblock) {
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_INFO, "superblock",
+                            "invalidated at 0x%" PRIx64 " (B was 0x%" PRIx64 ")",
+                            (uint64_t)tb->pc,
+                            (uint64_t)tb->superblock->pc_b);
+#endif
+        g_free(tb->superblock);
+        tb->superblock = NULL;
+    }
+#endif
 }
 
 static void tb_phys_invalidate__locked(TranslationBlock *tb)

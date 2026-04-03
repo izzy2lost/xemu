@@ -61,10 +61,32 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var startButtonDown = false
   private var selectButtonDown = false
   private var comboTriggered = false
+  private var suspendedByLifecycle = false
+  private var resumeEmulationOnMenuDismiss = false
   private var startupSnapshotSlot: Int? = null
   private var startupSnapshotLoadScheduled = false
-  @Volatile private var processTerminationScheduled = false
   private lateinit var swipeUpGestureRecognizer: SwipeUpGestureRecognizer
+
+  override fun loadLibraries() {
+    super.loadLibraries()
+    initializeGpuDriver()
+  }
+
+  private fun initializeGpuDriver() {
+    GpuDriverHelper.init(this)
+    if (GpuDriverHelper.supportsCustomDriverLoading()) {
+      val driverLib = GpuDriverHelper.getInstalledDriverLibrary()
+      if (driverLib != null) {
+        android.util.Log.i(TAG, "GPU driver: loading custom driver=$driverLib")
+        GpuDriverHelper.initializeDriver(driverLib)
+      } else {
+        android.util.Log.i(TAG, "GPU driver: no custom driver installed, initializing system driver via adrenotools")
+        GpuDriverHelper.initializeDriver()
+      }
+    } else {
+      android.util.Log.i(TAG, "GPU driver: custom loading not supported on this device")
+    }
+  }
 
   override fun createSDLSurface(context: Context): SDLSurface {
     return super.createSDLSurface(context).apply {
@@ -205,6 +227,10 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   override fun onResume() {
     super.onResume()
+    if (suspendedByLifecycle) {
+      nativeResumeEmulation()
+      suspendedByLifecycle = false
+    }
     OrientationLocker(this, landscapeOnly = true).enable()
     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     mLayout?.keepScreenOn = true
@@ -222,7 +248,18 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     swipeUpGestureRecognizer.reset()
     onScreenController?.resetAllInputs()
     controllerBridge?.reset()
+    resumeEmulationOnMenuDismiss = false
+    suspendedByLifecycle = true
+    nativePauseEmulation()
     super.onPause()
+  }
+
+  private fun resumeEmulationIfSafe() {
+    val destroyed =
+      Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed
+    if (!suspendedByLifecycle && !isFinishing && !destroyed) {
+      nativeResumeEmulation()
+    }
   }
 
   private fun scheduleStartupSnapshotLoadIfRequested() {
@@ -335,13 +372,9 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   override fun onDestroy() {
     DebugLog.i(TAG) { "onDestroy()" }
     swipeUpGestureRecognizer.reset()
+    resumeEmulationOnMenuDismiss = false
     inGameMenuDialog?.dismiss()
     inGameMenuDialog = null
-    val shouldTerminateProcess = isFinishing && !isChangingConfigurations
-
-    if (shouldTerminateProcess) {
-      terminateXemuProcessSoon("activity finish")
-    }
 
     // Unregister virtual controller
     try {
@@ -443,6 +476,9 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private external fun nativeSaveSnapshot(name: String): Boolean
   private external fun nativeLoadSnapshot(name: String): Boolean
   private external fun nativeRebootSystem()
+  private external fun nativePauseEmulation()
+  private external fun nativeResumeEmulation()
+  private external fun nativeExitEmulation()
 
   private fun slotName(slot: Int) = "android_slot_$slot"
 
@@ -637,6 +673,8 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
           if (ok) getString(R.string.snapshot_loaded, slot) else getString(R.string.snapshot_load_failed, slot)
         }
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        hideSystemUI()
+        resumeEmulationIfSafe()
       }
     }.start()
   }
@@ -645,6 +683,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     val previews = loadSnapshotSlotPreviews()
     val listView = ListView(this)
     lateinit var dialog: AlertDialog
+    var operationStarted = false
 
     val adapter = object : BaseAdapter() {
       override fun getCount(): Int = previews.size
@@ -684,6 +723,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     listView.adapter = adapter
     listView.setOnItemClickListener { _, _, position, _ ->
       val slot = previews[position].slot
+      operationStarted = true
       dialog.dismiss()
       runSnapshotOperation(slot, save)
     }
@@ -695,6 +735,12 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       )
       .setView(listView)
       .setNegativeButton(android.R.string.cancel, null)
+      .setOnDismissListener {
+        hideSystemUI()
+        if (!operationStarted) {
+          resumeEmulationIfSafe()
+        }
+      }
       .create()
 
     dialog.show()
@@ -709,14 +755,22 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   private fun showRebootSystemConfirmation() {
+    var confirmed = false
     MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
       .setTitle(R.string.in_game_menu_reboot_title)
       .setMessage(R.string.in_game_menu_reboot_message)
       .setPositiveButton(R.string.in_game_menu_reboot_action) { _, _ ->
+        confirmed = true
         onScreenController?.resetAllInputs()
         nativeRebootSystem()
       }
       .setNegativeButton(android.R.string.cancel, null)
+      .setOnDismissListener {
+        hideSystemUI()
+        if (!confirmed) {
+          resumeEmulationIfSafe()
+        }
+      }
       .show()
   }
 
@@ -725,6 +779,8 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     if (inGameMenuDialog?.isShowing == true) {
       return
     }
+    nativePauseEmulation()
+    resumeEmulationOnMenuDismiss = true
 
     val dp = resources.displayMetrics.density
     val verticalButtonSpacing = (8 * dp).toInt()
@@ -732,6 +788,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     lateinit var dialog: androidx.appcompat.app.AlertDialog
     data class MenuButtonSpec(
       val label: String,
+      val resumeAfterDismiss: Boolean = true,
       val action: () -> Unit,
     )
 
@@ -747,6 +804,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
         isSingleLine = false
         maxLines = 2
         setOnClickListener {
+          resumeEmulationOnMenuDismiss = spec.resumeAfterDismiss
           dialog.dismiss()
           spec.action()
         }
@@ -804,19 +862,34 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     ) {
       toggleOnScreenController()
     }
-    val saveStateButton = MenuButtonSpec(getString(R.string.in_game_menu_save_state)) {
+    val saveStateButton = MenuButtonSpec(
+      getString(R.string.in_game_menu_save_state),
+      resumeAfterDismiss = false
+    ) {
       showSaveStateDialog()
     }
-    val loadStateButton = MenuButtonSpec(getString(R.string.in_game_menu_load_state)) {
+    val loadStateButton = MenuButtonSpec(
+      getString(R.string.in_game_menu_load_state),
+      resumeAfterDismiss = false
+    ) {
       showLoadStateDialog()
     }
-    val rebootButton = MenuButtonSpec(getString(R.string.in_game_menu_reboot_system)) {
+    val rebootButton = MenuButtonSpec(
+      getString(R.string.in_game_menu_reboot_system),
+      resumeAfterDismiss = false
+    ) {
       showRebootSystemConfirmation()
     }
-    val exitToLibraryButton = MenuButtonSpec(getString(R.string.in_game_menu_exit_to_library)) {
+    val exitToLibraryButton = MenuButtonSpec(
+      getString(R.string.in_game_menu_exit_to_library),
+      resumeAfterDismiss = false
+    ) {
       exitToGameLibrary()
     }
-    val quitAppButton = MenuButtonSpec(getString(R.string.in_game_menu_quit_app)) {
+    val quitAppButton = MenuButtonSpec(
+      getString(R.string.in_game_menu_quit_app),
+      resumeAfterDismiss = false
+    ) {
       quitApp()
     }
 
@@ -848,6 +921,10 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       .setOnDismissListener {
         inGameMenuDialog = null
         hideSystemUI()
+        if (resumeEmulationOnMenuDismiss) {
+          resumeEmulationIfSafe()
+        }
+        resumeEmulationOnMenuDismiss = false
       }
       .create()
 
@@ -865,34 +942,17 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   private fun exitToGameLibrary() {
+    nativeExitEmulation()
     val intent = Intent(this, GameLibraryActivity::class.java).apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
     }
     startActivity(intent)
-    terminateXemuProcessSoon("exit to library")
     finish()
   }
 
   private fun quitApp() {
-    terminateXemuProcessSoon("quit app")
+    nativeExitEmulation()
     finishAffinity()
-  }
-
-  private fun terminateXemuProcessSoon(reason: String) {
-    if (processTerminationScheduled) {
-      return
-    }
-    processTerminationScheduled = true
-
-    Thread {
-      try {
-        Thread.sleep(350)
-      } catch (_: InterruptedException) {
-        Thread.currentThread().interrupt()
-      }
-      DebugLog.i(TAG) { "Terminating :xemu process after $reason" }
-      Process.killProcess(Process.myPid())
-    }.start()
   }
 
   override fun getLibraries(): Array<String> = arrayOf(

@@ -76,11 +76,7 @@ unsigned int pgraph_vk_get_surface_scale_factor(NV2AState *d)
 void pgraph_vk_reload_surface_scale_factor(PGRAPHState *pg)
 {
     int factor = g_config.display.quality.surface_scale;
-    int new_factor = MAX(factor, 1);
-    if (pg->surface_scale_factor != new_factor) {
-        pg->shader_state_gen++;
-    }
-    pg->surface_scale_factor = new_factor;
+    pg->surface_scale_factor = MAX(factor, 1);
 }
 
 // FIXME: Move to common
@@ -151,142 +147,6 @@ void pgraph_vk_download_surfaces_in_range_if_dirty(PGRAPHState *pg,
     }
 }
 
-#ifdef __ANDROID__
-static uint8_t android_vk_surface_expand_5_to_8(uint8_t value)
-{
-    return (value << 3) | (value >> 2);
-}
-
-static bool android_vk_surface_uses_host_conversion(const SurfaceBinding *surface)
-{
-    if (!surface || !surface->color) {
-        return false;
-    }
-
-    switch (surface->shape.color_format) {
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_X1R5G5B5_Z1R5G5B5:
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_X1R5G5B5_O1R5G5B5:
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_Z8R8G8B8:
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_O8R8G8B8:
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8:
-        return true;
-    default:
-        return false;
-    }
-}
-
-static void android_vk_surface_convert_to_host(const SurfaceBinding *surface,
-                                               const uint8_t *src,
-                                               unsigned int width,
-                                               unsigned int height,
-                                               unsigned int src_stride,
-                                               uint8_t *dst,
-                                               unsigned int dst_stride)
-{
-    unsigned int x, y;
-
-    switch (surface->shape.color_format) {
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_X1R5G5B5_Z1R5G5B5:
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_X1R5G5B5_O1R5G5B5:
-        for (y = 0; y < height; y++) {
-            const uint8_t *src_row = src + y * src_stride;
-            uint8_t *dst_row = dst + y * dst_stride;
-
-            switch (surface->host_fmt.vk_format) {
-            case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
-                for (x = 0; x < width; x++) {
-                    uint16_t pixel = lduw_le_p(src_row + x * 2) | 0x8000;
-                    stw_le_p(dst_row + x * 2, pixel);
-                }
-                break;
-            case VK_FORMAT_R5G6B5_UNORM_PACK16:
-                for (x = 0; x < width; x++) {
-                    uint16_t pixel = lduw_le_p(src_row + x * 2);
-                    uint16_t r5 = (pixel >> 10) & 0x1F;
-                    uint16_t g5 = (pixel >> 5) & 0x1F;
-                    uint16_t b5 = pixel & 0x1F;
-                    uint16_t packed =
-                        (r5 << 11) | (((g5 << 1) | (g5 >> 4)) << 5) | b5;
-                    stw_le_p(dst_row + x * 2, packed);
-                }
-                break;
-            case VK_FORMAT_B8G8R8A8_UNORM:
-            case VK_FORMAT_R8G8B8A8_UNORM:
-                for (x = 0; x < width; x++) {
-                    uint16_t pixel = lduw_le_p(src_row + x * 2);
-                    uint8_t r =
-                        android_vk_surface_expand_5_to_8((pixel >> 10) & 0x1F);
-                    uint8_t g =
-                        android_vk_surface_expand_5_to_8((pixel >> 5) & 0x1F);
-                    uint8_t b = android_vk_surface_expand_5_to_8(pixel & 0x1F);
-                    uint8_t *out = dst_row + x * 4;
-
-                    if (surface->host_fmt.vk_format ==
-                        VK_FORMAT_B8G8R8A8_UNORM) {
-                        out[0] = b;
-                        out[1] = g;
-                        out[2] = r;
-                        out[3] = 0xFF;
-                    } else {
-                        out[0] = r;
-                        out[1] = g;
-                        out[2] = b;
-                        out[3] = 0xFF;
-                    }
-                }
-                break;
-            default:
-                g_assert_not_reached();
-            }
-        }
-        break;
-
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_Z8R8G8B8:
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_O8R8G8B8:
-    case NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8:
-    {
-        bool preserve_alpha =
-            surface->shape.color_format ==
-            NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8;
-
-        for (y = 0; y < height; y++) {
-            const uint8_t *src_row = src + y * src_stride;
-            uint8_t *dst_row = dst + y * dst_stride;
-
-            switch (surface->host_fmt.vk_format) {
-            case VK_FORMAT_B8G8R8A8_UNORM:
-                for (x = 0; x < width; x++) {
-                    const uint8_t *pixel = src_row + x * 4;
-                    uint8_t *out = dst_row + x * 4;
-                    out[0] = pixel[0];
-                    out[1] = pixel[1];
-                    out[2] = pixel[2];
-                    out[3] = preserve_alpha ? pixel[3] : 0xFF;
-                }
-                break;
-            case VK_FORMAT_R8G8B8A8_UNORM:
-                for (x = 0; x < width; x++) {
-                    const uint8_t *pixel = src_row + x * 4;
-                    uint8_t *out = dst_row + x * 4;
-                    out[0] = pixel[2];
-                    out[1] = pixel[1];
-                    out[2] = pixel[0];
-                    out[3] = preserve_alpha ? pixel[3] : 0xFF;
-                }
-                break;
-            default:
-                g_assert_not_reached();
-            }
-        }
-        break;
-    }
-
-    default:
-        g_assert_not_reached();
-    }
-}
-#endif
-
 static void download_surface_to_buffer(NV2AState *d, SurfaceBinding *surface,
                                        uint8_t *pixels)
 {
@@ -347,9 +207,9 @@ static void download_surface_to_buffer(NV2AState *d, SurfaceBinding *surface,
 
     pgraph_vk_transition_image_layout(
         pg, cmd, surface->image, surface->host_fmt.vk_format,
-        surface->image_layout,
+        surface->color ? VK_IMAGE_LAYOUT_GENERAL :
+                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    surface->image_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
     int num_copy_regions = 1;
     VkBufferImageCopy copy_regions[2];
@@ -459,9 +319,6 @@ static void download_surface_to_buffer(NV2AState *d, SurfaceBinding *surface,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         surface->color ? VK_IMAGE_LAYOUT_GENERAL :
                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    surface->image_layout =
-        surface->color ? VK_IMAGE_LAYOUT_GENERAL :
-                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     // FIXME: Verify output of depth stencil conversion
     // FIXME: Track current layout and only transition when required
@@ -624,11 +481,6 @@ static void download_surface(NV2AState *d, SurfaceBinding *surface, bool force)
         return;
     }
 
-    if (!surface->draw_dirty &&
-        surface->download_generation == surface->draw_generation) {
-        return;
-    }
-
     // FIXME: Respect write enable at last TOU?
 
     download_surface_to_buffer(d, surface, d->vram_ptr + surface->vram_addr);
@@ -639,13 +491,9 @@ static void download_surface(NV2AState *d, SurfaceBinding *surface, bool force)
     memory_region_set_client_dirty(d->vram, surface->vram_addr,
                                    surface->pitch * surface->height,
                                    DIRTY_MEMORY_NV2A_TEX);
-    memory_region_set_client_dirty(d->vram, surface->vram_addr,
-                                   surface->pitch * surface->height,
-                                   DIRTY_MEMORY_NV2A);
 
     surface->download_pending = false;
     surface->draw_dirty = false;
-    surface->download_generation = surface->draw_generation;
 }
 
 void pgraph_vk_wait_for_surface_download(SurfaceBinding *surface)
@@ -974,87 +822,6 @@ static void set_surface_label(PGRAPHState *pg, SurfaceBinding const *surface)
     }
 }
 
-#define SURFACE_IMAGE_POOL_MAX_SIZE 64
-
-void pgraph_vk_surface_image_pool_init(PGRAPHVkState *r)
-{
-    QTAILQ_INIT(&r->surface_image_pool);
-    r->surface_image_pool_count = 0;
-}
-
-static bool surface_image_pool_config_match(const SurfaceImageConfig *a,
-                                            const SurfaceImageConfig *b)
-{
-    return a->format == b->format &&
-           a->width == b->width &&
-           a->height == b->height &&
-           a->usage == b->usage;
-}
-
-static bool surface_image_pool_acquire(PGRAPHVkState *r,
-                                       const SurfaceImageConfig *config,
-                                       VkImage *out_image,
-                                       VmaAllocation *out_alloc,
-                                       VkImage *out_scratch,
-                                       VmaAllocation *out_scratch_alloc)
-{
-    PooledSurfaceImage *entry;
-    QTAILQ_FOREACH(entry, &r->surface_image_pool, entry) {
-        if (surface_image_pool_config_match(&entry->config, config)) {
-            *out_image = entry->image;
-            *out_alloc = entry->allocation;
-            *out_scratch = entry->image_scratch;
-            *out_scratch_alloc = entry->allocation_scratch;
-            QTAILQ_REMOVE(&r->surface_image_pool, entry, entry);
-            g_free(entry);
-            r->surface_image_pool_count--;
-            return true;
-        }
-    }
-    return false;
-}
-
-static void surface_image_pool_release(PGRAPHVkState *r,
-                                       const SurfaceImageConfig *config,
-                                       VkImage image,
-                                       VmaAllocation allocation,
-                                       VkImage image_scratch,
-                                       VmaAllocation allocation_scratch)
-{
-    if (r->surface_image_pool_count >= SURFACE_IMAGE_POOL_MAX_SIZE) {
-        PooledSurfaceImage *oldest = QTAILQ_FIRST(&r->surface_image_pool);
-        assert(oldest != NULL);
-        QTAILQ_REMOVE(&r->surface_image_pool, oldest, entry);
-        vmaDestroyImage(r->allocator, oldest->image, oldest->allocation);
-        vmaDestroyImage(r->allocator, oldest->image_scratch,
-                        oldest->allocation_scratch);
-        g_free(oldest);
-        r->surface_image_pool_count--;
-    }
-
-    PooledSurfaceImage *entry = g_malloc(sizeof(PooledSurfaceImage));
-    entry->config = *config;
-    entry->image = image;
-    entry->allocation = allocation;
-    entry->image_scratch = image_scratch;
-    entry->allocation_scratch = allocation_scratch;
-    QTAILQ_INSERT_TAIL(&r->surface_image_pool, entry, entry);
-    r->surface_image_pool_count++;
-}
-
-void pgraph_vk_surface_image_pool_drain(PGRAPHVkState *r)
-{
-    PooledSurfaceImage *entry, *next;
-    QTAILQ_FOREACH_SAFE(entry, &r->surface_image_pool, entry, next) {
-        QTAILQ_REMOVE(&r->surface_image_pool, entry, entry);
-        vmaDestroyImage(r->allocator, entry->image, entry->allocation);
-        vmaDestroyImage(r->allocator, entry->image_scratch,
-                        entry->allocation_scratch);
-        g_free(entry);
-    }
-    r->surface_image_pool_count = 0;
-}
-
 static void create_surface_image(PGRAPHState *pg, SurfaceBinding *surface)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -1070,66 +837,36 @@ static void create_surface_image(PGRAPHState *pg, SurfaceBinding *surface)
         "Creating new surface image width=%d height=%d @ %08" HWADDR_PRIx,
         width, height, surface->vram_addr);
 
-    VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-                              VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                              surface->host_fmt.usage;
-
-    SurfaceImageConfig pool_cfg = {
+    VkImageCreateInfo image_create_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .extent.width = width,
+        .extent.height = height,
+        .extent.depth = 1,
+        .mipLevels = 1,
+        .arrayLayers = 1,
         .format = surface->host_fmt.vk_format,
-        .width = width,
-        .height = height,
-        .usage = usage,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | surface->host_fmt.usage,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
 
-    if (surface_image_pool_acquire(r, &pool_cfg,
-                                   &surface->image, &surface->allocation,
-                                   &surface->image_scratch,
-                                   &surface->allocation_scratch)) {
-        surface->image_scratch_current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    } else {
-        VkImageCreateInfo image_create_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .extent.width = width,
-            .extent.height = height,
-            .extent.depth = 1,
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .format = surface->host_fmt.vk_format,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .usage = usage,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        };
+    VmaAllocationCreateInfo alloc_create_info = {
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+    };
 
-        VmaAllocationCreateInfo alloc_create_info = {
-            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-        };
+    VK_CHECK(vmaCreateImage(r->allocator, &image_create_info,
+                            &alloc_create_info, &surface->image,
+                            &surface->allocation, NULL));
 
-        VkResult res = vmaCreateImage(r->allocator, &image_create_info,
-                                      &alloc_create_info, &surface->image,
-                                      &surface->allocation, NULL);
-        if (res != VK_SUCCESS) {
-            pgraph_vk_surface_image_pool_drain(r);
-            VK_CHECK(vmaCreateImage(r->allocator, &image_create_info,
-                                    &alloc_create_info, &surface->image,
-                                    &surface->allocation, NULL));
-        }
-
-        res = vmaCreateImage(r->allocator, &image_create_info,
-                             &alloc_create_info, &surface->image_scratch,
-                             &surface->allocation_scratch, NULL);
-        if (res != VK_SUCCESS) {
-            pgraph_vk_surface_image_pool_drain(r);
-            VK_CHECK(vmaCreateImage(r->allocator, &image_create_info,
-                                    &alloc_create_info,
-                                    &surface->image_scratch,
-                                    &surface->allocation_scratch, NULL));
-        }
-        surface->image_scratch_current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    }
+    VK_CHECK(vmaCreateImage(r->allocator, &image_create_info,
+                            &alloc_create_info, &surface->image_scratch,
+                            &surface->allocation_scratch, NULL));
+    surface->image_scratch_current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImageViewCreateInfo image_view_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1152,9 +889,6 @@ static void create_surface_image(PGRAPHState *pg, SurfaceBinding *surface)
         VK_IMAGE_LAYOUT_UNDEFINED,
         surface->color ? VK_IMAGE_LAYOUT_GENERAL :
                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    surface->image_layout =
-        surface->color ? VK_IMAGE_LAYOUT_GENERAL :
-                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     nv2a_profile_inc_counter(NV2A_PROF_QUEUE_SUBMIT_3);
     pgraph_vk_end_debug_marker(r, cmd);
@@ -1166,7 +900,6 @@ static void migrate_surface_image(SurfaceBinding *dst, SurfaceBinding *src)
 {
     dst->image = src->image;
     dst->image_view = src->image_view;
-    dst->image_layout = src->image_layout;
     dst->allocation = src->allocation;
     dst->image_scratch = src->image_scratch;
     dst->image_scratch_current_layout = src->image_scratch_current_layout;
@@ -1174,7 +907,6 @@ static void migrate_surface_image(SurfaceBinding *dst, SurfaceBinding *src)
 
     src->image = VK_NULL_HANDLE;
     src->image_view = VK_NULL_HANDLE;
-    src->image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     src->allocation = VK_NULL_HANDLE;
     src->image_scratch = VK_NULL_HANDLE;
     src->image_scratch_current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1186,28 +918,12 @@ static void destroy_surface_image(PGRAPHVkState *r, SurfaceBinding *surface)
     vkDestroyImageView(r->device, surface->image_view, NULL);
     surface->image_view = VK_NULL_HANDLE;
 
-    unsigned int width = surface->width ? surface->width : 1;
-    unsigned int height = surface->height ? surface->height : 1;
-    unsigned int scale_factor = g_nv2a->pgraph.surface_scale_factor;
-    if (scale_factor > 1) {
-        width *= scale_factor;
-        height *= scale_factor;
-    }
-    SurfaceImageConfig pool_cfg = {
-        .format = surface->host_fmt.vk_format,
-        .width = width,
-        .height = height,
-        .usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | surface->host_fmt.usage,
-    };
-    surface_image_pool_release(r, &pool_cfg,
-                               surface->image, surface->allocation,
-                               surface->image_scratch,
-                               surface->allocation_scratch);
-
+    vmaDestroyImage(r->allocator, surface->image, surface->allocation);
     surface->image = VK_NULL_HANDLE;
     surface->allocation = VK_NULL_HANDLE;
+
+    vmaDestroyImage(r->allocator, surface->image_scratch,
+                    surface->allocation_scratch);
     surface->image_scratch = VK_NULL_HANDLE;
     surface->allocation_scratch = VK_NULL_HANDLE;
 }
@@ -1316,11 +1032,7 @@ void pgraph_vk_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
 
     nv2a_profile_inc_counter(NV2A_PROF_SURF_UPLOAD);
 
-    /*
-     * begin_nondraw_commands ends the active render pass, and the upload path
-     * transitions the image into TRANSFER_DST. That is sufficient
-     * synchronization here, so avoid the full finish stall.
-     */
+    pgraph_vk_finish(pg, VK_FINISH_REASON_SURFACE_CREATE); // FIXME: SURFACE_UP
 
     trace_nv2a_pgraph_surface_upload(
                  surface->color ? "COLOR" : "ZETA",
@@ -1360,27 +1072,7 @@ void pgraph_vk_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
     //
 
     StorageBuffer *copy_buffer = &r->storage_buffers[BUFFER_STAGING_SRC];
-    const uint8_t *upload_src = gl_read_buf;
-    unsigned int upload_src_stride = surface->pitch;
-    unsigned int upload_bytes_per_pixel = surface->fmt.bytes_per_pixel;
-    unsigned int upload_dst_stride = surface->width * upload_bytes_per_pixel;
-
-#ifdef __ANDROID__
-    g_autofree uint8_t *converted_upload_buf = NULL;
-    if (android_vk_surface_uses_host_conversion(surface)) {
-        upload_bytes_per_pixel = surface->host_fmt.host_bytes_per_pixel;
-        upload_src_stride = surface->width * upload_bytes_per_pixel;
-        upload_dst_stride = upload_src_stride;
-        converted_upload_buf =
-            g_malloc((size_t)surface->height * upload_src_stride);
-        android_vk_surface_convert_to_host(surface, gl_read_buf,
-                                           surface->width, surface->height,
-                                           surface->pitch,
-                                           converted_upload_buf,
-                                           upload_src_stride);
-        upload_src = converted_upload_buf;
-    }
-#endif
+    unsigned int upload_dst_stride = surface->width * surface->fmt.bytes_per_pixel;
 
     size_t uploaded_image_size = surface->height * upload_dst_stride;
     assert(uploaded_image_size <= copy_buffer->buffer_size);
@@ -1398,8 +1090,8 @@ void pgraph_vk_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
         use_compute_to_convert_depth_stencil_format;
     assert(no_conversion_necessary);
 
-    memcpy_image(mapped_memory_ptr, upload_src, upload_dst_stride,
-                 upload_src_stride, surface->height);
+    memcpy_image(mapped_memory_ptr, gl_read_buf, upload_dst_stride,
+                 surface->pitch, surface->height);
 
     vmaFlushAllocation(r->allocator, copy_buffer->allocation, 0, VK_WHOLE_SIZE);
     vmaUnmapMemory(r->allocator, copy_buffer->allocation);
@@ -1594,9 +1286,9 @@ void pgraph_vk_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
 
     pgraph_vk_transition_image_layout(
         pg, cmd, surface->image, surface->host_fmt.vk_format,
-        surface->image_layout,
+        surface->color ? VK_IMAGE_LAYOUT_GENERAL :
+                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    surface->image_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
     bool upscale = pg->surface_scale_factor > 1 &&
                    !use_compute_to_convert_depth_stencil_format;
@@ -1649,9 +1341,6 @@ void pgraph_vk_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         surface->color ? VK_IMAGE_LAYOUT_GENERAL :
                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    surface->image_layout =
-        surface->color ? VK_IMAGE_LAYOUT_GENERAL :
-                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     nv2a_profile_inc_counter(NV2A_PROF_QUEUE_SUBMIT_2);
     pgraph_vk_end_debug_marker(r, cmd);
@@ -1749,14 +1438,11 @@ static void populate_surface_binding_target_sized(NV2AState *d, bool color,
     target->upload_pending = true;
     target->download_pending = false;
     target->draw_dirty = false;
-    target->draw_generation = 0;
-    target->download_generation = 0;
     target->dma_addr = dma.address;
     target->dma_len = dma.limit;
     target->frame_time = pg->frame_time;
     target->draw_time = pg->draw_time;
     target->cleared = false;
-    target->image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     target->initialized = false;
 }
@@ -1855,7 +1541,6 @@ static void update_surface_part(NV2AState *d, bool upload, bool color)
 
             assert(!(target.swizzle && pg->clearing));
 
-#if 0
             if (surface->swizzle != target.swizzle) {
                 // Clears should only be done on linear surfaces. Avoid
                 // synchronization by allowing (1) a surface marked swizzled to
@@ -1870,7 +1555,6 @@ static void update_surface_part(NV2AState *d, bool upload, bool color)
                         target.swizzle ? "swizzled" : "linear");
                 }
             }
-#endif
 
             if (is_compatible && color &&
                 !check_surface_compatibility(surface, &target, true)) {
@@ -1904,16 +1588,13 @@ static void update_surface_part(NV2AState *d, bool upload, bool color)
                     "incompatible", surface->vram_addr);
                 compare_surfaces(surface, &target);
                 pgraph_vk_finish(pg, VK_FINISH_REASON_SURFACE_DOWN);
-                if (surface->draw_dirty) {
-                    size_t region = (size_t)surface->pitch * surface->height;
-                    memset(d->vram_ptr + surface->vram_addr, 0xFF, region);
-                    memory_region_set_client_dirty(
-                        d->vram, surface->vram_addr, region,
-                        DIRTY_MEMORY_NV2A_TEX);
-                    memory_region_set_client_dirty(
-                        d->vram, surface->vram_addr, region,
-                        DIRTY_MEMORY_VGA);
-                }
+                /*
+                 * Download the GPU-rendered content to VRAM before
+                 * shelving. This ensures VRAM has the correct pixel
+                 * data for any subsequent texture or surface upload
+                 * at this address. Matches the GL renderer behavior.
+                 */
+                pgraph_vk_surface_download_if_dirty(d, surface);
                 shelve_surface(d, surface);
             }
         }
@@ -2029,9 +1710,6 @@ void pgraph_vk_surface_update(NV2AState *d, bool upload, bool color_write,
             update_surface_part(d, true, false);
         }
     } else {
-#if OPT_REORDER_SAFE_WINDOWS
-        pgraph_vk_flush_reorder_window(d);
-#endif
         if ((color_write || pg->surface_color.write_enabled_cache)
             && pg->surface_color.draw_dirty) {
             update_surface_part(d, false, true);
@@ -2150,9 +1828,9 @@ void pgraph_vk_init_surfaces(PGRAPHState *pg)
         }
 
         if (color_fallbacks[i].fallback1 &&
-            check_format_and_usage_supported(r,
-                                             color_fallbacks[i].fallback1->vk_format,
-                                             color_fallbacks[i].fallback1->usage)) {
+            check_format_and_usage_supported(
+                r, color_fallbacks[i].fallback1->vk_format,
+                color_fallbacks[i].fallback1->usage)) {
             fallback = color_fallbacks[i].fallback1;
         } else if (color_fallbacks[i].fallback2 &&
                    check_format_and_usage_supported(
@@ -2192,7 +1870,6 @@ void pgraph_vk_init_surfaces(PGRAPHState *pg)
     QTAILQ_INIT(&r->surfaces);
     QTAILQ_INIT(&r->invalid_surfaces);
     QTAILQ_INIT(&r->shelved_surfaces);
-    pgraph_vk_surface_image_pool_init(r);
 
     r->downloads_pending = false;
     qemu_event_init(&r->downloads_complete, false);
@@ -2236,7 +1913,6 @@ void pgraph_vk_surface_flush(NV2AState *d)
         g_free(s);
     }
     prune_invalid_surfaces(r, 0);
-    pgraph_vk_surface_image_pool_drain(r);
 
     pgraph_vk_reload_surface_scale_factor(pg);
 }

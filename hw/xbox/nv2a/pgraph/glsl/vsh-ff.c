@@ -262,6 +262,8 @@ GLSL_DEFINE(materialEmissionColor, GLSL_LTCTXA(NV_IGRAPH_XF_LTCTXA_CM_COL) ".xyz
         static char alpha_source_specular[] = "specular.a";
         static char alpha_source_material[] = "material_alpha";
         const char *alpha_source = alpha_source_diffuse;
+        const char *ambient_source_rgb = "diffuse.rgb";
+        const char *emission_source_rgb = "diffuse.rgb";
         if (state->fixed_function.diffuse_src == MATERIAL_COLOR_SRC_MATERIAL) {
             alpha_source = alpha_source_material;
         } else if (state->fixed_function.diffuse_src == MATERIAL_COLOR_SRC_SPECULAR) {
@@ -269,21 +271,23 @@ GLSL_DEFINE(materialEmissionColor, GLSL_LTCTXA(NV_IGRAPH_XF_LTCTXA_CM_COL) ".xyz
         }
 
         if (state->fixed_function.ambient_src == MATERIAL_COLOR_SRC_MATERIAL) {
-            mstring_append_fmt(body, "oD0 = vec4(sceneAmbientColor, %s);\n", alpha_source);
+            ambient_source_rgb = "materialEmissionColor.rgb";
         } else if (state->fixed_function.ambient_src == MATERIAL_COLOR_SRC_DIFFUSE) {
-            mstring_append_fmt(body, "oD0 = vec4(diffuse.rgb, %s);\n", alpha_source);
+            ambient_source_rgb = "diffuse.rgb";
         } else if (state->fixed_function.ambient_src == MATERIAL_COLOR_SRC_SPECULAR) {
-            mstring_append_fmt(body, "oD0 = vec4(specular.rgb, %s);\n", alpha_source);
+            ambient_source_rgb = "specular.rgb";
         }
 
-        mstring_append(body, "oD0.rgb *= materialEmissionColor.rgb;\n");
         if (state->fixed_function.emission_src == MATERIAL_COLOR_SRC_MATERIAL) {
-            mstring_append(body, "oD0.rgb += sceneAmbientColor;\n");
+            emission_source_rgb = "materialEmissionColor.rgb";
         } else if (state->fixed_function.emission_src == MATERIAL_COLOR_SRC_DIFFUSE) {
-            mstring_append(body, "oD0.rgb += diffuse.rgb;\n");
+            emission_source_rgb = "diffuse.rgb";
         } else if (state->fixed_function.emission_src == MATERIAL_COLOR_SRC_SPECULAR) {
-            mstring_append(body, "oD0.rgb += specular.rgb;\n");
+            emission_source_rgb = "specular.rgb";
         }
+        mstring_append_fmt(body, "oD0 = vec4(sceneAmbientColor * %s, %s);\n",
+                           ambient_source_rgb, alpha_source);
+        mstring_append_fmt(body, "oD0.rgb += %s;\n", emission_source_rgb);
 
         mstring_append(body, "oD1 = vec4(0.0, 0.0, 0.0, specular.a);\n");
 

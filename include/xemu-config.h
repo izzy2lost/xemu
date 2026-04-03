@@ -286,8 +286,9 @@ struct config {
     } sys;
 
     struct perf {
-        bool hard_fpu;
+        bool fp_jit;
         bool cache_shaders;
+        bool unlock_framerate;
     } perf;
 };
 

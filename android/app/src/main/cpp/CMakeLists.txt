@@ -242,6 +242,15 @@ set(LIBSLIRP_SOURCES
 )
 
 if(XEMU_ENABLE_VULKAN)
+  # --- adrenotools (custom GPU driver loading on Adreno) ---
+  FetchContent_Declare(
+    adrenotools
+    GIT_REPOSITORY "https://github.com/bylaws/libadrenotools"
+    GIT_TAG "master"
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(adrenotools)
+
   # --- Vulkan deps (volk, glslang, SPIRV-Reflect, VMA) ---
   set(VOLK_GIT_REV "0b17a763ba5643e32da1b2152f8140461b3b7345")
   FetchContent_Declare(
@@ -1227,6 +1236,7 @@ target_link_libraries(xemu PRIVATE
   ${glesv3-lib}
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:${vulkan-lib}>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:volk_static>
+  $<$<BOOL:${XEMU_ENABLE_VULKAN}>:adrenotools>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:spirv_reflect_static>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:glslang>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:MachineIndependent>

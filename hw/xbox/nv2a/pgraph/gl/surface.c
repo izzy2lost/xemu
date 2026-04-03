@@ -28,121 +28,9 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
-#ifdef __aarch64__
-#include <arm_neon.h>
-#endif
 #endif
 
 #ifdef __ANDROID__
-extern bool xemu_android_is_debug_logging_enabled(void);
-
-static bool android_log_and_drain_gl_errors(const char *ctx)
-{
-    GLenum err;
-    bool had_error = false;
-
-    if (!xemu_android_is_debug_logging_enabled()) {
-        return false;
-    }
-
-    while ((err = glGetError()) != GL_NO_ERROR) {
-        __android_log_print(ANDROID_LOG_WARN, "xemu-android",
-                            "GL error 0x%X at %s", err, ctx);
-        had_error = true;
-    }
-
-    return had_error;
-}
-
-static bool android_log_surface_download_errors(const char *ctx,
-                                                const SurfaceBinding *surface)
-{
-    bool had_error = android_log_and_drain_gl_errors(ctx);
-
-    if (!had_error || !surface) {
-        return had_error;
-    }
-
-    __android_log_print(ANDROID_LOG_WARN, "xemu-android",
-                        "  surface download: kind=%s attachment=0x%X format=0x%X "
-                        "type=0x%X bpp=%u size=%ux%u pitch=%u addr=0x%llX",
-                        surface->color ? "color" : "zeta",
-                        surface->fmt.gl_attachment,
-                        surface->fmt.gl_format,
-                        surface->fmt.gl_type,
-                        surface->fmt.bytes_per_pixel,
-                        surface->width,
-                        surface->height,
-                        surface->pitch,
-                        (unsigned long long)surface->vram_addr);
-
-    return had_error;
-}
-
-static bool android_drain_gl_errors_silent(void)
-{
-    GLenum err;
-    bool had_error = false;
-
-    if (!xemu_android_is_debug_logging_enabled()) {
-        return false;
-    }
-
-    while ((err = glGetError()) != GL_NO_ERROR) {
-        had_error = true;
-    }
-
-    return had_error;
-}
-
-static void android_glo_readpixels(PGRAPHGLState *r, GLenum gl_format,
-                                   GLenum gl_type,
-                                   unsigned int bytes_per_pixel,
-                                   unsigned int stride,
-                                   unsigned int width,
-                                   unsigned int height, bool vflip,
-                                   void *data)
-{
-    size_t required_size = stride * height;
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, r->gl_download_pbo);
-    if (required_size > r->gl_download_pbo_size) {
-        glBufferData(GL_PIXEL_PACK_BUFFER, required_size, NULL,
-                     GL_STREAM_READ);
-        r->gl_download_pbo_size = required_size;
-    }
-
-    int rl, pa;
-    glGetIntegerv(GL_PACK_ROW_LENGTH, &rl);
-    glGetIntegerv(GL_PACK_ALIGNMENT, &pa);
-    glPixelStorei(GL_PACK_ROW_LENGTH, stride / bytes_per_pixel);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-
-    glReadPixels(0, 0, width, height, gl_format, gl_type, 0);
-
-    void *mapped_data = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0,
-                                         required_size, GL_MAP_READ_BIT);
-    if (mapped_data) {
-        if (vflip) {
-            GLubyte *b = (GLubyte *) data;
-            GLubyte *c =
-                &((GLubyte *) mapped_data)[stride * (height - 1)];
-            for (unsigned int irow = 0; irow < height; irow++) {
-                memcpy(b, c, width * bytes_per_pixel);
-                b += stride;
-                c -= stride;
-            }
-        } else {
-            memcpy(data, mapped_data, required_size);
-        }
-        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-    }
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-
-    glPixelStorei(GL_PACK_ROW_LENGTH, rl);
-    glPixelStorei(GL_PACK_ALIGNMENT, pa);
-}
-
 static void android_sanitize_surface_format(PGRAPHGLState *r,
                                             SurfaceFormatInfo *fmt)
 {
@@ -189,328 +77,6 @@ static uint8_t android_expand_5_to_8(uint8_t value)
     return (value << 3) | (value >> 2);
 }
 
-#ifdef __aarch64__
-static const uint8_t android_neon_bgra_to_rgba_perm[16] =
-    {2,1,0,3, 6,5,4,7, 10,9,8,11, 14,13,12,15};
-static const uint8_t android_neon_b8g8r8a8_to_rgba_perm[16] =
-    {1,2,3,0, 5,6,7,4, 9,10,11,8, 13,14,15,12};
-static const uint8_t android_neon_r8g8b8a8_to_rgba_perm[16] =
-    {3,2,1,0, 7,6,5,4, 11,10,9,8, 15,14,13,12};
-static const uint8_t android_neon_force_alpha_mask[16] =
-    {0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF};
-
-static inline void android_neon_shuffle_row_4bpp(const uint8_t *src_row,
-                                                 uint8_t *dst_row,
-                                                 unsigned int width,
-                                                 const uint8_t perm_arr[16],
-                                                 bool force_opaque_alpha)
-{
-    uint8x16_t vperm = vld1q_u8(perm_arr);
-    uint8x16_t valpha_mask = force_opaque_alpha
-        ? vld1q_u8(android_neon_force_alpha_mask)
-        : vdupq_n_u8(0);
-    const uint8_t *src = src_row;
-    uint8_t *dst = dst_row;
-    unsigned int remaining = width;
-
-    while (remaining >= 4) {
-        uint8x16_t v = vqtbl1q_u8(vld1q_u8(src), vperm);
-        vst1q_u8(dst, vorrq_u8(v, valpha_mask));
-        src += 16;
-        dst += 16;
-        remaining -= 4;
-    }
-
-    while (remaining-- > 0) {
-        dst[0] = src[perm_arr[0]];
-        dst[1] = src[perm_arr[1]];
-        dst[2] = src[perm_arr[2]];
-        dst[3] = force_opaque_alpha ? 0xFF : src[perm_arr[3]];
-        src += 4;
-        dst += 4;
-    }
-}
-
-static inline void android_neon_a1x1r5g5b5_to_rgba8_row(
-    const uint8_t *src_row,
-    uint8_t *dst_row,
-    unsigned int width,
-    bool preserve_alpha)
-{
-    const uint16x8_t mask_5 = vdupq_n_u16(0x1F);
-    unsigned int remaining = width;
-    const uint16_t *src = (const uint16_t *)src_row;
-    uint8_t *dst = dst_row;
-
-    while (remaining >= 8) {
-        uint16x8_t pixels = vld1q_u16(src);
-        uint16x8_t r5 = vandq_u16(vshrq_n_u16(pixels, 10), mask_5);
-        uint16x8_t g5 = vandq_u16(vshrq_n_u16(pixels, 5), mask_5);
-        uint16x8_t b5 = vandq_u16(pixels, mask_5);
-        uint8x8_t r8 = vmovn_u16(vorrq_u16(vshlq_n_u16(r5, 3),
-                                           vshrq_n_u16(r5, 2)));
-        uint8x8_t g8 = vmovn_u16(vorrq_u16(vshlq_n_u16(g5, 3),
-                                           vshrq_n_u16(g5, 2)));
-        uint8x8_t b8 = vmovn_u16(vorrq_u16(vshlq_n_u16(b5, 3),
-                                           vshrq_n_u16(b5, 2)));
-        uint8x8_t a8 = preserve_alpha
-            ? vmovn_u16(vceqq_u16(vshrq_n_u16(pixels, 15), vdupq_n_u16(1)))
-            : vdup_n_u8(0xFF);
-        uint8x8x4_t rgba = { { r8, g8, b8, a8 } };
-
-        vst4_u8(dst, rgba);
-        src += 8;
-        dst += 32;
-        remaining -= 8;
-    }
-
-    while (remaining-- > 0) {
-        uint16_t pixel = *src++;
-        dst[0] = android_expand_5_to_8((pixel >> 10) & 0x1F);
-        dst[1] = android_expand_5_to_8((pixel >> 5) & 0x1F);
-        dst[2] = android_expand_5_to_8(pixel & 0x1F);
-        dst[3] = preserve_alpha ? ((pixel & 0x8000) ? 0xFF : 0x00) : 0xFF;
-        dst += 4;
-    }
-}
-
-static inline void android_neon_r5g6b5_to_rgba8_row(const uint8_t *src_row,
-                                                    uint8_t *dst_row,
-                                                    unsigned int width)
-{
-    const uint16x8_t mask_5 = vdupq_n_u16(0x1F);
-    const uint16x8_t mask_6 = vdupq_n_u16(0x3F);
-    unsigned int remaining = width;
-    const uint16_t *src = (const uint16_t *)src_row;
-    uint8_t *dst = dst_row;
-
-    while (remaining >= 8) {
-        uint16x8_t pixels = vld1q_u16(src);
-        uint16x8_t r5 = vandq_u16(vshrq_n_u16(pixels, 11), mask_5);
-        uint16x8_t g6 = vandq_u16(vshrq_n_u16(pixels, 5), mask_6);
-        uint16x8_t b5 = vandq_u16(pixels, mask_5);
-        uint8x8_t r8 = vmovn_u16(vorrq_u16(vshlq_n_u16(r5, 3),
-                                           vshrq_n_u16(r5, 2)));
-        uint8x8_t g8 = vmovn_u16(vorrq_u16(vshlq_n_u16(g6, 2),
-                                           vshrq_n_u16(g6, 4)));
-        uint8x8_t b8 = vmovn_u16(vorrq_u16(vshlq_n_u16(b5, 3),
-                                           vshrq_n_u16(b5, 2)));
-        uint8x8x4_t rgba = { { r8, g8, b8, vdup_n_u8(0xFF) } };
-
-        vst4_u8(dst, rgba);
-        src += 8;
-        dst += 32;
-        remaining -= 8;
-    }
-
-    while (remaining-- > 0) {
-        uint16_t pixel = *src++;
-        dst[0] = android_expand_5_to_8((pixel >> 11) & 0x1F);
-        dst[1] = (uint8_t)(((pixel >> 5) & 0x3F) * 255 / 63);
-        dst[2] = android_expand_5_to_8(pixel & 0x1F);
-        dst[3] = 0xFF;
-        dst += 4;
-    }
-}
-
-static inline void android_neon_rgba8_to_x1r5g5b5_row(const uint8_t *src_row,
-                                                      uint8_t *dst_row,
-                                                      unsigned int width)
-{
-    unsigned int remaining = width;
-    const uint8_t *src = src_row;
-    uint16_t *dst = (uint16_t *)dst_row;
-
-    while (remaining >= 8) {
-        uint8x8x4_t rgba = vld4_u8(src);
-        uint16x8_t r = vshlq_n_u16(vmovl_u8(vshr_n_u8(rgba.val[0], 3)), 10);
-        uint16x8_t g = vshlq_n_u16(vmovl_u8(vshr_n_u8(rgba.val[1], 3)), 5);
-        uint16x8_t b = vmovl_u8(vshr_n_u8(rgba.val[2], 3));
-        uint16x8_t packed =
-            vorrq_u16(vdupq_n_u16(0x8000), vorrq_u16(r, vorrq_u16(g, b)));
-
-        vst1q_u16(dst, packed);
-        src += 32;
-        dst += 8;
-        remaining -= 8;
-    }
-
-    while (remaining-- > 0) {
-        uint16_t packed =
-            0x8000 |
-            ((uint16_t)(src[0] >> 3) << 10) |
-            ((uint16_t)(src[1] >> 3) << 5) |
-            (uint16_t)(src[2] >> 3);
-        *dst++ = packed;
-        src += 4;
-    }
-}
-
-static inline bool android_neon_surface_copy_shrink_row_4bpp(
-    uint8_t *out,
-    const uint8_t *in,
-    unsigned int width,
-    unsigned int factor)
-{
-    uint32_t *dst = (uint32_t *)out;
-    const uint32_t *src = (const uint32_t *)in;
-    unsigned int remaining = width;
-
-    switch (factor) {
-    case 2:
-        while (remaining >= 4) {
-            uint32x4x2_t pixels = vld2q_u32(src);
-            vst1q_u32(dst, pixels.val[0]);
-            src += 8;
-            dst += 4;
-            remaining -= 4;
-        }
-        break;
-    case 3:
-        while (remaining >= 4) {
-            uint32x4x3_t pixels = vld3q_u32(src);
-            vst1q_u32(dst, pixels.val[0]);
-            src += 12;
-            dst += 4;
-            remaining -= 4;
-        }
-        break;
-    case 4:
-        while (remaining >= 4) {
-            uint32x4x4_t pixels = vld4q_u32(src);
-            vst1q_u32(dst, pixels.val[0]);
-            src += 16;
-            dst += 4;
-            remaining -= 4;
-        }
-        break;
-    default:
-        return false;
-    }
-
-    out = (uint8_t *)dst;
-    in = (const uint8_t *)src;
-    while (remaining-- > 0) {
-        *(uint32_t *)out = *(const uint32_t *)in;
-        out += 4;
-        in += 4 * factor;
-    }
-
-    return true;
-}
-
-static inline bool android_neon_surface_copy_shrink_row_2bpp(
-    uint8_t *out,
-    const uint8_t *in,
-    unsigned int width,
-    unsigned int factor)
-{
-    uint16_t *dst = (uint16_t *)out;
-    const uint16_t *src = (const uint16_t *)in;
-    unsigned int remaining = width;
-
-    switch (factor) {
-    case 2:
-        while (remaining >= 8) {
-            uint16x8x2_t pixels = vld2q_u16(src);
-            vst1q_u16(dst, pixels.val[0]);
-            src += 16;
-            dst += 8;
-            remaining -= 8;
-        }
-        break;
-    case 3:
-        while (remaining >= 8) {
-            uint16x8x3_t pixels = vld3q_u16(src);
-            vst1q_u16(dst, pixels.val[0]);
-            src += 24;
-            dst += 8;
-            remaining -= 8;
-        }
-        break;
-    case 4:
-        while (remaining >= 8) {
-            uint16x8x4_t pixels = vld4q_u16(src);
-            vst1q_u16(dst, pixels.val[0]);
-            src += 32;
-            dst += 8;
-            remaining -= 8;
-        }
-        break;
-    default:
-        return false;
-    }
-
-    out = (uint8_t *)dst;
-    in = (const uint8_t *)src;
-    while (remaining-- > 0) {
-        *(uint16_t *)out = *(const uint16_t *)in;
-        out += 2;
-        in += 2 * factor;
-    }
-
-    return true;
-}
-
-static inline void android_neon_pack_depth16_row_to_guest(const uint8_t *src_row,
-                                                          uint8_t *dst_row,
-                                                          unsigned int width)
-{
-    unsigned int remaining = width;
-
-    while (remaining >= 8) {
-        uint8x8x4_t rgba = vld4_u8(src_row);
-        uint8x8x2_t depth16 = { { rgba.val[0], rgba.val[1] } };
-
-        vst2_u8(dst_row, depth16);
-        src_row += 32;
-        dst_row += 16;
-        remaining -= 8;
-    }
-
-    while (remaining-- > 0) {
-        dst_row[0] = src_row[0];
-        dst_row[1] = src_row[1];
-        src_row += 4;
-        dst_row += 2;
-    }
-}
-
-static inline void android_neon_pack_z24s8_row_to_guest(
-    const uint8_t *depth_row,
-    const uint8_t *stencil_row,
-    uint8_t *dst_row,
-    unsigned int width)
-{
-    unsigned int remaining = width;
-
-    while (remaining >= 8) {
-        uint8x8x4_t depth = vld4_u8(depth_row);
-        uint8x8x4_t z24s8 = { {
-            vld1_u8(stencil_row),
-            depth.val[0],
-            depth.val[1],
-            depth.val[2],
-        } };
-
-        vst4_u8(dst_row, z24s8);
-        depth_row += 32;
-        stencil_row += 8;
-        dst_row += 32;
-        remaining -= 8;
-    }
-
-    while (remaining-- > 0) {
-        dst_row[0] = *stencil_row++;
-        dst_row[1] = depth_row[0];
-        dst_row[2] = depth_row[1];
-        dst_row[3] = depth_row[2];
-        depth_row += 4;
-        dst_row += 4;
-    }
-}
-#endif
-
 static void android_surface_guest_to_rgba8(const SurfaceBinding *surface,
                                            const uint8_t *src,
                                            unsigned int width,
@@ -536,50 +102,22 @@ static void android_surface_guest_to_rgba8(const SurfaceBinding *surface,
         break;
     case NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_Z8R8G8B8:
     case NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8:
-    {
-        bool preserve_alpha = (surface->shape.color_format ==
-                               NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8);
         for (y = 0; y < height; y++) {
             const uint8_t *src_row = src + y * src_stride;
             uint8_t *dst_row = dst + y * width * 4;
-#ifdef __aarch64__
-            /* vqtbl1q_u8: 16-byte shuffle, processes 4 pixels per instruction.
-             * Permutation swaps R (byte 2) and B (byte 0) within each pixel. */
-            static const uint8_t perm_arr[16] =
-                {2,1,0,3, 6,5,4,7, 10,9,8,11, 14,13,12,15};
-            uint8x16_t vperm = vld1q_u8(perm_arr);
-            /* For X8R8G8B8, force alpha=0xFF by ORing a pre-built mask. */
-            static const uint8_t alpha_mask_arr[16] =
-                {0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF};
-            uint8x16_t valpha_mask = preserve_alpha
-                ? vdupq_n_u8(0)
-                : vld1q_u8(alpha_mask_arr);
-            unsigned int px = width;
-            while (px >= 4) {
-                uint8x16_t v = vqtbl1q_u8(vld1q_u8(src_row), vperm);
-                vst1q_u8(dst_row, vorrq_u8(v, valpha_mask));
-                src_row += 16; dst_row += 16; px -= 4;
-            }
-            /* scalar tail for widths not divisible by 4 */
-            while (px-- > 0) {
-                dst_row[0] = src_row[2];
-                dst_row[1] = src_row[1];
-                dst_row[2] = src_row[0];
-                dst_row[3] = preserve_alpha ? src_row[3] : 0xFF;
-                src_row += 4; dst_row += 4;
-            }
-#else
             for (x = 0; x < width; x++) {
                 const uint8_t *pixel = src_row + x * 4;
                 dst_row[x * 4 + 0] = pixel[2];
                 dst_row[x * 4 + 1] = pixel[1];
                 dst_row[x * 4 + 2] = pixel[0];
-                dst_row[x * 4 + 3] = preserve_alpha ? pixel[3] : 0xFF;
+                dst_row[x * 4 + 3] =
+                    (surface->shape.color_format ==
+                     NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8)
+                        ? pixel[3]
+                        : 0xFF;
             }
-#endif
         }
         break;
-    }
     default:
         g_assert_not_reached();
     }
@@ -622,143 +160,90 @@ static void android_surface_guest_to_texture_rgba8(
 {
     unsigned int x, y;
 
-    switch (shape->color_format) {
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A1R5G5B5:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A1R5G5B5:
-        for (y = 0; y < height; y++) {
-            const uint8_t *src_row = src + y * src_stride;
-            uint8_t *dst_row = dst + y * width * 4;
-#ifdef __aarch64__
-            android_neon_a1x1r5g5b5_to_rgba8_row(src_row, dst_row, width, true);
-#else
-            for (x = 0; x < width; x++) {
+    for (y = 0; y < height; y++) {
+        const uint8_t *src_row = src + y * src_stride;
+        uint8_t *dst_row = dst + y * width * 4;
+
+        for (x = 0; x < width; x++) {
+            uint8_t *out = dst_row + x * 4;
+
+            switch (shape->color_format) {
+            case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A1R5G5B5:
+            case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A1R5G5B5: {
                 uint16_t pixel = lduw_le_p(src_row + x * 2);
-                uint8_t *out = dst_row + x * 4;
                 out[0] = android_expand_5_to_8((pixel >> 10) & 0x1F);
                 out[1] = android_expand_5_to_8((pixel >> 5) & 0x1F);
                 out[2] = android_expand_5_to_8(pixel & 0x1F);
                 out[3] = (pixel & 0x8000) ? 0xFF : 0x00;
+                break;
             }
-#endif
-        }
-        break;
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X1R5G5B5:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X1R5G5B5:
-        for (y = 0; y < height; y++) {
-            const uint8_t *src_row = src + y * src_stride;
-            uint8_t *dst_row = dst + y * width * 4;
-#ifdef __aarch64__
-            android_neon_a1x1r5g5b5_to_rgba8_row(src_row, dst_row, width, false);
-#else
-            for (x = 0; x < width; x++) {
+            case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X1R5G5B5:
+            case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X1R5G5B5: {
                 uint16_t pixel = lduw_le_p(src_row + x * 2);
-                uint8_t *out = dst_row + x * 4;
                 out[0] = android_expand_5_to_8((pixel >> 10) & 0x1F);
                 out[1] = android_expand_5_to_8((pixel >> 5) & 0x1F);
                 out[2] = android_expand_5_to_8(pixel & 0x1F);
                 out[3] = 0xFF;
+                break;
             }
-#endif
-        }
-        break;
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_R5G6B5:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R5G6B5:
-        for (y = 0; y < height; y++) {
-            const uint8_t *src_row = src + y * src_stride;
-            uint8_t *dst_row = dst + y * width * 4;
-#ifdef __aarch64__
-            android_neon_r5g6b5_to_rgba8_row(src_row, dst_row, width);
-#else
-            for (x = 0; x < width; x++) {
+            case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_R5G6B5:
+            case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R5G6B5: {
                 uint16_t pixel = lduw_le_p(src_row + x * 2);
-                uint8_t *out = dst_row + x * 4;
                 out[0] = android_expand_5_to_8((pixel >> 11) & 0x1F);
                 out[1] = (uint8_t)(((pixel >> 5) & 0x3F) * 255 / 63);
                 out[2] = android_expand_5_to_8(pixel & 0x1F);
                 out[3] = 0xFF;
+                break;
             }
-#endif
-        }
-        break;
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8R8G8B8:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8R8G8B8:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X8R8G8B8:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X8R8G8B8:
-    {
-        bool force_opaque_alpha =
-            (shape->color_format == NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X8R8G8B8 ||
-             shape->color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X8R8G8B8);
-
-        for (y = 0; y < height; y++) {
-            const uint8_t *src_row = src + y * src_stride;
-            uint8_t *dst_row = dst + y * width * 4;
-#ifdef __aarch64__
-            android_neon_shuffle_row_4bpp(src_row, dst_row, width,
-                                          android_neon_bgra_to_rgba_perm,
-                                          force_opaque_alpha);
-#else
-            for (x = 0; x < width; x++) {
+            case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8R8G8B8:
+            case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8R8G8B8: {
                 const uint8_t *pixel = src_row + x * 4;
-                uint8_t *out = dst_row + x * 4;
                 out[0] = pixel[2];
                 out[1] = pixel[1];
                 out[2] = pixel[0];
-                out[3] = force_opaque_alpha ? 0xFF : pixel[3];
+                out[3] = pixel[3];
+                break;
             }
-#endif
-        }
-        break;
-    }
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8B8G8R8:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8B8G8R8:
-        for (y = 0; y < height; y++) {
-            memcpy(dst + y * width * 4, src + y * src_stride, width * 4);
-        }
-        break;
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_B8G8R8A8:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_B8G8R8A8:
-        for (y = 0; y < height; y++) {
-            const uint8_t *src_row = src + y * src_stride;
-            uint8_t *dst_row = dst + y * width * 4;
-#ifdef __aarch64__
-            android_neon_shuffle_row_4bpp(src_row, dst_row, width,
-                                          android_neon_b8g8r8a8_to_rgba_perm,
-                                          false);
-#else
-            for (x = 0; x < width; x++) {
+            case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X8R8G8B8:
+            case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X8R8G8B8: {
                 const uint8_t *pixel = src_row + x * 4;
-                uint8_t *out = dst_row + x * 4;
+                out[0] = pixel[2];
+                out[1] = pixel[1];
+                out[2] = pixel[0];
+                out[3] = 0xFF;
+                break;
+            }
+            case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A8B8G8R8:
+            case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A8B8G8R8: {
+                const uint8_t *pixel = src_row + x * 4;
+                out[0] = pixel[0];
+                out[1] = pixel[1];
+                out[2] = pixel[2];
+                out[3] = pixel[3];
+                break;
+            }
+            case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_B8G8R8A8:
+            case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_B8G8R8A8: {
+                const uint8_t *pixel = src_row + x * 4;
                 out[0] = pixel[1];
                 out[1] = pixel[2];
                 out[2] = pixel[3];
                 out[3] = pixel[0];
+                break;
             }
-#endif
-        }
-        break;
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_R8G8B8A8:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R8G8B8A8:
-        for (y = 0; y < height; y++) {
-            const uint8_t *src_row = src + y * src_stride;
-            uint8_t *dst_row = dst + y * width * 4;
-#ifdef __aarch64__
-            android_neon_shuffle_row_4bpp(src_row, dst_row, width,
-                                          android_neon_r8g8b8a8_to_rgba_perm,
-                                          false);
-#else
-            for (x = 0; x < width; x++) {
+            case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_R8G8B8A8:
+            case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R8G8B8A8: {
                 const uint8_t *pixel = src_row + x * 4;
-                uint8_t *out = dst_row + x * 4;
                 out[0] = pixel[3];
                 out[1] = pixel[2];
                 out[2] = pixel[1];
                 out[3] = pixel[0];
+                break;
             }
-#endif
+            default:
+                g_assert_not_reached();
+            }
         }
-        break;
-    default:
-        g_assert_not_reached();
     }
 }
 
@@ -777,9 +262,6 @@ static void android_surface_rgba8_to_guest(const SurfaceBinding *surface,
         for (y = 0; y < height; y++) {
             const uint8_t *src_row = src + y * src_stride;
             uint8_t *dst_row = dst + y * dst_stride;
-#ifdef __aarch64__
-            android_neon_rgba8_to_x1r5g5b5_row(src_row, dst_row, width);
-#else
             for (x = 0; x < width; x++) {
                 const uint8_t *pixel = src_row + x * 4;
                 uint16_t packed =
@@ -789,23 +271,13 @@ static void android_surface_rgba8_to_guest(const SurfaceBinding *surface,
                     (uint16_t)(pixel[2] >> 3);
                 stw_le_p(dst_row + x * 2, packed);
             }
-#endif
         }
         break;
     case NV097_SET_SURFACE_FORMAT_COLOR_LE_X8R8G8B8_Z8R8G8B8:
     case NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8:
-    {
-        bool force_opaque_alpha =
-            (surface->shape.color_format !=
-             NV097_SET_SURFACE_FORMAT_COLOR_LE_A8R8G8B8);
         for (y = 0; y < height; y++) {
             const uint8_t *src_row = src + y * src_stride;
             uint8_t *dst_row = dst + y * dst_stride;
-#ifdef __aarch64__
-            android_neon_shuffle_row_4bpp(src_row, dst_row, width,
-                                          android_neon_bgra_to_rgba_perm,
-                                          force_opaque_alpha);
-#else
             for (x = 0; x < width; x++) {
                 const uint8_t *pixel = src_row + x * 4;
                 uint8_t *out = dst_row + x * 4;
@@ -818,10 +290,8 @@ static void android_surface_rgba8_to_guest(const SurfaceBinding *surface,
                         ? pixel[3]
                         : 0xFF;
             }
-#endif
         }
         break;
-    }
     default:
         g_assert_not_reached();
     }
@@ -1009,37 +479,11 @@ static void init_render_to_texture(PGRAPHState *pg)
         "    vec2 texCoord = gl_FragCoord.xy / texSize;\n"
         "    out_Color.rgba = texture(tex, texCoord);\n"
         "}\n";
-#ifdef __ANDROID__
-    const char *depth_fs =
-        "#version 300 es\n"
-        "precision highp float;\n"
-        "precision highp int;\n"
-        "precision highp sampler2D;\n"
-        "uniform sampler2D tex;\n"
-        "uniform float depth_scale;\n"
-        "layout(location = 0) out vec4 out_Color;\n"
-        "void main()\n"
-        "{\n"
-        "    float depth = texelFetch(tex, ivec2(gl_FragCoord.xy), 0).r;\n"
-        "    uint packed = uint(clamp(depth * depth_scale + 0.5, 0.0, depth_scale));\n"
-        "    out_Color = vec4(float(packed & 0xFFu) / 255.0,\n"
-        "                     float((packed >> 8) & 0xFFu) / 255.0,\n"
-        "                     float((packed >> 16) & 0xFFu) / 255.0,\n"
-        "                     1.0);\n"
-        "}\n";
-#endif
 
     r->s2t_rndr.prog = pgraph_gl_compile_shader(vs, fs);
     r->s2t_rndr.tex_loc = glGetUniformLocation(r->s2t_rndr.prog, "tex");
     r->s2t_rndr.surface_size_loc = glGetUniformLocation(r->s2t_rndr.prog,
                                                     "surface_size");
-#ifdef __ANDROID__
-    r->s2t_rndr.depth_prog = pgraph_gl_compile_shader(vs, depth_fs);
-    r->s2t_rndr.depth_tex_loc =
-        glGetUniformLocation(r->s2t_rndr.depth_prog, "tex");
-    r->s2t_rndr.depth_scale_loc =
-        glGetUniformLocation(r->s2t_rndr.depth_prog, "depth_scale");
-#endif
 
     glGenVertexArrays(1, &r->s2t_rndr.vao);
     glBindVertexArray(r->s2t_rndr.vao);
@@ -1055,10 +499,6 @@ static void finalize_render_to_texture(PGRAPHState *pg)
 
     glDeleteProgram(r->s2t_rndr.prog);
     r->s2t_rndr.prog = 0;
-#ifdef __ANDROID__
-    glDeleteProgram(r->s2t_rndr.depth_prog);
-    r->s2t_rndr.depth_prog = 0;
-#endif
 
     glDeleteVertexArrays(1, &r->s2t_rndr.vao);
     r->s2t_rndr.vao = 0;
@@ -1170,7 +610,7 @@ static bool render_surface_to(NV2AState *d, SurfaceBinding *surface,
 #ifndef __ANDROID__
     assert(glGetError() == GL_NO_ERROR);
 #else
-    if (android_log_and_drain_gl_errors("render_surface_to: fbo setup")) {
+    if (glGetError() != GL_NO_ERROR) {
         glBindFramebuffer(GL_FRAMEBUFFER, r->gl_framebuffer);
         return false;
     }
@@ -1179,29 +619,21 @@ static bool render_surface_to(NV2AState *d, SurfaceBinding *surface,
     float color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
     glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
 #ifdef __ANDROID__
-    if (r->supported_extensions.texture_border_clamp) {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, NV2A_GL_CLAMP_TO_BORDER);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, NV2A_GL_CLAMP_TO_BORDER);
-        glTexParameterfv(GL_TEXTURE_2D, NV2A_GL_TEXTURE_BORDER_COLOR, color);
-    } else {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 #else
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, NV2A_GL_CLAMP_TO_BORDER);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, NV2A_GL_CLAMP_TO_BORDER);
-    glTexParameterfv(GL_TEXTURE_2D, NV2A_GL_TEXTURE_BORDER_COLOR, color);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, color);
 #endif
 
     glBindVertexArray(r->s2t_rndr.vao);
     glBindBuffer(GL_ARRAY_BUFFER, r->s2t_rndr.vbo);
     glUseProgram(r->s2t_rndr.prog);
-    if (r->s2t_rndr.tex_loc >= 0) {
-        glUniform1i(r->s2t_rndr.tex_loc, texture_unit);
-    }
-    if (r->s2t_rndr.surface_size_loc >= 0) {
-        glUniform2f(r->s2t_rndr.surface_size_loc, width, height);
-    }
+    glProgramUniform1i(r->s2t_rndr.prog, r->s2t_rndr.tex_loc,
+                       texture_unit);
+    glProgramUniform2f(r->s2t_rndr.prog,
+                       r->s2t_rndr.surface_size_loc, width, height);
 
     glViewport(0, 0, width, height);
     glColorMask(true, true, true, true);
@@ -1217,18 +649,6 @@ static bool render_surface_to(NV2AState *d, SurfaceBinding *surface,
     glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glDrawArrays(GL_TRIANGLES, 0, 3);
-
-#ifdef __ANDROID__
-    if (android_log_and_drain_gl_errors("render_surface_to: draw")) {
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, gl_target,
-                               0, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, r->gl_framebuffer);
-        glBindVertexArray(r->gl_vertex_array);
-        glBindTexture(gl_target, gl_texture);
-        glUseProgram(r->shader_binding ? r->shader_binding->gl_program : 0);
-        return false;
-    }
-#endif
 
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, gl_target, 0,
                            0);
@@ -1294,24 +714,20 @@ static void render_surface_to_texture_slow(NV2AState *d,
 
 #ifdef __ANDROID__
     if (android_surface_to_texture_rgba8_compatible(surface, texture_shape)) {
-        PGRAPHGLState *r = pg->gl_renderer_state;
-        size_t needed = (size_t)width * height * 4;
-        if (needed > r->android_s2t_conv_buf_size) {
-            r->android_s2t_conv_buf = g_realloc(r->android_s2t_conv_buf, needed);
-            r->android_s2t_conv_buf_size = needed;
-        }
+        uint8_t *upload_tmp = g_malloc(width * height * 4);
         if (android_surface_to_texture_needs_guest_reinterpretation(
                 surface, texture_shape)) {
             android_surface_guest_to_texture_rgba8(
                 texture_shape, buf, width, height,
-                width * surface->fmt.bytes_per_pixel, r->android_s2t_conv_buf);
+                width * surface->fmt.bytes_per_pixel, upload_tmp);
         } else {
             android_surface_guest_to_rgba8(surface, buf, width, height,
                                            width * surface->fmt.bytes_per_pixel,
-                                           r->android_s2t_conv_buf);
+                                           upload_tmp);
         }
         glTexImage2D(texture->gl_target, 0, GL_RGBA8, width, height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, r->android_s2t_conv_buf);
+                     GL_RGBA, GL_UNSIGNED_BYTE, upload_tmp);
+        g_free(upload_tmp);
     } else
 #endif
     glTexImage2D(texture->gl_target, 0, f->gl_internal_format, width, height, 0,
@@ -1669,16 +1085,6 @@ static void bind_current_surface(NV2AState *d)
     PGRAPHState *pg = &d->pgraph;
     PGRAPHGLState *r = pg->gl_renderer_state;
 
-    /* Clear any temporary download/render attachments before restoring
-     * the active render targets.
-     */
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           0, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
-                           0, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
-                           GL_TEXTURE_2D, 0, 0);
-
     if (r->color_binding) {
         glFramebufferTexture2D(GL_FRAMEBUFFER, r->color_binding->fmt.gl_attachment,
                                GL_TEXTURE_2D, r->color_binding->gl_buffer, 0);
@@ -1738,36 +1144,20 @@ static void bind_current_surface(NV2AState *d)
     }
 }
 
-static void surface_copy_shrink_row(uint8_t *out, const uint8_t *in,
+static void surface_copy_shrink_row(uint8_t *out, uint8_t *in,
                                     unsigned int width,
                                     unsigned int bytes_per_pixel,
                                     unsigned int factor)
 {
-    if (factor == 1) {
-        memcpy(out, in, width * bytes_per_pixel);
-        return;
-    }
-
-#ifdef __aarch64__
-    if (bytes_per_pixel == 4 &&
-        android_neon_surface_copy_shrink_row_4bpp(out, in, width, factor)) {
-        return;
-    }
-    if (bytes_per_pixel == 2 &&
-        android_neon_surface_copy_shrink_row_2bpp(out, in, width, factor)) {
-        return;
-    }
-#endif
-
     if (bytes_per_pixel == 4) {
         for (unsigned int x = 0; x < width; x++) {
-            *(uint32_t *)out = *(const uint32_t *)in;
+            *(uint32_t *)out = *(uint32_t *)in;
             out += 4;
             in += 4 * factor;
         }
     } else if (bytes_per_pixel == 2) {
         for (unsigned int x = 0; x < width; x++) {
-            *(uint16_t *)out = *(const uint16_t *)in;
+            *(uint16_t *)out = *(uint16_t *)in;
             out += 2;
             in += 2 * factor;
         }
@@ -1780,366 +1170,12 @@ static void surface_copy_shrink_row(uint8_t *out, const uint8_t *in,
     }
 }
 
-#ifdef __ANDROID__
-static bool android_surface_download_depth16_to_guest(NV2AState *d,
-                                                      SurfaceBinding *surface,
-                                                      bool swizzle, bool flip,
-                                                      bool downscale,
-                                                      uint8_t *pixels)
-{
-    PGRAPHState *pg = &d->pgraph;
-    PGRAPHGLState *r = pg->gl_renderer_state;
-    const unsigned int factor = downscale ? pg->surface_scale_factor : 1;
-    const unsigned int read_width = surface->width * factor;
-    const unsigned int read_height = surface->height * factor;
-    const unsigned int rgba_stride = read_width * 4;
-    GLuint pack_texture = 0;
-    uint8_t *rgba_pixels = NULL;
-    uint8_t *rgba_linear = NULL;
-    uint8_t *linear_guest = pixels;
-    uint8_t *swizzle_buf = NULL;
-    bool ok = false;
-
-    if (surface->color || surface->fmt.gl_attachment != GL_DEPTH_ATTACHMENT ||
-        surface->fmt.gl_format != GL_DEPTH_COMPONENT ||
-        surface->fmt.gl_type != GL_UNSIGNED_SHORT ||
-        r->s2t_rndr.depth_prog == 0) {
-        return false;
-    }
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    glGenTextures(1, &pack_texture);
-    glBindTexture(GL_TEXTURE_2D, pack_texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, read_width, read_height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, r->s2t_rndr.fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           pack_texture, 0);
-    {
-        GLenum draw_buffers[1] = { GL_COLOR_ATTACHMENT0 };
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            goto cleanup;
-        }
-        glDrawBuffers(1, draw_buffers);
-        glReadBuffer(GL_COLOR_ATTACHMENT0);
-    }
-
-    if (android_log_surface_download_errors(
-            "surface_download_depth16: fbo setup", surface)) {
-        goto cleanup;
-    }
-
-    glBindVertexArray(r->s2t_rndr.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, r->s2t_rndr.vbo);
-    glUseProgram(r->s2t_rndr.depth_prog);
-    if ((GLint)r->s2t_rndr.depth_tex_loc >= 0) {
-        glUniform1i(r->s2t_rndr.depth_tex_loc, 0);
-    }
-    if (r->s2t_rndr.depth_scale_loc >= 0) {
-        glUniform1f(r->s2t_rndr.depth_scale_loc, 65535.0f);
-    }
-    glViewport(0, 0, read_width, read_height);
-    glColorMask(true, true, true, true);
-    glDisable(GL_DITHER);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_BLEND);
-    glDisable(GL_STENCIL_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_DEPTH_TEST);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-
-    if (android_log_surface_download_errors(
-            "surface_download_depth16: pack draw", surface)) {
-        goto cleanup;
-    }
-
-    rgba_pixels = g_malloc(read_height * rgba_stride);
-    android_glo_readpixels(r, GL_RGBA, GL_UNSIGNED_BYTE, 4, rgba_stride,
-                           read_width, read_height, flip, rgba_pixels);
-
-    if (android_log_surface_download_errors(
-            "surface_download_depth16: pack read", surface)) {
-        goto cleanup;
-    }
-
-    rgba_linear = rgba_pixels;
-    if (downscale) {
-        rgba_linear = g_malloc(surface->width * surface->height * 4);
-        for (unsigned int y = 0; y < surface->height; y++) {
-            surface_copy_shrink_row(rgba_linear + y * surface->width * 4,
-                                    rgba_pixels + y * rgba_stride * factor,
-                                    surface->width, 4, factor);
-        }
-    }
-
-    if (swizzle) {
-        swizzle_buf = g_malloc(surface->size);
-        linear_guest = swizzle_buf;
-    }
-
-    for (unsigned int y = 0; y < surface->height; y++) {
-        const uint8_t *src_row = rgba_linear + y * surface->width * 4;
-        uint8_t *dst_row = linear_guest + y * surface->pitch;
-
-#ifdef __aarch64__
-        android_neon_pack_depth16_row_to_guest(src_row, dst_row, surface->width);
-#else
-        for (unsigned int x = 0; x < surface->width; x++) {
-            const uint8_t *src = src_row + x * 4;
-            stw_le_p(dst_row + x * 2, src[0] | (src[1] << 8));
-        }
-#endif
-    }
-
-    if (swizzle) {
-        swizzle_rect(swizzle_buf, surface->width, surface->height, pixels,
-                     surface->pitch, surface->fmt.bytes_per_pixel);
-    }
-
-    ok = true;
-
-cleanup:
-    if (swizzle_buf) {
-        g_free(swizzle_buf);
-    }
-    if (rgba_linear && rgba_linear != rgba_pixels) {
-        g_free(rgba_linear);
-    }
-    if (rgba_pixels) {
-        g_free(rgba_pixels);
-    }
-
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           0, 0);
-    if (pack_texture) {
-        glDeleteTextures(1, &pack_texture);
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, r->gl_framebuffer);
-    glBindVertexArray(r->gl_vertex_array);
-    glUseProgram(r->shader_binding ? r->shader_binding->gl_program : 0);
-
-    return ok;
-}
-
-static bool android_surface_download_z24s8_to_guest(NV2AState *d,
-                                                    SurfaceBinding *surface,
-                                                    bool swizzle, bool flip,
-                                                    bool downscale,
-                                                    uint8_t *pixels)
-{
-    PGRAPHState *pg = &d->pgraph;
-    PGRAPHGLState *r = pg->gl_renderer_state;
-    const unsigned int scale = pg->surface_scale_factor;
-    const unsigned int read_width = surface->width * scale;
-    const unsigned int read_height = surface->height * scale;
-    const unsigned int output_width = downscale ? surface->width : read_width;
-    const unsigned int output_height = downscale ? surface->height : read_height;
-    const unsigned int output_pitch = downscale ? surface->pitch
-                                                : surface->pitch * scale;
-    GLuint pack_texture = 0;
-    uint8_t *depth_pixels = NULL;
-    uint8_t *stencil_pixels = NULL;
-    uint8_t *linear_guest = pixels;
-    uint8_t *swizzle_buf = NULL;
-    GLint prev_read_buffer = GL_NONE;
-    bool ok = false;
-    static bool warned_stencil_readback_unsupported = false;
-
-    if (surface->color ||
-        surface->fmt.gl_attachment != GL_DEPTH_STENCIL_ATTACHMENT ||
-        surface->fmt.gl_format != GL_DEPTH_STENCIL ||
-        surface->fmt.gl_type != GL_UNSIGNED_INT_24_8) {
-        return false;
-    }
-
-    glGetIntegerv(GL_READ_BUFFER, &prev_read_buffer);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    glGenTextures(1, &pack_texture);
-    glBindTexture(GL_TEXTURE_2D, pack_texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, read_width, read_height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, r->s2t_rndr.fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           pack_texture, 0);
-    {
-        GLenum draw_buffers[1] = { GL_COLOR_ATTACHMENT0 };
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            goto cleanup;
-        }
-        glDrawBuffers(1, draw_buffers);
-        glReadBuffer(GL_COLOR_ATTACHMENT0);
-    }
-
-    if (android_log_surface_download_errors(
-            "surface_download_z24s8: pack_fbo_setup", surface)) {
-        goto cleanup;
-    }
-
-    glBindVertexArray(r->s2t_rndr.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, r->s2t_rndr.vbo);
-    glUseProgram(r->s2t_rndr.depth_prog);
-    if ((GLint)r->s2t_rndr.depth_tex_loc >= 0) {
-        glUniform1i(r->s2t_rndr.depth_tex_loc, 0);
-    }
-    if (r->s2t_rndr.depth_scale_loc >= 0) {
-        glUniform1f(r->s2t_rndr.depth_scale_loc, 16777215.0f);
-    }
-    glViewport(0, 0, read_width, read_height);
-    glColorMask(true, true, true, true);
-    glDisable(GL_DITHER);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_BLEND);
-    glDisable(GL_STENCIL_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_DEPTH_TEST);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-
-    if (android_log_surface_download_errors(
-            "surface_download_z24s8: pack_draw", surface)) {
-        goto cleanup;
-    }
-
-    depth_pixels = g_malloc(read_width * read_height * 4);
-    android_glo_readpixels(r, GL_RGBA, GL_UNSIGNED_BYTE, 4,
-                           read_width * 4, read_width, read_height, flip,
-                           depth_pixels);
-    if (android_log_surface_download_errors(
-            "surface_download_z24s8: post-read-depth-pack", surface)) {
-        goto cleanup;
-    }
-
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           0, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, r->gl_framebuffer);
-    glBindVertexArray(r->gl_vertex_array);
-    glUseProgram(r->shader_binding ? r->shader_binding->gl_program : 0);
-
-    glReadBuffer(GL_NONE);
-    if (android_log_surface_download_errors(
-            "surface_download_z24s8: pre-read-stencil", surface)) {
-        goto cleanup;
-    }
-
-    stencil_pixels = g_malloc0(read_width * read_height);
-    android_glo_readpixels(r, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, 1,
-                           read_width, read_width, read_height, flip,
-                           stencil_pixels);
-    if (android_drain_gl_errors_silent()) {
-        if (!warned_stencil_readback_unsupported) {
-            warned_stencil_readback_unsupported = true;
-            __android_log_print(
-                ANDROID_LOG_WARN, "xemu-android",
-                "surface_download_z24s8: stencil readback unsupported on this "
-                "GLES driver, substituting zero stencil");
-        }
-    }
-
-    if (swizzle) {
-        swizzle_buf = g_malloc(output_pitch * output_height);
-        linear_guest = swizzle_buf;
-    }
-
-    for (unsigned int y = 0; y < output_height; y++) {
-        uint8_t *dst_row = linear_guest + y * output_pitch;
-        const unsigned int src_y = downscale ? y * scale : y;
-
-#ifdef __aarch64__
-        if (!downscale) {
-            android_neon_pack_z24s8_row_to_guest(
-                depth_pixels + src_y * read_width * 4,
-                stencil_pixels + src_y * read_width,
-                dst_row, output_width);
-            continue;
-        }
-#endif
-
-        for (unsigned int x = 0; x < output_width; x++) {
-            const unsigned int src_x = downscale ? x * scale : x;
-            const unsigned int src_idx = src_y * read_width + src_x;
-            const uint8_t *src = depth_pixels + src_idx * 4;
-            uint32_t depth24 = src[0] | (src[1] << 8) | (src[2] << 16);
-
-            stl_le_p((uint32_t *)(dst_row + x * 4),
-                     (depth24 << 8) | stencil_pixels[src_idx]);
-        }
-    }
-
-    if (swizzle) {
-        swizzle_rect(swizzle_buf, output_width, output_height, pixels,
-                     output_pitch, surface->fmt.bytes_per_pixel);
-    }
-
-    ok = true;
-
-cleanup:
-    if (swizzle_buf) {
-        g_free(swizzle_buf);
-    }
-    if (stencil_pixels) {
-        g_free(stencil_pixels);
-    }
-    if (depth_pixels) {
-        g_free(depth_pixels);
-    }
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           0, 0);
-    if (pack_texture) {
-        glDeleteTextures(1, &pack_texture);
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, r->gl_framebuffer);
-    glBindVertexArray(r->gl_vertex_array);
-    glUseProgram(r->shader_binding ? r->shader_binding->gl_program : 0);
-
-    glReadBuffer((GLenum)prev_read_buffer);
-    android_log_surface_download_errors(
-        "surface_download_z24s8: cleanup_restore_read_buffer", surface);
-
-    return ok;
-}
-#endif
-
 static void surface_download_to_buffer(NV2AState *d, SurfaceBinding *surface,
                                        bool swizzle, bool flip, bool downscale,
                                        uint8_t *pixels)
 {
     PGRAPHState *pg = &d->pgraph;
     bool ok = true;
-#ifdef __ANDROID__
-    GLint prev_read_buffer = GL_COLOR_ATTACHMENT0;
-    bool restore_read_buffer = false;
-#endif
 
     swizzle &= surface->swizzle;
     downscale &= (pg->surface_scale_factor != 1);
@@ -2196,24 +1232,8 @@ static void surface_download_to_buffer(NV2AState *d, SurfaceBinding *surface,
         goto cleanup;
     }
 
-#ifdef __ANDROID__
-    if (android_surface_download_depth16_to_guest(d, surface, swizzle, flip,
-                                                  downscale, pixels)) {
-        goto cleanup;
-    }
-    if (android_surface_download_z24s8_to_guest(d, surface, swizzle, flip,
-                                                downscale, pixels)) {
-        goto cleanup;
-    }
-#endif
-
     /* Read surface into memory */
 #ifdef __ANDROID__
-    glGetIntegerv(GL_READ_BUFFER, &prev_read_buffer);
-    glReadBuffer(surface->color ? surface->fmt.gl_attachment : GL_NONE);
-    restore_read_buffer = true;
-    android_log_surface_download_errors("surface_download_to_buffer: pre-read",
-                                        surface);
     if (android_surface_uses_rgba8_transfer(surface)) {
         const unsigned int factor = downscale ? pg->surface_scale_factor : 1;
         const unsigned int read_width = surface->width * factor;
@@ -2223,11 +1243,8 @@ static void surface_download_to_buffer(NV2AState *d, SurfaceBinding *surface,
         uint8_t *rgba_linear = rgba_pixels;
         uint8_t *linear_guest = pixels;
 
-        android_glo_readpixels(pg->gl_renderer_state, GL_RGBA,
-                               GL_UNSIGNED_BYTE, 4, rgba_stride,
-                               read_width, read_height, flip, rgba_pixels);
-        android_log_surface_download_errors(
-            "surface_download_to_buffer: post-read_rgba8", surface);
+        glo_readpixels(GL_RGBA, GL_UNSIGNED_BYTE, 4, rgba_stride,
+                       read_width, read_height, flip, rgba_pixels);
 
         if (downscale) {
             rgba_linear = g_malloc(surface->width * surface->height * 4);
@@ -2279,17 +1296,11 @@ static void surface_download_to_buffer(NV2AState *d, SurfaceBinding *surface,
         gl_read_buf = pg->scale_buf;
     }
 
-#ifdef __ANDROID__
-    android_glo_readpixels(pg->gl_renderer_state,
-#else
     glo_readpixels(
-#endif
         surface->fmt.gl_format, surface->fmt.gl_type, surface->fmt.bytes_per_pixel,
         pg->surface_scale_factor * surface->pitch,
         pg->surface_scale_factor * surface->width,
         pg->surface_scale_factor * surface->height, flip, gl_read_buf);
-    android_log_surface_download_errors("surface_download_to_buffer: post-read",
-                                        surface);
 
     /* FIXME: Replace this with a hw accelerated version */
     if (downscale) {
@@ -2313,24 +1324,9 @@ static void surface_download_to_buffer(NV2AState *d, SurfaceBinding *surface,
 
     /* Re-bind original framebuffer target */
 cleanup:
+    glFramebufferTexture2D(GL_FRAMEBUFFER, surface->fmt.gl_attachment,
+                           GL_TEXTURE_2D, 0, 0);
     bind_current_surface(d);
-#ifdef __ANDROID__
-    android_log_surface_download_errors(
-        "surface_download_to_buffer: cleanup_rebind_surface", surface);
-#endif
-#ifdef __ANDROID__
-    if (restore_read_buffer) {
-        GLenum read_buffer = (GLenum)prev_read_buffer;
-        if (read_buffer != GL_NONE &&
-            !d->pgraph.gl_renderer_state->color_binding) {
-            read_buffer = GL_NONE;
-        }
-        glReadBuffer(read_buffer);
-        android_log_surface_download_errors(
-            "surface_download_to_buffer: cleanup_restore_read_buffer",
-            surface);
-    }
-#endif
 }
 
 static void surface_download(NV2AState *d, SurfaceBinding *surface, bool force)
@@ -2353,9 +1349,6 @@ static void surface_download(NV2AState *d, SurfaceBinding *surface, bool force)
     memory_region_set_client_dirty(d->vram, surface->vram_addr,
                                    surface->pitch * surface->height,
                                    DIRTY_MEMORY_NV2A_TEX);
-    memory_region_set_client_dirty(d->vram, surface->vram_addr,
-                                   surface->pitch * surface->height,
-                                   DIRTY_MEMORY_NV2A);
 
     surface->download_pending = false;
     surface->draw_dirty = false;
@@ -2532,8 +1525,8 @@ void pgraph_gl_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
     glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
 #ifdef __ANDROID__
     {
-        PGRAPHGLState *r = pg->gl_renderer_state;
         const uint8_t *upload_buf = gl_read_buf;
+        uint8_t *upload_tmp = NULL;
         GLint upload_ifmt;
         GLenum upload_fmt;
         GLenum upload_type;
@@ -2541,18 +1534,15 @@ void pgraph_gl_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
         android_surface_get_storage_format(surface, &upload_ifmt, &upload_fmt,
                                            &upload_type);
         if (android_surface_uses_rgba8_transfer(surface)) {
-            size_t needed = (size_t)width * height * 4;
-            if (needed > r->android_conv_buf_size) {
-                r->android_conv_buf = g_realloc(r->android_conv_buf, needed);
-                r->android_conv_buf_size = needed;
-            }
+            upload_tmp = g_malloc(width * height * 4);
             android_surface_guest_to_rgba8(surface, gl_read_buf, width, height,
                                            width * surface->fmt.bytes_per_pixel,
-                                           r->android_conv_buf);
-            upload_buf = r->android_conv_buf;
+                                           upload_tmp);
+            upload_buf = upload_tmp;
         }
         glTexImage2D(GL_TEXTURE_2D, 0, upload_ifmt, width, height, 0,
                      upload_fmt, upload_type, upload_buf);
+        g_free(upload_tmp);
     }
 #else
     glTexImage2D(GL_TEXTURE_2D, 0, surface->fmt.gl_internal_format, width,
@@ -3041,14 +2031,6 @@ void pgraph_gl_init_surfaces(PGRAPHState *pg)
     pgraph_gl_reload_surface_scale_factor(pg);
     glGenFramebuffers(1, &r->gl_framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, r->gl_framebuffer);
-#ifdef __ANDROID__
-    glGenBuffers(1, &r->gl_download_pbo);
-    r->gl_download_pbo_size = 0;
-    r->android_conv_buf = NULL;
-    r->android_conv_buf_size = 0;
-    r->android_s2t_conv_buf = NULL;
-    r->android_s2t_conv_buf_size = 0;
-#endif
     QTAILQ_INIT(&r->surfaces);
     r->downloads_pending = false;
     qemu_event_init(&r->downloads_complete, false);
@@ -3086,20 +2068,6 @@ void pgraph_gl_finalize_surfaces(PGRAPHState *pg)
     flush_surfaces(d);
     glDeleteFramebuffers(1, &r->gl_framebuffer);
     r->gl_framebuffer = 0;
-
-#ifdef __ANDROID__
-    if (r->gl_download_pbo) {
-        glDeleteBuffers(1, &r->gl_download_pbo);
-        r->gl_download_pbo = 0;
-        r->gl_download_pbo_size = 0;
-    }
-    g_free(r->android_conv_buf);
-    r->android_conv_buf = NULL;
-    r->android_conv_buf_size = 0;
-    g_free(r->android_s2t_conv_buf);
-    r->android_s2t_conv_buf = NULL;
-    r->android_s2t_conv_buf_size = 0;
-#endif
 
     finalize_render_to_texture(pg);
 }

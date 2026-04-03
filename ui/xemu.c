@@ -63,9 +63,6 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
-#ifdef __aarch64__
-#include <arm_neon.h>
-#endif
 #endif
 #ifdef _WIN32
 #include "nvapi.h"
@@ -103,10 +100,6 @@ void xb_surface_gl_create_texture(DisplaySurface *surface);
 void xb_surface_gl_update_texture(DisplaySurface *surface, int x, int y, int w, int h);
 void xb_surface_gl_destroy_texture(DisplaySurface *surface);
 
-#ifdef __ANDROID__
-static int64_t android_monotonic_time_ns(void);
-static void android_sleep_until_ns(int64_t deadline_ns);
-#endif
 static void sleep_ns(int64_t ns);
 
 static int sdl2_num_outputs;
@@ -139,36 +132,16 @@ static bool g_android_gl_bgra_supported = true;
 static bool g_android_force_finish_before_swap = false;
 static bool g_android_paused = false;
 static bool g_android_should_quit = false;
+static volatile bool g_android_vm_pause_requested = false;
+static volatile bool g_android_vm_resume_requested = false;
 static uint64_t g_android_frame_counter = 0;
 static int g_android_target_fps = 60;
 static int64_t g_android_frame_interval_ns = 16666666;
 static int g_android_display_mode = 0; /* 0=stretch, 1=4:3, 2=16:9 */
-static int g_android_render_logs_enabled = -1;
 
 static bool sdl2_is_render_thread(void)
 {
     return sdl_render_thread_id != 0 && SDL_ThreadID() == sdl_render_thread_id;
-}
-
-static bool android_render_logs_enabled(void)
-{
-    if (g_android_render_logs_enabled < 0) {
-        const char *value = SDL_getenv("XEMU_ANDROID_RENDER_LOGS");
-        g_android_render_logs_enabled =
-            (value && value[0] != '\0' && value[0] != '0') ? 1 : 0;
-        if (g_android_render_logs_enabled) {
-            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                                "android: verbose render logging enabled");
-        }
-    }
-    return g_android_render_logs_enabled != 0;
-}
-
-static bool android_should_log_render_periodic(uint64_t period)
-{
-    return android_render_logs_enabled() &&
-           period != 0 &&
-           (g_android_frame_counter % period) == 0;
 }
 
 static bool sdl2_gl_has_extension(const char *ext_list, const char *ext)
@@ -191,10 +164,6 @@ static bool sdl2_gl_has_extension(const char *ext_list, const char *ext)
 
 static void android_log_gl_error(const char *stage)
 {
-    if (!android_render_logs_enabled()) {
-        return;
-    }
-
     GLenum err;
     bool logged = false;
     while ((err = glGetError()) != GL_NO_ERROR) {
@@ -215,6 +184,22 @@ int xemu_android_get_display_mode_setting(void)
     return g_android_display_mode;
 }
 
+void xemu_android_pause_emulation(void)
+{
+    g_android_vm_pause_requested = true;
+}
+
+void xemu_android_resume_emulation(void)
+{
+    g_android_vm_resume_requested = true;
+}
+
+void xemu_android_request_exit(void)
+{
+    g_android_should_quit = true;
+    qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
+}
+
 static void xemu_android_refresh_frame_limit_from_env(void)
 {
     int fps = 60;
@@ -227,7 +212,7 @@ static void xemu_android_refresh_frame_limit_from_env(void)
         }
     }
 
-    if (fps != 60) {
+    if (fps <= 0 || fps > 240) {
         fps = 60;
     }
 
@@ -294,7 +279,7 @@ static void sdl2_gl_render_texture(struct sdl2_console *scon,
     }
 
 #ifdef __ANDROID__
-    if (android_should_log_render_periodic(60)) {
+    if ((g_android_frame_counter % 60) == 0) {
         __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                             "present drawable=%dx%d window=%dx%d viewport=%d,%d %dx%d tex=%u flip=%d mode=%d",
                             w, h, ww, wh, vx, vy, vw, vh,
@@ -829,16 +814,12 @@ void sdl2_poll_events(struct sdl2_console *scon)
                                 "android: app terminating, flushed");
             break;
         case SDL_APP_WILLENTERBACKGROUND:
-            bdrv_flush_all();
             g_android_paused = true;
+            bdrv_flush_all();
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                 "android: app background, flushed");
             break;
         case SDL_APP_DIDENTERBACKGROUND:
-            g_android_paused = true;
-            __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                                "android: app background");
-            break;
         case SDL_APP_WILLENTERFOREGROUND:
         case SDL_APP_DIDENTERFOREGROUND:
             g_android_paused = false;
@@ -1395,7 +1376,7 @@ void xemu_android_display_loop(void)
     }
 #ifdef __ANDROID__
     xemu_android_refresh_frame_limit_from_env();
-    SDL_GL_SetSwapInterval(0);
+    SDL_GL_SetSwapInterval(g_config.display.window.vsync ? 1 : 0);
     xemu_hud_init(m_window, m_context);
 #endif
     tcg_register_init_ctx();
@@ -1410,14 +1391,34 @@ void xemu_android_display_loop(void)
         if (g_android_should_quit || qemu_shutdown_requested_get() != SHUTDOWN_CAUSE_NONE) {
             break;
         }
+        if (g_android_vm_pause_requested) {
+            qemu_mutex_lock_main_loop();
+            bql_lock();
+            if (runstate_is_running()) {
+                vm_stop(RUN_STATE_PAUSED);
+            }
+            g_android_vm_pause_requested = false;
+            bql_unlock();
+            qemu_mutex_unlock_main_loop();
+        }
         if (g_android_paused || sdl2_console[0].hidden) {
             qemu_mutex_lock_main_loop();
             bql_lock();
             sdl2_poll_events(&sdl2_console[0]);
             bql_unlock();
             qemu_mutex_unlock_main_loop();
-            SDL_Delay(100);
+            SDL_Delay(16);
             continue;
+        }
+        if (g_android_vm_resume_requested) {
+            qemu_mutex_lock_main_loop();
+            bql_lock();
+            if (!runstate_is_running()) {
+                vm_start();
+            }
+            g_android_vm_resume_requested = false;
+            bql_unlock();
+            qemu_mutex_unlock_main_loop();
         }
         sdl2_gl_refresh(&sdl2_console[0].dcl);
 #ifdef __ANDROID__
@@ -1469,49 +1470,28 @@ void xb_surface_gl_create_texture(DisplaySurface *surface)
     uint8_t *converted = NULL;
     bool use_row_length = true;
     if (upload_format == GL_BGRA_EXT) {
-        if (g_android_gl_bgra_supported) {
-            /* GL_EXT_texture_format_BGRA8888: upload native BGRA with no CPU
-             * work. The spec requires internalformat == GL_BGRA_EXT too. */
-            internal_format = GL_BGRA_EXT;
-            /* upload_format stays GL_BGRA_EXT, use_row_length stays true */
-        } else {
-            /* Fallback: swizzle BGRA→RGBA on CPU before upload */
-            const int width = surface_width(surface);
-            const int height = surface_height(surface);
-            const int stride = surface_stride(surface);
-            const uint8_t *src = (const uint8_t *)surface_data(surface);
-            converted = g_malloc((size_t)width * height * 4);
-            for (int y = 0; y < height; ++y) {
-                const uint8_t *row = src + (size_t)y * stride;
-                uint8_t *dst = converted + (size_t)y * width * 4;
-#ifdef __aarch64__
-                /* vqtbl1q_u8: 16-byte table lookup, processes 4 pixels/cycle */
-                static const uint8_t perm_arr[16] =
-                    {2,1,0,3, 6,5,4,7, 10,9,8,11, 14,13,12,15};
-                uint8x16_t vperm = vld1q_u8(perm_arr);
-                int px = width;
-                while (px >= 4) {
-                    vst1q_u8(dst, vqtbl1q_u8(vld1q_u8(row), vperm));
-                    row += 16; dst += 16; px -= 4;
-                }
-                while (px-- > 0) {
-                    dst[0] = row[2]; dst[1] = row[1];
-                    dst[2] = row[0]; dst[3] = row[3];
-                    row += 4; dst += 4;
-                }
-#else
-                for (int x = 0; x < width; ++x) {
-                    dst[x * 4 + 0] = row[x * 4 + 2];
-                    dst[x * 4 + 1] = row[x * 4 + 1];
-                    dst[x * 4 + 2] = row[x * 4 + 0];
-                    dst[x * 4 + 3] = row[x * 4 + 3];
-                }
-#endif
+        const int width = surface_width(surface);
+        const int height = surface_height(surface);
+        const int stride = surface_stride(surface);
+        const uint8_t *src = (const uint8_t *)surface_data(surface);
+        converted = g_malloc((size_t)width * height * 4);
+        for (int y = 0; y < height; ++y) {
+            const uint8_t *row = src + (size_t)y * stride;
+            uint8_t *dst = converted + (size_t)y * width * 4;
+            for (int x = 0; x < width; ++x) {
+                const uint8_t b = row[x * 4 + 0];
+                const uint8_t g = row[x * 4 + 1];
+                const uint8_t r = row[x * 4 + 2];
+                const uint8_t a = row[x * 4 + 3];
+                dst[x * 4 + 0] = r;
+                dst[x * 4 + 1] = g;
+                dst[x * 4 + 2] = b;
+                dst[x * 4 + 3] = a;
             }
-            upload_format = GL_RGBA;
-            pixels = converted;
-            use_row_length = false;
         }
+        upload_format = GL_RGBA;
+        pixels = converted;
+        use_row_length = false;
     }
     if (use_row_length) {
 #endif
@@ -1614,14 +1594,13 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
         return;
     }
     if (g_android_paused || scon->hidden) {
-        if (android_should_log_render_periodic(120)) {
+        if ((g_android_frame_counter++ % 120) == 0) {
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                 "refresh paused: hidden=%d paused=%d runstate=%d",
                                 scon->hidden ? 1 : 0,
                                 g_android_paused ? 1 : 0,
                                 (int)runstate_get());
         }
-        g_android_frame_counter++;
         qemu_mutex_lock_main_loop();
         bql_lock();
         sdl2_poll_events(scon);
@@ -1666,7 +1645,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     GLuint tex = nv2a_get_framebuffer_surface();
 #ifdef __ANDROID__
     if (tex != 0 && glIsTexture(tex) == GL_FALSE) {
-        if (android_should_log_render_periodic(120)) {
+        if ((g_android_frame_counter % 120) == 0) {
             __android_log_print(ANDROID_LOG_WARN, "xemu-android",
                                 "refresh: nv2a tex %u not valid in display context",
                                 (unsigned)tex);
@@ -1676,7 +1655,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
 #endif
 #ifdef __ANDROID__
     android_log_gl_error("refresh-get-fb");
-    if (android_should_log_render_periodic(120)) {
+    if ((g_android_frame_counter % 120) == 0) {
         __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                             "refresh frame=%llu tex=%u flip=%d surface=%p size=%dx%d runstate=%d",
                             (unsigned long long)g_android_frame_counter,
@@ -1703,7 +1682,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
         tex = scon->surface->texture;
         flip_required = true;
 #ifdef __ANDROID__
-        if (android_should_log_render_periodic(120)) {
+        if ((g_android_frame_counter % 120) == 0) {
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                 "refresh no nv2a fb, using surface texture=%u",
                                 (unsigned)tex);
@@ -1772,41 +1751,9 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
      */
     static int64_t last_update = 0;
 #ifdef __ANDROID__
-    const int64_t frame_interval = g_android_frame_interval_ns;
+    int64_t deadline = last_update + g_android_frame_interval_ns;
 #else
-    const int64_t frame_interval = 16666666;
-#endif
-    if (last_update == 0) {
-#ifdef __ANDROID__
-        last_update = android_monotonic_time_ns();
-#else
-        last_update = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-#endif
-    }
-    int64_t deadline = last_update + frame_interval;
-
-#ifdef __ANDROID__
-    /* Sleep directly to the deadline — no spin threshold. Let the kernel
-     * wake us as close to the target as it can. Burning CPU on a spin
-     * loop steals cycles from APU/emulation threads and the "right"
-     * threshold varies wildly across Android devices anyway.
-     */
-    int64_t now = android_monotonic_time_ns();
-    if (now < deadline) {
-        android_sleep_until_ns(deadline);
-        now = android_monotonic_time_ns();
-    }
-    if (now - deadline > frame_interval) {
-        last_update = now;
-    } else {
-        last_update = deadline;
-    }
-#else
-    const int64_t sleep_threshold =
-#ifndef _WIN32
-        2000000;
-#else
-        250000;
+    int64_t deadline = last_update + 16666666;
 #endif
 
 #ifdef DEBUG_XEMU_C
@@ -1814,31 +1761,38 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     int64_t spin_acc = 0;
 #endif
 
+#ifdef __ANDROID__
+    const int64_t sleep_threshold = 500000;   // 0.5ms — Android CFS scheduler jitter is ~0.2ms
+#elif !defined(_WIN32)
+    const int64_t sleep_threshold = 2000000;
+#else
+    const int64_t sleep_threshold = 250000;
+#endif
+
     while (1) {
         int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
         int64_t time_remaining = deadline - now;
         if (now < deadline) {
             if (time_remaining > sleep_threshold) {
+                // Try to sleep until the until reaching the sleep threshold.
                 sleep_ns(time_remaining - sleep_threshold);
 #ifdef DEBUG_XEMU_C
-                sleep_acc += qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - now;
+                sleep_acc += qemu_clock_get_ns(QEMU_CLOCK_REALTIME)-now;
 #endif
             } else {
+                // Simply spin to avoid extra delays incurred with swapping to
+                // another process and back in the event of being within
+                // threshold to desired event.
 #ifdef DEBUG_XEMU_C
                 spin_acc++;
 #endif
             }
         } else {
             DPRINTF("zzZz %g %ld\n", (double)sleep_acc/1000000.0, spin_acc);
-            if (now - deadline > frame_interval) {
-                last_update = now;
-            } else {
-                last_update = deadline;
-            }
+            last_update = now;
             break;
         }
     }
-#endif
 
 }
 
@@ -1979,12 +1933,7 @@ static void *call_qemu_main(void *opaque)
 /* Note: only supports millisecond resolution on Windows */
 static void sleep_ns(int64_t ns)
 {
-#ifdef __ANDROID__
-        struct timespec sleep_delay;
-        sleep_delay.tv_sec = ns / 1000000000LL;
-        sleep_delay.tv_nsec = ns % 1000000000LL;
-        clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_delay, NULL);
-#elif !defined(_WIN32)
+#ifndef _WIN32
         struct timespec sleep_delay, rem_delay;
         sleep_delay.tv_sec = ns / 1000000000LL;
         sleep_delay.tv_nsec = ns % 1000000000LL;
@@ -1993,28 +1942,6 @@ static void sleep_ns(int64_t ns)
         Sleep(ns / SCALE_MS);
 #endif
 }
-
-#ifdef __ANDROID__
-static int64_t android_monotonic_time_ns(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
-}
-
-static void android_sleep_until_ns(int64_t deadline_ns)
-{
-    struct timespec deadline;
-
-    deadline.tv_sec = deadline_ns / 1000000000LL;
-    deadline.tv_nsec = deadline_ns % 1000000000LL;
-
-    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL) ==
-           EINTR) {
-    }
-}
-#endif
 
 #ifdef _WIN32
 static const wchar_t *get_executable_name(void)

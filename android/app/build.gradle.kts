@@ -101,6 +101,8 @@ android {
       "META-INF/LICENSE*",
       "META-INF/NOTICE*"
     )
+    jniLibs.useLegacyPackaging = true
+    jniLibs.keepDebugSymbols += setOf("**/*.so")
   }
 
   compileOptions {

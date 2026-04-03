@@ -41,12 +41,8 @@ class SettingsActivity : AppCompatActivity() {
     private const val PREF_HRTF_DEFAULT_OFF_MIGRATED = "setting_hrtf_default_off_migrated_v1"
     private const val PREF_INSIGNIA_SETUP_URI = "setting_insignia_setup_assistant_uri"
     private const val PREF_INSIGNIA_SETUP_NAME = "setting_insignia_setup_assistant_name"
-    private const val PREF_VULKAN_DRIVER_URI = "setting_vulkan_driver_uri"
-    private const val PREF_VULKAN_DRIVER_NAME = "setting_vulkan_driver_name"
-    private const val PREF_VULKAN_DRIVER_PATH = "setting_vulkan_driver_path"
     private const val INSIGNIA_SIGN_UP_URL = "https://insignia.live/"
     private const val INSIGNIA_GUIDE_URL = "https://insignia.live/guide/connect"
-    private const val VULKAN_DRIVER_FILE_NAME = "vulkan_driver.so"
     private const val MANAGED_FILES_ARCHIVE_PREFIX = "x1box-files-"
     private val MANAGED_EMULATOR_FILE_ORDER = listOf(
       "mcpx.bin",
@@ -95,10 +91,6 @@ class SettingsActivity : AppCompatActivity() {
     val hadFailures: Boolean,
   )
 
-  private data class VulkanDriverImportResult(
-    val file: File,
-    val displayName: String,
-  )
 
   private data class DashboardImportPlan(
     val hddFile: File,
@@ -171,9 +163,6 @@ class SettingsActivity : AppCompatActivity() {
     GameOrientationOption(OrientationPreferences.GameOrientation.REVERSE_LANDSCAPE, R.string.settings_orientation_reverse_landscape),
   )
 
-  private var pendingVulkanUri: String? = null
-  private var pendingVulkanName: String? = null
-  private var clearVulkan = false
   private var isInitializingHdd = false
   private var isImportingDashboard = false
   private var isImportingEmulatorFiles = false
@@ -184,7 +173,11 @@ class SettingsActivity : AppCompatActivity() {
   private lateinit var btnExportEmulatorFiles: MaterialButton
   private lateinit var switchDebugLogs: MaterialSwitch
   private lateinit var switchNetworkEnable: MaterialSwitch
-  private lateinit var tvVulkanDriverName: TextView
+  private lateinit var driverStatusText: TextView
+  private lateinit var gpuNotSupportedText: TextView
+  private lateinit var btnInstallDriver: MaterialButton
+  private lateinit var btnSelectDriver: MaterialButton
+  private lateinit var btnResetDriver: MaterialButton
   private lateinit var tvInsigniaStatus: TextView
   private lateinit var tvEepromStatus: TextView
   private lateinit var tvHddToolsStatus: TextView
@@ -219,19 +212,9 @@ class SettingsActivity : AppCompatActivity() {
   private var eepromMissing = false
   private var eepromError = false
 
-  private val pickDriver =
+  private val pickDriverZip =
     registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-      uri ?: return@registerForActivityResult
-      val selectedName = getFileName(uri) ?: uri.lastPathSegment ?: "custom_driver.so"
-      if (!isSupportedVulkanDriverSelection(selectedName)) {
-        Toast.makeText(this, R.string.settings_vulkan_driver_pick_error, Toast.LENGTH_LONG).show()
-        return@registerForActivityResult
-      }
-      persistUriPermission(uri)
-      pendingVulkanUri = uri.toString()
-      pendingVulkanName = selectedName
-      clearVulkan = false
-      tvVulkanDriverName.text = pendingVulkanName
+      if (uri != null) installDriverFromUri(uri)
     }
 
   private val pickDashboardZip =
@@ -348,9 +331,11 @@ class SettingsActivity : AppCompatActivity() {
     layoutAdvancedExperimentalContent = findViewById(R.id.layout_advanced_experimental_content)
     dropdownUiOrientation = findViewById(R.id.dropdown_app_orientation)
     dropdownGameOrientation = findViewById(R.id.dropdown_game_orientation)
-    tvVulkanDriverName    = findViewById(R.id.tv_vulkan_driver_name)
-    val btnVulkanBrowse   = findViewById<MaterialButton>(R.id.btn_vulkan_browse)
-    val btnVulkanClear    = findViewById<MaterialButton>(R.id.btn_vulkan_clear)
+    driverStatusText      = findViewById(R.id.settings_gpu_driver_status)
+    gpuNotSupportedText   = findViewById(R.id.settings_gpu_not_supported)
+    btnInstallDriver      = findViewById(R.id.btn_install_driver)
+    btnSelectDriver       = findViewById(R.id.btn_select_driver)
+    btnResetDriver        = findViewById(R.id.btn_reset_driver)
     tvEepromStatus        = findViewById(R.id.tv_eeprom_status)
     tvHddToolsStatus      = findViewById(R.id.tv_hdd_tools_status)
     inputEepromLanguage   = findViewById(R.id.input_eeprom_language)
@@ -368,7 +353,7 @@ class SettingsActivity : AppCompatActivity() {
     updateEmulatorFilesActionState()
 
     // Load current values
-    val renderer = prefs.getString("setting_renderer", "opengl") ?: "opengl"
+    val renderer = prefs.getString("setting_renderer", "vulkan") ?: "vulkan"
     if (renderer == "opengl") {
       toggleGraphicsApi.check(R.id.btn_renderer_opengl)
     } else {
@@ -410,10 +395,21 @@ class SettingsActivity : AppCompatActivity() {
       else -> toggleSystemMemory.check(R.id.btn_memory_64)
     }
 
-    tvVulkanDriverName.text =
-      prefs.getString(PREF_VULKAN_DRIVER_NAME, null)
-        ?: prefs.getString(PREF_VULKAN_DRIVER_PATH, null)?.let { File(it).name }
-        ?: getString(R.string.settings_vulkan_driver_none)
+    GpuDriverHelper.init(this)
+    val supportsCustomDriver = GpuDriverHelper.supportsCustomDriverLoading()
+    if (!supportsCustomDriver) {
+      gpuNotSupportedText.visibility = View.VISIBLE
+      btnInstallDriver.isEnabled = false
+      btnSelectDriver.isEnabled = false
+      btnResetDriver.isEnabled = false
+    }
+    refreshDriverStatus()
+
+    btnInstallDriver.setOnClickListener {
+      pickDriverZip.launch(arrayOf("application/zip", "application/octet-stream"))
+    }
+    btnSelectDriver.setOnClickListener { showDriverSelectionDialog() }
+    btnResetDriver.setOnClickListener { confirmResetDriver() }
 
     val tcgThread = prefs.getString("setting_tcg_thread", "multi") ?: "multi"
     if (tcgThread == "single") {
@@ -439,17 +435,6 @@ class SettingsActivity : AppCompatActivity() {
       "aaudio"  -> toggleAudioDriver.check(R.id.btn_audio_aaudio)
       "dummy"   -> toggleAudioDriver.check(R.id.btn_audio_disabled)
       else      -> toggleAudioDriver.check(R.id.btn_audio_opensles)
-    }
-
-    btnVulkanBrowse.setOnClickListener {
-      pickDriver.launch(arrayOf("*/*"))
-    }
-
-    btnVulkanClear.setOnClickListener {
-      pendingVulkanUri  = null
-      pendingVulkanName = null
-      clearVulkan = true
-      tvVulkanDriverName.text = getString(R.string.settings_vulkan_driver_none)
     }
 
     btnRedoSetup.setOnClickListener {
@@ -484,19 +469,6 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     fun persistSettings(): Pair<Int, Int> {
-      val pendingVulkanUriValue = pendingVulkanUri
-      val importedVulkanDriver = when {
-        clearVulkan -> {
-          deleteImportedVulkanDriver()
-          null
-        }
-        pendingVulkanUriValue != null -> importCustomVulkanDriver(
-          uri = Uri.parse(pendingVulkanUriValue),
-          selectedName = pendingVulkanName,
-        )
-        else -> null
-      }
-
       val selectedDisplayMode = when (toggleDisplayMode.checkedButtonId) {
         R.id.btn_display_4_3  -> 1
         R.id.btn_display_16_9 -> 2
@@ -550,17 +522,6 @@ class SettingsActivity : AppCompatActivity() {
         .putString("setting_audio_driver", selectedAudioDriver)
         .putString("setting_filtering", selectedFiltering)
         .putString("setting_renderer", selectedRenderer)
-
-      when {
-        clearVulkan -> edit
-          .remove(PREF_VULKAN_DRIVER_URI)
-          .remove(PREF_VULKAN_DRIVER_NAME)
-          .remove(PREF_VULKAN_DRIVER_PATH)
-        importedVulkanDriver != null -> edit
-          .remove(PREF_VULKAN_DRIVER_URI)
-          .putString(PREF_VULKAN_DRIVER_NAME, importedVulkanDriver.displayName)
-          .putString(PREF_VULKAN_DRIVER_PATH, importedVulkanDriver.file.absolutePath)
-      }
 
       edit.apply()
       DebugLog.setEnabled(
@@ -619,10 +580,7 @@ class SettingsActivity : AppCompatActivity() {
       } catch (error: Exception) {
         Toast.makeText(
           this,
-          getString(
-            R.string.settings_vulkan_driver_import_failed,
-            error.message ?: error.javaClass.simpleName,
-          ),
+          "Failed to save settings: ${error.message ?: error.javaClass.simpleName}",
           Toast.LENGTH_LONG
         ).show()
       }
@@ -640,174 +598,72 @@ class SettingsActivity : AppCompatActivity() {
       .apply()
   }
 
-  private fun importCustomVulkanDriver(
-    uri: Uri,
-    selectedName: String?,
-  ): VulkanDriverImportResult {
-    val targetFile = resolveCustomVulkanDriverFile()
-    val parent = targetFile.parentFile
-      ?: throw IOException("Failed to prepare the custom Vulkan driver folder.")
-    if (!parent.exists() && !parent.mkdirs()) {
-      throw IOException("Failed to prepare the custom Vulkan driver folder.")
-    }
-
-    val tempFile = File(parent, "${targetFile.name}.tmp")
-    if (tempFile.exists() && !tempFile.delete()) {
-      throw IOException("Failed to replace the staged custom Vulkan driver.")
-    }
-
-    try {
-      if (isZipSelection(uri)) {
-        extractVulkanDriverZipToFile(uri, tempFile)
-      } else {
-        copyUriToFile(uri, tempFile)
-      }
-      moveFileIntoPlace(tempFile, targetFile)
-    } catch (error: Exception) {
-      tempFile.delete()
-      throw error
-    }
-
-    return VulkanDriverImportResult(
-      file = targetFile,
-      displayName = selectedName?.takeIf { it.isNotBlank() } ?: targetFile.name,
-    )
-  }
-
-  private fun copyUriToFile(
-    uri: Uri,
-    target: File,
-    openError: String = "Failed to open the selected file.",
-  ) {
-    val parent = target.parentFile
-    if (parent != null && !parent.exists() && !parent.mkdirs()) {
-      throw IOException("Failed to prepare ${parent.absolutePath}.")
-    }
-    contentResolver.openInputStream(uri)?.use { input ->
-      FileOutputStream(target).use { output ->
-        input.copyTo(output)
-      }
-    } ?: throw IOException(openError)
-  }
-
-  private fun extractVulkanDriverZipToFile(uri: Uri, target: File) {
-    val selectedEntryName = findVulkanDriverZipEntry(uri)
-
-    contentResolver.openInputStream(uri)?.use { rawInput ->
-      ZipInputStream(BufferedInputStream(rawInput)).use { zip ->
-        while (true) {
-          val entry = zip.nextEntry ?: break
-          if (entry.isDirectory) {
-            zip.closeEntry()
-            continue
-          }
-          if (entry.name == selectedEntryName) {
-            FileOutputStream(target).use { output ->
-              zip.copyTo(output)
-            }
-            zip.closeEntry()
-            return
-          }
-          zip.closeEntry()
+  private fun installDriverFromUri(uri: Uri) {
+    Thread {
+      val success = GpuDriverHelper.installDriverFromUri(this, uri)
+      runOnUiThread {
+        if (success) {
+          Toast.makeText(this, getString(R.string.settings_gpu_driver_installed), Toast.LENGTH_SHORT).show()
+          refreshDriverStatus()
+        } else {
+          Toast.makeText(this, getString(R.string.settings_gpu_driver_install_failed), Toast.LENGTH_SHORT).show()
         }
       }
-    } ?: throw IOException("Failed to open the selected Vulkan driver ZIP.")
-
-    throw IOException("The selected ZIP did not contain a readable Vulkan driver library.")
+    }.start()
   }
 
-  private fun findVulkanDriverZipEntry(uri: Uri): String {
-    var bestEntry: String? = null
-    var bestScore = Int.MIN_VALUE
-
-    contentResolver.openInputStream(uri)?.use { rawInput ->
-      ZipInputStream(BufferedInputStream(rawInput)).use { zip ->
-        while (true) {
-          val entry = zip.nextEntry ?: break
-          if (!entry.isDirectory) {
-            val normalizedName = entry.name.replace('\\', '/')
-            if (isSharedLibrarySelection(normalizedName)) {
-              val score = scoreVulkanDriverZipEntry(normalizedName)
-              if (score > bestScore) {
-                bestScore = score
-                bestEntry = entry.name
-              }
-            }
+  private fun showDriverSelectionDialog() {
+    val drivers = GpuDriverHelper.getAvailableDrivers()
+    if (drivers.isEmpty()) {
+      Toast.makeText(this, getString(R.string.settings_gpu_driver_none_available), Toast.LENGTH_SHORT).show()
+      return
+    }
+    val labels = drivers.map { driver ->
+      buildString {
+        append(driver.name ?: "Unknown")
+        if (!driver.description.isNullOrBlank()) { append("\n"); append(driver.description) }
+        if (!driver.author.isNullOrBlank()) { append("\nby "); append(driver.author) }
+      }
+    }.toTypedArray()
+    MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.settings_gpu_driver_select_title)
+      .setItems(labels) { _, which ->
+        val selected = drivers[which]
+        if (selected.path != null) {
+          val zipFile = File(selected.path)
+          val success = GpuDriverHelper.installDriver(zipFile)
+          if (success) {
+            Toast.makeText(this, getString(R.string.settings_gpu_driver_installed), Toast.LENGTH_SHORT).show()
+            refreshDriverStatus()
+          } else {
+            Toast.makeText(this, getString(R.string.settings_gpu_driver_install_failed), Toast.LENGTH_SHORT).show()
           }
-          zip.closeEntry()
         }
       }
-    } ?: throw IOException("Failed to open the selected Vulkan driver ZIP.")
-
-    return bestEntry
-      ?: throw IOException("The selected ZIP did not contain any .so files.")
+      .setNegativeButton(android.R.string.cancel, null)
+      .show()
   }
 
-  private fun scoreVulkanDriverZipEntry(entryName: String): Int {
-    val normalizedPath = entryName.replace('\\', '/').lowercase(Locale.US)
-    val fileName = normalizedPath.substringAfterLast('/')
-    val depth = normalizedPath.count { it == '/' }
-    var score = 0
-
-    score += when (fileName) {
-      "vulkan.adreno.so" -> 4_000
-      "libvulkan_freedreno.so" -> 3_800
-      else -> 0
-    }
-    if (fileName.startsWith("libvulkan")) {
-      score += 3_000
-    }
-    if (fileName.startsWith("vulkan")) {
-      score += 2_700
-    }
-    if (fileName.contains("vulkan")) {
-      score += 2_000
-    }
-    if (fileName.contains("adreno")) {
-      score += 900
-    }
-    if (fileName.contains("turnip") || fileName.contains("freedreno") || fileName.contains("mesa")) {
-      score += 700
-    }
-    if (normalizedPath.contains("/arm64-v8a/")) {
-      score += 450
-    }
-    if (normalizedPath.contains("/lib/")) {
-      score += 120
-    }
-    score += 320 - (depth * 40)
-
-    return score
-  }
-
-  private fun moveFileIntoPlace(source: File, target: File) {
-    if (target.exists() && !target.delete()) {
-      throw IOException("Failed to replace the staged custom Vulkan driver.")
-    }
-    if (!source.renameTo(target)) {
-      source.copyTo(target, overwrite = true)
-      if (!source.delete()) {
-        source.deleteOnExit()
+  private fun confirmResetDriver() {
+    MaterialAlertDialogBuilder(this)
+      .setTitle(R.string.settings_gpu_driver_reset_title)
+      .setMessage(R.string.settings_gpu_driver_reset_message)
+      .setPositiveButton(R.string.settings_gpu_driver_reset) { _, _ ->
+        GpuDriverHelper.installDefaultDriver()
+        Toast.makeText(this, getString(R.string.settings_gpu_driver_reset_done), Toast.LENGTH_SHORT).show()
+        refreshDriverStatus()
       }
-    }
+      .setNegativeButton(android.R.string.cancel, null)
+      .show()
   }
 
-  private fun deleteImportedVulkanDriver() {
-    val targetFile = resolveCustomVulkanDriverFile()
-    if (targetFile.exists() && !targetFile.delete()) {
-      targetFile.deleteOnExit()
+  private fun refreshDriverStatus() {
+    val name = GpuDriverHelper.getInstalledDriverName()
+    driverStatusText.text = if (name != null) {
+      getString(R.string.settings_gpu_driver_active, name)
+    } else {
+      getString(R.string.settings_gpu_driver_system)
     }
-
-    val parent = targetFile.parentFile ?: return
-    val tempFile = File(parent, "${targetFile.name}.tmp")
-    if (tempFile.exists() && !tempFile.delete()) {
-      tempFile.deleteOnExit()
-    }
-  }
-
-  private fun resolveCustomVulkanDriverFile(): File {
-    val base = getExternalFilesDir(null) ?: filesDir
-    return File(File(base, "x1box"), VULKAN_DRIVER_FILE_NAME)
   }
 
   private fun updateEmulatorFilesActionState() {
@@ -1195,7 +1051,8 @@ class SettingsActivity : AppCompatActivity() {
       ?.let { editor.putBoolean(PREF_HRTF, it) }
     parseTomlBoolean(sections, "perf", "cache_shaders")
       ?.let { editor.putBoolean("setting_cache_shaders", it) }
-    parseTomlBoolean(sections, "perf", "hard_fpu")
+    (parseTomlBoolean(sections, "perf", "fp_jit")
+      ?: parseTomlBoolean(sections, "perf", "hard_fpu"))
       ?.let { editor.putBoolean("setting_hard_fpu", it) }
     parseTomlString(sections, "android", "tcg_thread")
       ?.lowercase(Locale.US)
@@ -2622,19 +2479,23 @@ class SettingsActivity : AppCompatActivity() {
 
   private fun isZipSelection(uri: Uri): Boolean {
     val name = getFileName(uri) ?: uri.lastPathSegment ?: return false
-    return isZipSelection(name)
-  }
-
-  private fun isZipSelection(name: String): Boolean {
     return name.lowercase(Locale.US).endsWith(".zip")
   }
 
-  private fun isSharedLibrarySelection(name: String): Boolean {
-    return name.lowercase(Locale.US).endsWith(".so")
-  }
-
-  private fun isSupportedVulkanDriverSelection(name: String): Boolean {
-    return isSharedLibrarySelection(name) || isZipSelection(name)
+  private fun copyUriToFile(
+    uri: Uri,
+    target: File,
+    openError: String = "Failed to open the selected file.",
+  ) {
+    val parent = target.parentFile
+    if (parent != null && !parent.exists() && !parent.mkdirs()) {
+      throw IOException("Failed to prepare ${parent.absolutePath}.")
+    }
+    contentResolver.openInputStream(uri)?.use { input ->
+      FileOutputStream(target).use { output ->
+        input.copyTo(output)
+      }
+    } ?: throw IOException(openError)
   }
 
   private fun persistUriPermission(uri: Uri) {
@@ -2763,6 +2624,7 @@ class SettingsActivity : AppCompatActivity() {
 
   private fun isPersistentCacheEntry(name: String): Boolean {
     return name == "shaders" ||
+      name == "tb_cache.bin" ||
       name == "shader_cache_list" ||
       name.startsWith("scache-") ||
       name.startsWith("vk_pipeline_cache_")

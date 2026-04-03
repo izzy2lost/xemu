@@ -22,6 +22,154 @@
 #include "crypto/aes-round.h"
 #include "crypto/clmul.h"
 
+/*
+ * ARM64 native float helpers for SSE operations.
+ *
+ * On ARM64, replace softfloat per-element calls with native FP instructions.
+ * This trades exact IEEE exception tracking for significant performance gains.
+ * Xbox games do not check MXCSR exception flags so this is safe for xemu.
+ */
+#ifndef XEMU_OPT_NATIVE_FLOAT
+#define XEMU_OPT_NATIVE_FLOAT 1
+#endif
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && !defined(OPS_SSE_NATIVE_FP_DEFINED)
+#define OPS_SSE_NATIVE_FP_DEFINED
+
+#include <string.h>
+#include <math.h>
+
+static inline float32 float32_add_native(float32 a, float32 b)
+{
+    float fa, fb, fr;
+    memcpy(&fa, &a, sizeof(fa));
+    memcpy(&fb, &b, sizeof(fb));
+    fr = fa + fb;
+    float32 r;
+    memcpy(&r, &fr, sizeof(r));
+    return r;
+}
+
+static inline float32 float32_sub_native(float32 a, float32 b)
+{
+    float fa, fb, fr;
+    memcpy(&fa, &a, sizeof(fa));
+    memcpy(&fb, &b, sizeof(fb));
+    fr = fa - fb;
+    float32 r;
+    memcpy(&r, &fr, sizeof(r));
+    return r;
+}
+
+static inline float32 float32_mul_native(float32 a, float32 b)
+{
+    float fa, fb, fr;
+    memcpy(&fa, &a, sizeof(fa));
+    memcpy(&fb, &b, sizeof(fb));
+    fr = fa * fb;
+    float32 r;
+    memcpy(&r, &fr, sizeof(r));
+    return r;
+}
+
+static inline float32 float32_div_native(float32 a, float32 b)
+{
+    float fa, fb, fr;
+    memcpy(&fa, &a, sizeof(fa));
+    memcpy(&fb, &b, sizeof(fb));
+    fr = fa / fb;
+    float32 r;
+    memcpy(&r, &fr, sizeof(r));
+    return r;
+}
+
+static inline float64 float64_add_native(float64 a, float64 b)
+{
+    double da, db, dr;
+    memcpy(&da, &a, sizeof(da));
+    memcpy(&db, &b, sizeof(db));
+    dr = da + db;
+    float64 r;
+    memcpy(&r, &dr, sizeof(r));
+    return r;
+}
+
+static inline float64 float64_sub_native(float64 a, float64 b)
+{
+    double da, db, dr;
+    memcpy(&da, &a, sizeof(da));
+    memcpy(&db, &b, sizeof(db));
+    dr = da - db;
+    float64 r;
+    memcpy(&r, &dr, sizeof(r));
+    return r;
+}
+
+static inline float64 float64_mul_native(float64 a, float64 b)
+{
+    double da, db, dr;
+    memcpy(&da, &a, sizeof(da));
+    memcpy(&db, &b, sizeof(db));
+    dr = da * db;
+    float64 r;
+    memcpy(&r, &dr, sizeof(r));
+    return r;
+}
+
+static inline float64 float64_div_native(float64 a, float64 b)
+{
+    double da, db, dr;
+    memcpy(&da, &a, sizeof(da));
+    memcpy(&db, &b, sizeof(db));
+    dr = da / db;
+    float64 r;
+    memcpy(&r, &dr, sizeof(r));
+    return r;
+}
+
+static inline float32 float32_sqrt_native(float32 a)
+{
+    float fa, fr;
+    memcpy(&fa, &a, sizeof(fa));
+    fr = sqrtf(fa);
+    float32 r;
+    memcpy(&r, &fr, sizeof(r));
+    return r;
+}
+
+static inline float64 float64_sqrt_native(float64 a)
+{
+    double da, dr;
+    memcpy(&da, &a, sizeof(da));
+    dr = sqrt(da);
+    float64 r;
+    memcpy(&r, &dr, sizeof(r));
+    return r;
+}
+
+static inline FloatRelation float32_compare_native(float32 a, float32 b)
+{
+    float fa, fb;
+    memcpy(&fa, &a, sizeof(fa));
+    memcpy(&fb, &b, sizeof(fb));
+    if (__builtin_isunordered(fa, fb)) return float_relation_unordered;
+    if (fa < fb) return float_relation_less;
+    if (fa == fb) return float_relation_equal;
+    return float_relation_greater;
+}
+
+static inline FloatRelation float64_compare_native(float64 a, float64 b)
+{
+    double da, db;
+    memcpy(&da, &a, sizeof(da));
+    memcpy(&db, &b, sizeof(db));
+    if (__builtin_isunordered(da, db)) return float_relation_unordered;
+    if (da < db) return float_relation_less;
+    if (da == db) return float_relation_equal;
+    return float_relation_greater;
+}
+
+#endif /* XBOX && __aarch64__ && !OPS_SSE_NATIVE_FP_DEFINED */
+
 #if SHIFT == 0
 #define Reg MMXReg
 #define XMM_ONLY(...)
@@ -511,32 +659,241 @@ void glue(helper_pshufhw, SUFFIX)(Reg *d, Reg *s, int order)
 
 #endif
 
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+#define FPU_ADD(size, a, b) float ## size ## _add_native(a, b)
+#define FPU_SUB(size, a, b) float ## size ## _sub_native(a, b)
+#define FPU_MUL(size, a, b) float ## size ## _mul_native(a, b)
+#define FPU_DIV(size, a, b) float ## size ## _div_native(a, b)
+#else
 #define FPU_ADD(size, a, b) float ## size ## _add(a, b, &env->sse_status)
 #define FPU_SUB(size, a, b) float ## size ## _sub(a, b, &env->sse_status)
 #define FPU_MUL(size, a, b) float ## size ## _mul(a, b, &env->sse_status)
 #define FPU_DIV(size, a, b) float ## size ## _div(a, b, &env->sse_status)
+#endif
 
 /* Note that the choice of comparison op here is important to get the
  * special cases right: for min and max Intel specifies that (-0,0),
  * (NaN, anything) and (anything, NaN) return the second argument.
  */
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+#define FPU_MIN(size, a, b)                                     \
+    (float ## size ## _compare_native(a, b) == float_relation_less ? (a) : (b))
+#define FPU_MAX(size, a, b)                                     \
+    (float ## size ## _compare_native(b, a) == float_relation_less ? (a) : (b))
+#else
 #define FPU_MIN(size, a, b)                                     \
     (float ## size ## _lt(a, b, &env->sse_status) ? (a) : (b))
 #define FPU_MAX(size, a, b)                                     \
     (float ## size ## _lt(b, a, &env->sse_status) ? (a) : (b))
+#endif
 
+/*
+ * On ARM64 with SHIFT==1 (XMM 128-bit), use NEON intrinsics for packed
+ * float ops to process all 4 (PS) or 2 (PD) elements in a single
+ * vector instruction instead of looping per-element.
+ */
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+#include <arm_neon.h>
+
+void glue(helper_addps, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float32x4_t va = vld1q_f32((const float *)&v->ZMM_S(0));
+    float32x4_t vs = vld1q_f32((const float *)&s->ZMM_S(0));
+    vst1q_f32((float *)&d->ZMM_S(0), vaddq_f32(va, vs));
+}
+
+void glue(helper_addpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float64x2_t va = vld1q_f64((const double *)&v->ZMM_D(0));
+    float64x2_t vs = vld1q_f64((const double *)&s->ZMM_D(0));
+    vst1q_f64((double *)&d->ZMM_D(0), vaddq_f64(va, vs));
+}
+
+void helper_addss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_S(0) = FPU_ADD(32, v->ZMM_S(0), s->ZMM_S(0));
+    for (int i = 1; i < 4; i++) {
+        d->ZMM_L(i) = v->ZMM_L(i);
+    }
+}
+
+void helper_addsd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_D(0) = FPU_ADD(64, v->ZMM_D(0), s->ZMM_D(0));
+    d->ZMM_Q(1) = v->ZMM_Q(1);
+}
+
+void glue(helper_subps, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float32x4_t va = vld1q_f32((const float *)&v->ZMM_S(0));
+    float32x4_t vs = vld1q_f32((const float *)&s->ZMM_S(0));
+    vst1q_f32((float *)&d->ZMM_S(0), vsubq_f32(va, vs));
+}
+
+void glue(helper_subpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float64x2_t va = vld1q_f64((const double *)&v->ZMM_D(0));
+    float64x2_t vs = vld1q_f64((const double *)&s->ZMM_D(0));
+    vst1q_f64((double *)&d->ZMM_D(0), vsubq_f64(va, vs));
+}
+
+void helper_subss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_S(0) = FPU_SUB(32, v->ZMM_S(0), s->ZMM_S(0));
+    for (int i = 1; i < 4; i++) {
+        d->ZMM_L(i) = v->ZMM_L(i);
+    }
+}
+
+void helper_subsd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_D(0) = FPU_SUB(64, v->ZMM_D(0), s->ZMM_D(0));
+    d->ZMM_Q(1) = v->ZMM_Q(1);
+}
+
+void glue(helper_mulps, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float32x4_t va = vld1q_f32((const float *)&v->ZMM_S(0));
+    float32x4_t vs = vld1q_f32((const float *)&s->ZMM_S(0));
+    vst1q_f32((float *)&d->ZMM_S(0), vmulq_f32(va, vs));
+}
+
+void glue(helper_mulpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float64x2_t va = vld1q_f64((const double *)&v->ZMM_D(0));
+    float64x2_t vs = vld1q_f64((const double *)&s->ZMM_D(0));
+    vst1q_f64((double *)&d->ZMM_D(0), vmulq_f64(va, vs));
+}
+
+void helper_mulss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_S(0) = FPU_MUL(32, v->ZMM_S(0), s->ZMM_S(0));
+    for (int i = 1; i < 4; i++) {
+        d->ZMM_L(i) = v->ZMM_L(i);
+    }
+}
+
+void helper_mulsd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_D(0) = FPU_MUL(64, v->ZMM_D(0), s->ZMM_D(0));
+    d->ZMM_Q(1) = v->ZMM_Q(1);
+}
+
+void glue(helper_divps, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float32x4_t va = vld1q_f32((const float *)&v->ZMM_S(0));
+    float32x4_t vs = vld1q_f32((const float *)&s->ZMM_S(0));
+    vst1q_f32((float *)&d->ZMM_S(0), vdivq_f32(va, vs));
+}
+
+void glue(helper_divpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float64x2_t va = vld1q_f64((const double *)&v->ZMM_D(0));
+    float64x2_t vs = vld1q_f64((const double *)&s->ZMM_D(0));
+    vst1q_f64((double *)&d->ZMM_D(0), vdivq_f64(va, vs));
+}
+
+void helper_divss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_S(0) = FPU_DIV(32, v->ZMM_S(0), s->ZMM_S(0));
+    for (int i = 1; i < 4; i++) {
+        d->ZMM_L(i) = v->ZMM_L(i);
+    }
+}
+
+void helper_divsd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_D(0) = FPU_DIV(64, v->ZMM_D(0), s->ZMM_D(0));
+    d->ZMM_Q(1) = v->ZMM_Q(1);
+}
+
+void glue(helper_minps, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float32x4_t va = vld1q_f32((const float *)&v->ZMM_S(0));
+    float32x4_t vs = vld1q_f32((const float *)&s->ZMM_S(0));
+    vst1q_f32((float *)&d->ZMM_S(0), vminq_f32(va, vs));
+}
+
+void glue(helper_minpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float64x2_t va = vld1q_f64((const double *)&v->ZMM_D(0));
+    float64x2_t vs = vld1q_f64((const double *)&s->ZMM_D(0));
+    vst1q_f64((double *)&d->ZMM_D(0), vminq_f64(va, vs));
+}
+
+void helper_minss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_S(0) = FPU_MIN(32, v->ZMM_S(0), s->ZMM_S(0));
+    for (int i = 1; i < 4; i++) {
+        d->ZMM_L(i) = v->ZMM_L(i);
+    }
+}
+
+void helper_minsd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_D(0) = FPU_MIN(64, v->ZMM_D(0), s->ZMM_D(0));
+    d->ZMM_Q(1) = v->ZMM_Q(1);
+}
+
+void glue(helper_maxps, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float32x4_t va = vld1q_f32((const float *)&v->ZMM_S(0));
+    float32x4_t vs = vld1q_f32((const float *)&s->ZMM_S(0));
+    vst1q_f32((float *)&d->ZMM_S(0), vmaxq_f32(va, vs));
+}
+
+void glue(helper_maxpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float64x2_t va = vld1q_f64((const double *)&v->ZMM_D(0));
+    float64x2_t vs = vld1q_f64((const double *)&s->ZMM_D(0));
+    vst1q_f64((double *)&d->ZMM_D(0), vmaxq_f64(va, vs));
+}
+
+void helper_maxss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_S(0) = FPU_MAX(32, v->ZMM_S(0), s->ZMM_S(0));
+    for (int i = 1; i < 4; i++) {
+        d->ZMM_L(i) = v->ZMM_L(i);
+    }
+}
+
+void helper_maxsd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    d->ZMM_D(0) = FPU_MAX(64, v->ZMM_D(0), s->ZMM_D(0));
+    d->ZMM_Q(1) = v->ZMM_Q(1);
+}
+
+#else
 SSE_HELPER_S(add, FPU_ADD)
 SSE_HELPER_S(sub, FPU_SUB)
 SSE_HELPER_S(mul, FPU_MUL)
 SSE_HELPER_S(div, FPU_DIV)
 SSE_HELPER_S(min, FPU_MIN)
 SSE_HELPER_S(max, FPU_MAX)
+#endif
 
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+void glue(helper_sqrtps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
+{
+    float32x4_t vs = vld1q_f32((const float *)&s->ZMM_S(0));
+    vst1q_f32((float *)&d->ZMM_S(0), vsqrtq_f32(vs));
+}
+
+void glue(helper_sqrtpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
+{
+    float64x2_t vs = vld1q_f64((const double *)&s->ZMM_D(0));
+    vst1q_f64((double *)&d->ZMM_D(0), vsqrtq_f64(vs));
+}
+#else
 void glue(helper_sqrtps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
 {
     int i;
     for (i = 0; i < 2 << SHIFT; i++) {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+        d->ZMM_S(i) = float32_sqrt_native(s->ZMM_S(i));
+#else
         d->ZMM_S(i) = float32_sqrt(s->ZMM_S(i), &env->sse_status);
+#endif
     }
 }
 
@@ -544,15 +901,24 @@ void glue(helper_sqrtpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
 {
     int i;
     for (i = 0; i < 1 << SHIFT; i++) {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+        d->ZMM_D(i) = float64_sqrt_native(s->ZMM_D(i));
+#else
         d->ZMM_D(i) = float64_sqrt(s->ZMM_D(i), &env->sse_status);
+#endif
     }
 }
+#endif
 
 #if SHIFT == 1
 void helper_sqrtss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
 {
     int i;
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    d->ZMM_S(0) = float32_sqrt_native(s->ZMM_S(0));
+#else
     d->ZMM_S(0) = float32_sqrt(s->ZMM_S(0), &env->sse_status);
+#endif
     for (i = 1; i < 2 << SHIFT; i++) {
         d->ZMM_L(i) = v->ZMM_L(i);
     }
@@ -561,7 +927,11 @@ void helper_sqrtss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
 void helper_sqrtsd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
 {
     int i;
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    d->ZMM_D(0) = float64_sqrt_native(s->ZMM_D(0));
+#else
     d->ZMM_D(0) = float64_sqrt(s->ZMM_D(0), &env->sse_status);
+#endif
     for (i = 1; i < 1 << SHIFT; i++) {
         d->ZMM_Q(i) = v->ZMM_Q(i);
     }
@@ -569,6 +939,23 @@ void helper_sqrtsd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
 #endif
 
 /* float to float conversions */
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+void glue(helper_cvtps2pd, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
+{
+    float32x2_t lo = vld1_f32((const float *)&s->ZMM_S(0));
+    float64x2_t hi_d = vcvt_f64_f32(vget_high_f32(vld1q_f32((const float *)&s->ZMM_S(0))));
+    float64x2_t lo_d = vcvt_f64_f32(lo);
+    vst1q_f64((double *)&d->ZMM_D(0), lo_d);
+}
+
+void glue(helper_cvtpd2ps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
+{
+    float64x2_t vd = vld1q_f64((const double *)&s->ZMM_D(0));
+    float32x2_t vs = vcvt_f32_f64(vd);
+    vst1_f32((float *)&d->ZMM_S(0), vs);
+    d->Q(1) = 0;
+}
+#else
 void glue(helper_cvtps2pd, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
 {
     int i;
@@ -587,6 +974,7 @@ void glue(helper_cvtpd2ps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
          d->Q(i) = 0;
     }
 }
+#endif
 
 #if SHIFT >= 1
 void glue(helper_cvtph2ps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
@@ -621,7 +1009,14 @@ void glue(helper_cvtps2ph, SUFFIX)(CPUX86State *env, Reg *d, Reg *s, int mode)
 void helper_cvtss2sd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
 {
     int i;
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    float f;
+    memcpy(&f, &s->ZMM_S(0), sizeof(f));
+    double dd = (double)f;
+    memcpy(&d->ZMM_D(0), &dd, sizeof(dd));
+#else
     d->ZMM_D(0) = float32_to_float64(s->ZMM_S(0), &env->sse_status);
+#endif
     for (i = 1; i < 1 << SHIFT; i++) {
         d->ZMM_Q(i) = v->ZMM_Q(i);
     }
@@ -630,7 +1025,14 @@ void helper_cvtss2sd(CPUX86State *env, Reg *d, Reg *v, Reg *s)
 void helper_cvtsd2ss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
 {
     int i;
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    double dd;
+    memcpy(&dd, &s->ZMM_D(0), sizeof(dd));
+    float f = (float)dd;
+    memcpy(&d->ZMM_S(0), &f, sizeof(f));
+#else
     d->ZMM_S(0) = float64_to_float32(s->ZMM_D(0), &env->sse_status);
+#endif
     for (i = 1; i < 2 << SHIFT; i++) {
         d->ZMM_L(i) = v->ZMM_L(i);
     }
@@ -638,6 +1040,24 @@ void helper_cvtsd2ss(CPUX86State *env, Reg *d, Reg *v, Reg *s)
 #endif
 
 /* integer to float */
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+void glue(helper_cvtdq2ps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
+{
+    int32x4_t vi = vld1q_s32((const int32_t *)&s->ZMM_L(0));
+    float32x4_t vf = vcvtq_f32_s32(vi);
+    vst1q_f32((float *)&d->ZMM_S(0), vf);
+}
+
+void glue(helper_cvtdq2pd, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
+{
+    int32_t i0 = s->ZMM_L(0);
+    int32_t i1 = s->ZMM_L(1);
+    double d0 = (double)i0;
+    double d1 = (double)i1;
+    memcpy(&d->ZMM_D(0), &d0, sizeof(d0));
+    memcpy(&d->ZMM_D(1), &d1, sizeof(d1));
+}
+#else
 void glue(helper_cvtdq2ps, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
 {
     int i;
@@ -654,28 +1074,53 @@ void glue(helper_cvtdq2pd, SUFFIX)(CPUX86State *env, Reg *d, Reg *s)
         d->ZMM_D(i) = int32_to_float64(l, &env->sse_status);
     }
 }
+#endif
 
 #if SHIFT == 1
 void helper_cvtpi2ps(CPUX86State *env, ZMMReg *d, MMXReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    float f0 = (float)(int32_t)s->MMX_L(0);
+    float f1 = (float)(int32_t)s->MMX_L(1);
+    memcpy(&d->ZMM_S(0), &f0, sizeof(f0));
+    memcpy(&d->ZMM_S(1), &f1, sizeof(f1));
+#else
     d->ZMM_S(0) = int32_to_float32(s->MMX_L(0), &env->sse_status);
     d->ZMM_S(1) = int32_to_float32(s->MMX_L(1), &env->sse_status);
+#endif
 }
 
 void helper_cvtpi2pd(CPUX86State *env, ZMMReg *d, MMXReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    double d0 = (double)(int32_t)s->MMX_L(0);
+    double d1 = (double)(int32_t)s->MMX_L(1);
+    memcpy(&d->ZMM_D(0), &d0, sizeof(d0));
+    memcpy(&d->ZMM_D(1), &d1, sizeof(d1));
+#else
     d->ZMM_D(0) = int32_to_float64(s->MMX_L(0), &env->sse_status);
     d->ZMM_D(1) = int32_to_float64(s->MMX_L(1), &env->sse_status);
+#endif
 }
 
 void helper_cvtsi2ss(CPUX86State *env, ZMMReg *d, uint32_t val)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    float f = (float)(int32_t)val;
+    memcpy(&d->ZMM_S(0), &f, sizeof(f));
+#else
     d->ZMM_S(0) = int32_to_float32(val, &env->sse_status);
+#endif
 }
 
 void helper_cvtsi2sd(CPUX86State *env, ZMMReg *d, uint32_t val)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    double dd = (double)(int32_t)val;
+    memcpy(&d->ZMM_D(0), &dd, sizeof(dd));
+#else
     d->ZMM_D(0) = int32_to_float64(val, &env->sse_status);
+#endif
 }
 
 #ifdef TARGET_X86_64
@@ -727,6 +1172,27 @@ WRAP_FLOATCONV(int64_t, float64_to_int64, float64, INT64_MIN)
 WRAP_FLOATCONV(int64_t, float64_to_int64_round_to_zero, float64, INT64_MIN)
 #endif
 
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+void glue(helper_cvtps2dq, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
+{
+    float32x4_t vf = vld1q_f32((const float *)&s->ZMM_S(0));
+    int32x4_t vi = vcvtnq_s32_f32(vf);
+    /* x86 returns INT32_MIN for NaN; ARM64 returns 0 */
+    uint32x4_t nan_mask = vmvnq_u32(vceqq_f32(vf, vf));
+    vi = vbslq_s32(nan_mask, vdupq_n_s32(INT32_MIN), vi);
+    vst1q_s32((int32_t *)&d->ZMM_L(0), vi);
+}
+
+void glue(helper_cvtpd2dq, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
+{
+    double d0, d1;
+    memcpy(&d0, &s->ZMM_D(0), sizeof(d0));
+    memcpy(&d1, &s->ZMM_D(1), sizeof(d1));
+    d->ZMM_L(0) = __builtin_isnan(d0) ? INT32_MIN : (int32_t)lrint(d0);
+    d->ZMM_L(1) = __builtin_isnan(d1) ? INT32_MIN : (int32_t)lrint(d1);
+    d->Q(1) = 0;
+}
+#else
 void glue(helper_cvtps2dq, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
     int i;
@@ -745,28 +1211,59 @@ void glue(helper_cvtpd2dq, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
          d->Q(i) = 0;
     }
 }
+#endif
 
 #if SHIFT == 1
 void helper_cvtps2pi(CPUX86State *env, MMXReg *d, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    float f;
+    memcpy(&f, &s->ZMM_S(0), sizeof(f));
+    d->MMX_L(0) = __builtin_isnan(f) ? INT32_MIN : (int32_t)lrintf(f);
+    memcpy(&f, &s->ZMM_S(1), sizeof(f));
+    d->MMX_L(1) = __builtin_isnan(f) ? INT32_MIN : (int32_t)lrintf(f);
+#else
     d->MMX_L(0) = x86_float32_to_int32(s->ZMM_S(0), &env->sse_status);
     d->MMX_L(1) = x86_float32_to_int32(s->ZMM_S(1), &env->sse_status);
+#endif
 }
 
 void helper_cvtpd2pi(CPUX86State *env, MMXReg *d, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    double dd;
+    memcpy(&dd, &s->ZMM_D(0), sizeof(dd));
+    d->MMX_L(0) = __builtin_isnan(dd) ? INT32_MIN : (int32_t)lrint(dd);
+    memcpy(&dd, &s->ZMM_D(1), sizeof(dd));
+    d->MMX_L(1) = __builtin_isnan(dd) ? INT32_MIN : (int32_t)lrint(dd);
+#else
     d->MMX_L(0) = x86_float64_to_int32(s->ZMM_D(0), &env->sse_status);
     d->MMX_L(1) = x86_float64_to_int32(s->ZMM_D(1), &env->sse_status);
+#endif
 }
 
 int32_t helper_cvtss2si(CPUX86State *env, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    float f;
+    memcpy(&f, &s->ZMM_S(0), sizeof(f));
+    if (__builtin_isnan(f)) return INT32_MIN;
+    return (int32_t)lrintf(f);
+#else
     return x86_float32_to_int32(s->ZMM_S(0), &env->sse_status);
+#endif
 }
 
 int32_t helper_cvtsd2si(CPUX86State *env, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    double dd;
+    memcpy(&dd, &s->ZMM_D(0), sizeof(dd));
+    if (__builtin_isnan(dd)) return INT32_MIN;
+    return (int32_t)lrint(dd);
+#else
     return x86_float64_to_int32(s->ZMM_D(0), &env->sse_status);
+#endif
 }
 
 #ifdef TARGET_X86_64
@@ -783,6 +1280,26 @@ int64_t helper_cvtsd2sq(CPUX86State *env, ZMMReg *s)
 #endif
 
 /* float to integer truncated */
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+void glue(helper_cvttps2dq, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
+{
+    float32x4_t vf = vld1q_f32((const float *)&s->ZMM_S(0));
+    int32x4_t vi = vcvtq_s32_f32(vf);
+    uint32x4_t nan_mask = vmvnq_u32(vceqq_f32(vf, vf));
+    vi = vbslq_s32(nan_mask, vdupq_n_s32(INT32_MIN), vi);
+    vst1q_s32((int32_t *)&d->ZMM_L(0), vi);
+}
+
+void glue(helper_cvttpd2dq, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
+{
+    double d0, d1;
+    memcpy(&d0, &s->ZMM_D(0), sizeof(d0));
+    memcpy(&d1, &s->ZMM_D(1), sizeof(d1));
+    d->ZMM_L(0) = __builtin_isnan(d0) ? INT32_MIN : (int32_t)d0;
+    d->ZMM_L(1) = __builtin_isnan(d1) ? INT32_MIN : (int32_t)d1;
+    d->Q(1) = 0;
+}
+#else
 void glue(helper_cvttps2dq, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
     int i;
@@ -803,28 +1320,59 @@ void glue(helper_cvttpd2dq, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
          d->Q(i) = 0;
     }
 }
+#endif
 
 #if SHIFT == 1
 void helper_cvttps2pi(CPUX86State *env, MMXReg *d, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    float f;
+    memcpy(&f, &s->ZMM_S(0), sizeof(f));
+    d->MMX_L(0) = __builtin_isnan(f) ? INT32_MIN : (int32_t)f;
+    memcpy(&f, &s->ZMM_S(1), sizeof(f));
+    d->MMX_L(1) = __builtin_isnan(f) ? INT32_MIN : (int32_t)f;
+#else
     d->MMX_L(0) = x86_float32_to_int32_round_to_zero(s->ZMM_S(0), &env->sse_status);
     d->MMX_L(1) = x86_float32_to_int32_round_to_zero(s->ZMM_S(1), &env->sse_status);
+#endif
 }
 
 void helper_cvttpd2pi(CPUX86State *env, MMXReg *d, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    double dd;
+    memcpy(&dd, &s->ZMM_D(0), sizeof(dd));
+    d->MMX_L(0) = __builtin_isnan(dd) ? INT32_MIN : (int32_t)dd;
+    memcpy(&dd, &s->ZMM_D(1), sizeof(dd));
+    d->MMX_L(1) = __builtin_isnan(dd) ? INT32_MIN : (int32_t)dd;
+#else
     d->MMX_L(0) = x86_float64_to_int32_round_to_zero(s->ZMM_D(0), &env->sse_status);
     d->MMX_L(1) = x86_float64_to_int32_round_to_zero(s->ZMM_D(1), &env->sse_status);
+#endif
 }
 
 int32_t helper_cvttss2si(CPUX86State *env, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    float f;
+    memcpy(&f, &s->ZMM_S(0), sizeof(f));
+    if (__builtin_isnan(f)) return INT32_MIN;
+    return (int32_t)f;
+#else
     return x86_float32_to_int32_round_to_zero(s->ZMM_S(0), &env->sse_status);
+#endif
 }
 
 int32_t helper_cvttsd2si(CPUX86State *env, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    double dd;
+    memcpy(&dd, &s->ZMM_D(0), sizeof(dd));
+    if (__builtin_isnan(dd)) return INT32_MIN;
+    return (int32_t)dd;
+#else
     return x86_float64_to_int32_round_to_zero(s->ZMM_D(0), &env->sse_status);
+#endif
 }
 
 #ifdef TARGET_X86_64
@@ -840,6 +1388,15 @@ int64_t helper_cvttsd2sq(CPUX86State *env, ZMMReg *s)
 #endif
 #endif
 
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+void glue(helper_rsqrtps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
+{
+    float32x4_t vf = vld1q_f32((const float *)&s->ZMM_S(0));
+    float32x4_t est = vrsqrteq_f32(vf);
+    est = vmulq_f32(est, vrsqrtsq_f32(vf, vmulq_f32(est, est)));
+    vst1q_f32((float *)&d->ZMM_S(0), est);
+}
+#else
 void glue(helper_rsqrtps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
     int old_flags = get_float_exception_flags(&env->sse_status);
@@ -851,22 +1408,39 @@ void glue(helper_rsqrtps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
     }
     set_float_exception_flags(old_flags, &env->sse_status);
 }
+#endif
 
 #if SHIFT == 1
 void helper_rsqrtss(CPUX86State *env, ZMMReg *d, ZMMReg *v, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    float32x2_t vf = vld1_dup_f32((const float *)&s->ZMM_S(0));
+    float32x2_t est = vrsqrte_f32(vf);
+    est = vmul_f32(est, vrsqrts_f32(vf, vmul_f32(est, est)));
+    vst1_lane_f32((float *)&d->ZMM_S(0), est, 0);
+#else
     int old_flags = get_float_exception_flags(&env->sse_status);
-    int i;
     d->ZMM_S(0) = float32_div(float32_one,
                               float32_sqrt(s->ZMM_S(0), &env->sse_status),
                               &env->sse_status);
     set_float_exception_flags(old_flags, &env->sse_status);
+#endif
+    int i;
     for (i = 1; i < 2 << SHIFT; i++) {
         d->ZMM_L(i) = v->ZMM_L(i);
     }
 }
 #endif
 
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+void glue(helper_rcpps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
+{
+    float32x4_t vf = vld1q_f32((const float *)&s->ZMM_S(0));
+    float32x4_t est = vrecpeq_f32(vf);
+    est = vmulq_f32(est, vrecpsq_f32(vf, est));
+    vst1q_f32((float *)&d->ZMM_S(0), est);
+}
+#else
 void glue(helper_rcpps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
 {
     int old_flags = get_float_exception_flags(&env->sse_status);
@@ -876,17 +1450,25 @@ void glue(helper_rcpps, SUFFIX)(CPUX86State *env, ZMMReg *d, ZMMReg *s)
     }
     set_float_exception_flags(old_flags, &env->sse_status);
 }
+#endif
 
 #if SHIFT == 1
 void helper_rcpss(CPUX86State *env, ZMMReg *d, ZMMReg *v, ZMMReg *s)
 {
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    float32x2_t vf = vld1_dup_f32((const float *)&s->ZMM_S(0));
+    float32x2_t est = vrecpe_f32(vf);
+    est = vmul_f32(est, vrecps_f32(vf, est));
+    vst1_lane_f32((float *)&d->ZMM_S(0), est, 0);
+#else
     int old_flags = get_float_exception_flags(&env->sse_status);
-    int i;
     d->ZMM_S(0) = float32_div(float32_one, s->ZMM_S(0), &env->sse_status);
+    set_float_exception_flags(old_flags, &env->sse_status);
+#endif
+    int i;
     for (i = 1; i < 2 << SHIFT; i++) {
         d->ZMM_L(i) = v->ZMM_L(i);
     }
-    set_float_exception_flags(old_flags, &env->sse_status);
 }
 #endif
 
@@ -935,6 +1517,68 @@ void helper_insertq_i(CPUX86State *env, ZMMReg *d, ZMMReg *s, int index, int len
     d->ZMM_Q(0) = helper_insertq(d->ZMM_Q(0), s->ZMM_Q(0), index, length);
 }
 #endif
+
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+
+void glue(helper_haddps, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float32x4_t vv = vld1q_f32((const float *)&v->ZMM_S(0));
+    float32x4_t vs = vld1q_f32((const float *)&s->ZMM_S(0));
+    float32x4_t r = vpaddq_f32(vv, vs);
+    vst1q_f32((float *)&d->ZMM_S(0), r);
+}
+
+void glue(helper_hsubps, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float32x4_t vv = vld1q_f32((const float *)&v->ZMM_S(0));
+    float32x4_t vs = vld1q_f32((const float *)&s->ZMM_S(0));
+    /* Deinterleave into even/odd pairs, then subtract */
+    float32x4_t a = vuzp1q_f32(vv, vs);
+    float32x4_t b = vuzp2q_f32(vv, vs);
+    vst1q_f32((float *)&d->ZMM_S(0), vsubq_f32(a, b));
+}
+
+void glue(helper_haddpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float64x2_t vv = vld1q_f64((const double *)&v->ZMM_D(0));
+    float64x2_t vs = vld1q_f64((const double *)&s->ZMM_D(0));
+    float64x2_t r = vpaddq_f64(vv, vs);
+    vst1q_f64((double *)&d->ZMM_D(0), r);
+}
+
+void glue(helper_hsubpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float64x2_t vv = vld1q_f64((const double *)&v->ZMM_D(0));
+    float64x2_t vs = vld1q_f64((const double *)&s->ZMM_D(0));
+    float64x2_t a = vuzp1q_f64(vv, vs);
+    float64x2_t b = vuzp2q_f64(vv, vs);
+    vst1q_f64((double *)&d->ZMM_D(0), vsubq_f64(a, b));
+}
+
+void glue(helper_addsubps, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float32x4_t va = vld1q_f32((const float *)&v->ZMM_S(0));
+    float32x4_t vb = vld1q_f32((const float *)&s->ZMM_S(0));
+    float32x4_t add = vaddq_f32(va, vb);
+    float32x4_t sub = vsubq_f32(va, vb);
+    /* Even lanes = sub, odd lanes = add: {sub[0], add[1], sub[2], add[3]} */
+    static const uint32_t mask_data[4] = { 0, 0xFFFFFFFF, 0, 0xFFFFFFFF };
+    uint32x4_t mask = vld1q_u32(mask_data);
+    vst1q_f32((float *)&d->ZMM_S(0), vbslq_f32(mask, add, sub));
+}
+
+void glue(helper_addsubpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
+{
+    float64x2_t va = vld1q_f64((const double *)&v->ZMM_D(0));
+    float64x2_t vb = vld1q_f64((const double *)&s->ZMM_D(0));
+    float64x2_t add = vaddq_f64(va, vb);
+    float64x2_t sub = vsubq_f64(va, vb);
+    static const uint64_t mask_data[2] = { 0, 0xFFFFFFFFFFFFFFFFULL };
+    uint64x2_t mask = vld1q_u64(mask_data);
+    vst1q_f64((double *)&d->ZMM_D(0), vbslq_f64(mask, add, sub));
+}
+
+#else
 
 #define SSE_HELPER_HPS(name, F)  \
 void glue(helper_ ## name, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s) \
@@ -996,6 +1640,130 @@ void glue(helper_addsubpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
     }
 }
 
+#endif /* XBOX && __aarch64__ && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1 */
+
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1
+/*
+ * NEON-vectorized packed comparisons. Processes all 4 (PS) or 2 (PD) lanes
+ * in a single vector operation instead of per-element scalar loops.
+ */
+
+static inline uint32x4_t neon_cmp_ord_ps(float32x4_t a, float32x4_t b)
+{
+    return vandq_u32(vceqq_f32(a, a), vceqq_f32(b, b));
+}
+
+static inline uint64x2_t neon_cmp_ord_pd(float64x2_t a, float64x2_t b)
+{
+    return vandq_u64(vceqq_f64(a, a), vceqq_f64(b, b));
+}
+
+static inline uint64x2_t neon_notq_u64(uint64x2_t v)
+{
+    return vreinterpretq_u64_u32(vmvnq_u32(vreinterpretq_u32_u64(v)));
+}
+
+#define NEON_CMP_PS(name, expr)                                             \
+    void glue(helper_ ## name ## ps, SUFFIX)(CPUX86State *env,              \
+                                             Reg *d, Reg *v, Reg *s)        \
+    {                                                                       \
+        float32x4_t va = vld1q_f32((const float *)&v->ZMM_S(0));           \
+        float32x4_t vb = vld1q_f32((const float *)&s->ZMM_S(0));          \
+        uint32x4_t r = (expr);                                              \
+        vst1q_u32((uint32_t *)&d->ZMM_L(0), r);                            \
+    }
+
+#define NEON_CMP_PD(name, expr64)                                           \
+    void glue(helper_ ## name ## pd, SUFFIX)(CPUX86State *env,              \
+                                             Reg *d, Reg *v, Reg *s)        \
+    {                                                                       \
+        float64x2_t da = vld1q_f64((const double *)&v->ZMM_D(0));          \
+        float64x2_t db = vld1q_f64((const double *)&s->ZMM_D(0));         \
+        uint64x2_t r = (expr64);                                            \
+        vst1q_u64((uint64_t *)&d->ZMM_Q(0), r);                            \
+    }
+
+/* SSE base predicates (0-7) */
+NEON_CMP_PS(cmpeq,    vceqq_f32(va, vb))
+NEON_CMP_PS(cmplt,    vcltq_f32(va, vb))
+NEON_CMP_PS(cmple,    vcleq_f32(va, vb))
+NEON_CMP_PS(cmpunord, vmvnq_u32(neon_cmp_ord_ps(va, vb)))
+NEON_CMP_PS(cmpneq,   vmvnq_u32(vceqq_f32(va, vb)))
+NEON_CMP_PS(cmpnlt,   vmvnq_u32(vcltq_f32(va, vb)))
+NEON_CMP_PS(cmpnle,   vmvnq_u32(vcleq_f32(va, vb)))
+NEON_CMP_PS(cmpord,   neon_cmp_ord_ps(va, vb))
+
+NEON_CMP_PD(cmpeq,    vceqq_f64(da, db))
+NEON_CMP_PD(cmplt,    vcltq_f64(da, db))
+NEON_CMP_PD(cmple,    vcleq_f64(da, db))
+NEON_CMP_PD(cmpunord, neon_notq_u64(neon_cmp_ord_pd(da, db)))
+NEON_CMP_PD(cmpneq,   neon_notq_u64(vceqq_f64(da, db)))
+NEON_CMP_PD(cmpnlt,   neon_notq_u64(vcltq_f64(da, db)))
+NEON_CMP_PD(cmpnle,   neon_notq_u64(vcleq_f64(da, db)))
+NEON_CMP_PD(cmpord,   neon_cmp_ord_pd(da, db))
+
+/* AVX extended predicates */
+NEON_CMP_PS(cmpequ,    vorrq_u32(vceqq_f32(va, vb), vmvnq_u32(neon_cmp_ord_ps(va, vb))))
+NEON_CMP_PS(cmpnge,    vmvnq_u32(vcgeq_f32(va, vb)))
+NEON_CMP_PS(cmpngt,    vmvnq_u32(vcgtq_f32(va, vb)))
+NEON_CMP_PS(cmpfalse,  vdupq_n_u32(0))
+NEON_CMP_PS(cmpnequ,   vmvnq_u32(vorrq_u32(vceqq_f32(va, vb), vmvnq_u32(neon_cmp_ord_ps(va, vb)))))
+NEON_CMP_PS(cmpge,     vcgeq_f32(va, vb))
+NEON_CMP_PS(cmpgt,     vcgtq_f32(va, vb))
+NEON_CMP_PS(cmptrue,   vdupq_n_u32(0xFFFFFFFF))
+
+NEON_CMP_PD(cmpequ,    vorrq_u64(vceqq_f64(da, db), neon_notq_u64(neon_cmp_ord_pd(da, db))))
+NEON_CMP_PD(cmpnge,    neon_notq_u64(vcgeq_f64(da, db)))
+NEON_CMP_PD(cmpngt,    neon_notq_u64(vcgtq_f64(da, db)))
+NEON_CMP_PD(cmpfalse,  vdupq_n_u64(0))
+NEON_CMP_PD(cmpnequ,   neon_notq_u64(vorrq_u64(vceqq_f64(da, db), neon_notq_u64(neon_cmp_ord_pd(da, db)))))
+NEON_CMP_PD(cmpge,     vcgeq_f64(da, db))
+NEON_CMP_PD(cmpgt,     vcgtq_f64(da, db))
+NEON_CMP_PD(cmptrue,   vdupq_n_u64(UINT64_MAX))
+
+/* "s"/"q" signaling variants use same NEON ops (no exception tracking) */
+NEON_CMP_PS(cmpeqs,    vceqq_f32(va, vb))
+NEON_CMP_PS(cmpltq,    vcltq_f32(va, vb))
+NEON_CMP_PS(cmpleq,    vcleq_f32(va, vb))
+NEON_CMP_PS(cmpunords, vmvnq_u32(neon_cmp_ord_ps(va, vb)))
+NEON_CMP_PS(cmpneqq,   vmvnq_u32(vceqq_f32(va, vb)))
+NEON_CMP_PS(cmpnltq,   vmvnq_u32(vcltq_f32(va, vb)))
+NEON_CMP_PS(cmpnleq,   vmvnq_u32(vcleq_f32(va, vb)))
+NEON_CMP_PS(cmpords,   neon_cmp_ord_ps(va, vb))
+NEON_CMP_PS(cmpequs,   vorrq_u32(vceqq_f32(va, vb), vmvnq_u32(neon_cmp_ord_ps(va, vb))))
+NEON_CMP_PS(cmpngeq,   vmvnq_u32(vcgeq_f32(va, vb)))
+NEON_CMP_PS(cmpngtq,   vmvnq_u32(vcgtq_f32(va, vb)))
+NEON_CMP_PS(cmpfalses, vdupq_n_u32(0))
+NEON_CMP_PS(cmpnequs,  vmvnq_u32(vorrq_u32(vceqq_f32(va, vb), vmvnq_u32(neon_cmp_ord_ps(va, vb)))))
+NEON_CMP_PS(cmpgeq,    vcgeq_f32(va, vb))
+NEON_CMP_PS(cmpgtq,    vcgtq_f32(va, vb))
+NEON_CMP_PS(cmptrues,  vdupq_n_u32(0xFFFFFFFF))
+
+NEON_CMP_PD(cmpeqs,    vceqq_f64(da, db))
+NEON_CMP_PD(cmpltq,    vcltq_f64(da, db))
+NEON_CMP_PD(cmpleq,    vcleq_f64(da, db))
+NEON_CMP_PD(cmpunords, neon_notq_u64(neon_cmp_ord_pd(da, db)))
+NEON_CMP_PD(cmpneqq,   neon_notq_u64(vceqq_f64(da, db)))
+NEON_CMP_PD(cmpnltq,   neon_notq_u64(vcltq_f64(da, db)))
+NEON_CMP_PD(cmpnleq,   neon_notq_u64(vcleq_f64(da, db)))
+NEON_CMP_PD(cmpords,   neon_cmp_ord_pd(da, db))
+NEON_CMP_PD(cmpequs,   vorrq_u64(vceqq_f64(da, db), neon_notq_u64(neon_cmp_ord_pd(da, db))))
+NEON_CMP_PD(cmpngeq,   neon_notq_u64(vcgeq_f64(da, db)))
+NEON_CMP_PD(cmpngtq,   neon_notq_u64(vcgtq_f64(da, db)))
+NEON_CMP_PD(cmpfalses, vdupq_n_u64(0))
+NEON_CMP_PD(cmpnequs,  neon_notq_u64(vorrq_u64(vceqq_f64(da, db), neon_notq_u64(neon_cmp_ord_pd(da, db)))))
+NEON_CMP_PD(cmpgeq,    vcgeq_f64(da, db))
+NEON_CMP_PD(cmpgtq,    vcgtq_f64(da, db))
+NEON_CMP_PD(cmptrues,  vdupq_n_u64(UINT64_MAX))
+
+#undef NEON_CMP_PS
+#undef NEON_CMP_PD
+
+#define SSE_HELPER_CMP_P(name, F, C)
+
+#endif /* XBOX && __aarch64__ && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1 -- NEON CMP */
+
+#if !(defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT && SHIFT == 1)
 #define SSE_HELPER_CMP_P(name, F, C)                                    \
     void glue(helper_ ## name ## ps, SUFFIX)(CPUX86State *env,          \
                                              Reg *d, Reg *v, Reg *s)    \
@@ -1014,6 +1782,7 @@ void glue(helper_addsubpd, SUFFIX)(CPUX86State *env, Reg *d, Reg *v, Reg *s)
             d->ZMM_Q(i) = C(F(64, v->ZMM_D(i), s->ZMM_D(i))) ? -1 : 0;  \
         }                                                               \
     }
+#endif /* !NEON CMP */
 
 #if SHIFT == 1
 #define SSE_HELPER_CMP(name, F, C)                                          \
@@ -1052,10 +1821,15 @@ static inline bool FPU_GE(FloatRelation x)
 /* We must make sure we evaluate the argument in case it is a signalling NAN */
 #define FPU_FALSE(x) (x == float_relation_equal && 0)
 
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+#define FPU_CMPQ(size, a, b) float ## size ## _compare_native(a, b)
+#define FPU_CMPS(size, a, b) float ## size ## _compare_native(a, b)
+#else
 #define FPU_CMPQ(size, a, b) \
     float ## size ## _compare_quiet(a, b, &env->sse_status)
 #define FPU_CMPS(size, a, b) \
     float ## size ## _compare(a, b, &env->sse_status)
+#endif
 
 #else
 #define SSE_HELPER_CMP(name, F, C) SSE_HELPER_CMP_P(name, F, C)
@@ -1109,7 +1883,11 @@ void helper_ucomiss(CPUX86State *env, Reg *d, Reg *s)
 
     s0 = d->ZMM_S(0);
     s1 = s->ZMM_S(0);
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    ret = float32_compare_native(s0, s1);
+#else
     ret = float32_compare_quiet(s0, s1, &env->sse_status);
+#endif
     CC_SRC = comis_eflags[ret + 1];
     CC_OP = CC_OP_EFLAGS;
 }
@@ -1121,7 +1899,11 @@ void helper_comiss(CPUX86State *env, Reg *d, Reg *s)
 
     s0 = d->ZMM_S(0);
     s1 = s->ZMM_S(0);
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    ret = float32_compare_native(s0, s1);
+#else
     ret = float32_compare(s0, s1, &env->sse_status);
+#endif
     CC_SRC = comis_eflags[ret + 1];
     CC_OP = CC_OP_EFLAGS;
 }
@@ -1133,7 +1915,11 @@ void helper_ucomisd(CPUX86State *env, Reg *d, Reg *s)
 
     d0 = d->ZMM_D(0);
     d1 = s->ZMM_D(0);
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    ret = float64_compare_native(d0, d1);
+#else
     ret = float64_compare_quiet(d0, d1, &env->sse_status);
+#endif
     CC_SRC = comis_eflags[ret + 1];
     CC_OP = CC_OP_EFLAGS;
 }
@@ -1145,7 +1931,11 @@ void helper_comisd(CPUX86State *env, Reg *d, Reg *s)
 
     d0 = d->ZMM_D(0);
     d1 = s->ZMM_D(0);
+#if defined(XBOX) && defined(__aarch64__) && XEMU_OPT_NATIVE_FLOAT
+    ret = float64_compare_native(d0, d1);
+#else
     ret = float64_compare(d0, d1, &env->sse_status);
+#endif
     CC_SRC = comis_eflags[ret + 1];
     CC_OP = CC_OP_EFLAGS;
 }

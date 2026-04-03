@@ -31,17 +31,17 @@
  * If tcg_req_mo indicates a barrier for @type is required
  * for the guest memory model, issue a host memory barrier.
  *
- * Xbox has a single CPU, so inter-vCPU memory ordering barriers are
- * never needed and can be compiled out.
+ * Xbox has a single CPU — inter-vCPU memory ordering barriers are
+ * never needed, so we compile them out entirely.
  */
 #ifdef XBOX
-#define cpu_req_mo(cpu, type)  do { (void)(cpu); (void)(type); } while (0)
+#define cpu_req_mo(cpu, type)  do { (void)(cpu); } while (0)
 #else
 #define cpu_req_mo(cpu, type)                                           \
     do {                                                                \
         unsigned _mo = tcg_req_mo(                                      \
             cpu->cc->tcg_ops->guest_default_memory_order, type);        \
-        if (_mo & (TCG_MO_ST_ST | TCG_MO_ST_LD)) {                      \
+        if (_mo & (TCG_MO_ST_ST | TCG_MO_ST_LD)) {                     \
             smp_mb();                                                   \
         } else if (_mo) {                                               \
             smp_rmb();                                                  \
