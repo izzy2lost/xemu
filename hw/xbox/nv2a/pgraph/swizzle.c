@@ -79,6 +79,12 @@ static inline uint32_t swizzle_increment_offset(uint32_t offset, uint32_t mask)
 }
 
 #ifdef __aarch64__
+/*
+ * In 2D Morton order, each aligned 2x2 RGBA8 block maps to 16 contiguous
+ * bytes in swizzled memory. That lets us move four pixels at a time with a
+ * single NEON load/store pair while keeping the existing scalar path for
+ * everything else.
+ */
 static inline void swizzle_box_neon_2d_rgba8(const uint8_t *src_buf,
                                              unsigned int width,
                                              unsigned int height,

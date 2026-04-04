@@ -42,6 +42,14 @@ static void process_pending_report(NV2AState *d, QueryReport *report)
     for (int i = 0; i < report->query_count; i++) {
         GLuint gl_query_result = 0;
         glGetQueryObjectuiv(report->queries[i], GL_QUERY_RESULT, &gl_query_result);
+#ifdef __ANDROID__
+        if (r->supported_extensions.occlusion_query_boolean) {
+            /* GLES visibility queries only tell us whether any samples passed.
+             * Preserve that boolean signal instead of reporting a permanent 0. */
+            r->zpass_pixel_count_result += gl_query_result ? 1 : 0;
+            continue;
+        }
+#endif
         gl_query_result /= pg->surface_scale_factor * pg->surface_scale_factor;
         r->zpass_pixel_count_result += gl_query_result;
     }

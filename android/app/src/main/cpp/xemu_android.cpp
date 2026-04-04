@@ -10,183 +10,118 @@
 #include <android/asset_manager_jni.h>
 #include <jni.h>
 
-#include <atomic>
-#include <cctype>
-#include <cstdint>
-#include <cstdarg>
 #include <climits>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
-#include <ctime>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
-#include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <errno.h>
 #include <unistd.h>
+
+#include "xemu-settings.h"
+#include "hw/xbox/nv2a/debug.h"
+
+extern "C" void xemu_set_fp_safe(bool enable);
+extern "C" bool xemu_get_fp_safe(void);
+extern "C" void xemu_set_fast_fences(bool enable);
+extern "C" bool xemu_get_fast_fences(void);
+extern "C" void xemu_set_fp_jit(bool enable);
+extern "C" bool xemu_get_fp_jit(void);
+extern "C" void xemu_set_draw_reorder(bool enable);
+extern "C" bool xemu_get_draw_reorder(void);
+extern "C" void xemu_set_draw_merge(bool enable);
+extern "C" bool xemu_get_draw_merge(void);
+extern "C" void xemu_set_bindless_textures(bool enable);
+extern "C" bool xemu_get_bindless_textures(void);
+extern "C" void xemu_set_async_compile(bool enable);
+extern "C" bool xemu_get_async_compile(void);
+extern "C" void xemu_set_frame_skip(bool enable);
+extern "C" bool xemu_get_frame_skip(void);
+extern "C" void xemu_set_submit_frames(int count);
+extern "C" int xemu_get_submit_frames(void);
+extern "C" void xemu_set_tier1_threshold(int value);
+extern "C" int xemu_get_tier1_threshold(void);
+extern "C" bool runstate_is_running(void);
+extern "C" void xemu_android_pause_emulation(void);
+extern "C" void xemu_android_resume_emulation(void);
+extern "C" void xemu_android_request_exit(void);
+
+extern "C" bool xemu_android_is_debug_logging_enabled(void)
+{
+    return false; // TODO: wire to settings toggle
+}
+
+/* Stub: old GL display readback — replaced by texture-based path in new GL display.c.
+ * ui/xemu.c still calls this; returning false makes it use the fallback. */
+extern "C" bool nv2a_android_copy_readback(uint8_t **buffer, size_t *buffer_size,
+                                            int *width, int *height)
+{
+    (void)buffer; (void)buffer_size; (void)width; (void)height;
+    return false;
+}
 
 #ifdef CONFIG_VULKAN
 #include <adrenotools/driver.h>
 #include <dlfcn.h>
 #include <volk.h>
 
-static void *g_custom_vulkan_library = nullptr;
-static void *g_system_vulkan_library = nullptr;
+static void* g_custom_vulkan_library = nullptr;
 
 extern "C" PFN_vkGetInstanceProcAddr xemu_android_get_vk_proc_addr(void)
 {
-    void *handle = g_custom_vulkan_library ? g_custom_vulkan_library
-                                           : g_system_vulkan_library;
-    if (!handle) {
+    if (!g_custom_vulkan_library) {
         return nullptr;
     }
     return reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-        dlsym(handle, "vkGetInstanceProcAddr"));
+        dlsym(g_custom_vulkan_library, "vkGetInstanceProcAddr"));
 }
 #endif
 
-#include "xemu-settings.h"
-
-extern "C" void xemu_set_fp_safe(bool enable);
-extern "C" void xemu_set_fp_jit(bool enable);
-extern "C" bool xemu_get_fp_safe(void);
-extern "C" bool xemu_get_fp_jit(void);
-extern "C" void xemu_set_fast_fences(bool enable);
-extern "C" void xemu_set_draw_reorder(bool enable);
-extern "C" void xemu_set_draw_merge(bool enable);
-extern "C" void xemu_set_bindless_textures(bool enable);
-extern "C" void xemu_set_async_compile(bool enable);
-extern "C" void xemu_set_frame_skip(bool enable);
-extern "C" void xemu_set_submit_frames(int count);
-
-struct Error;
-struct AddfdInfo;
-extern "C" AddfdInfo* monitor_fdset_add_fd(int fd, bool has_fdset_id,
-                                           int64_t fdset_id,
-                                           const char* opaque,
-                                           Error** errp);
+static int g_dvd_fd = -1;
 
 namespace {
-constexpr const char* kLogTag = "xemu-android";
+constexpr const char* kLogTag = "hakuX";
 constexpr const char* kPrefsName = "x1box_prefs";
-constexpr const char* kRuntimeOverridePrefPrefix = "runtime_override_";
-constexpr const char* kDebugLogPrefKey = "setting_debug_logs_enabled";
-constexpr const char* kHrtfPrefKey = "setting_hrtf";
-constexpr const char* kHrtfDefaultOffMigrationPrefKey =
-    "setting_hrtf_default_off_migrated_v1";
-constexpr const char* kDebugLogRelativeDir = "x1box/debug-logs";
-constexpr const char* kNativeDebugLogFileName = "xemu-debug.log";
-constexpr off_t kMaxDebugLogBytes = 4 * 1024 * 1024;
-static std::atomic<bool> g_qemu_init_started{false};
-static std::atomic<bool> g_native_debug_logging_enabled{false};
-static std::string g_native_debug_log_path;
-static SDL_mutex* g_native_debug_log_mutex = nullptr;
 
 static JNIEnv* GetEnv();
 static jobject GetActivity(JNIEnv* env);
 static bool HasException(JNIEnv* env, const char* context);
-static std::string GetFilesDirPath(JNIEnv* env, jobject activity);
-static std::string GetPrefString(JNIEnv* env, jobject activity, const char* key);
-static std::string GetEffectivePrefString(JNIEnv* env, jobject activity,
-                                          const char* key);
-static bool GetEffectivePrefBool(JNIEnv* env, jobject activity, const char* key,
-                                 bool defValue);
-static int GetEffectivePrefInt(JNIEnv* env, jobject activity, const char* key,
-                               int defValue);
-static void ConfigureNativeDebugLogging(JNIEnv* env, jobject activity);
-static void ApplyHrtfDefaultOffMigration(JNIEnv* env, jobject activity);
-static bool NativeDebugLoggingEnabled();
-static void AppendNativeDebugLog(const char* level, const char* message);
-static std::string GetPreferredPersistentStoragePath();
-static std::string GetInternalPersistentStoragePath();
 
 static void LogInfo(const char* msg) {
-  if (!NativeDebugLoggingEnabled()) {
-    return;
-  }
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "%s", msg);
-  AppendNativeDebugLog("I", msg);
 }
 
 static void LogInfoFmt(const char* fmt, const char* detail) {
-  if (!NativeDebugLoggingEnabled()) {
-    return;
-  }
   __android_log_print(ANDROID_LOG_INFO, kLogTag, fmt, detail);
-  char buffer[1024] = {};
-  std::snprintf(buffer, sizeof(buffer), fmt, detail);
-  AppendNativeDebugLog("I", buffer);
 }
 
 static void LogInfoInt(const char* fmt, int value) {
-  if (!NativeDebugLoggingEnabled()) {
-    return;
-  }
   __android_log_print(ANDROID_LOG_INFO, kLogTag, fmt, value);
-  char buffer[1024] = {};
-  std::snprintf(buffer, sizeof(buffer), fmt, value);
-  AppendNativeDebugLog("I", buffer);
 }
 
 static void LogError(const char* msg) {
   __android_log_print(ANDROID_LOG_ERROR, kLogTag, "%s", msg);
-  AppendNativeDebugLog("E", msg);
 }
 
 static void LogErrorInt(const char* fmt, int value) {
   __android_log_print(ANDROID_LOG_ERROR, kLogTag, fmt, value);
-  char buffer[1024] = {};
-  std::snprintf(buffer, sizeof(buffer), fmt, value);
-  AppendNativeDebugLog("E", buffer);
 }
 
 static void LogErrorFmt(const char* fmt, const char* detail) {
   __android_log_print(ANDROID_LOG_ERROR, kLogTag, fmt, detail);
-  char buffer[1024] = {};
-  std::snprintf(buffer, sizeof(buffer), fmt, detail);
-  AppendNativeDebugLog("E", buffer);
 }
-
-static const char* RendererName(CONFIG_DISPLAY_RENDERER renderer) {
-  switch (renderer) {
-    case CONFIG_DISPLAY_RENDERER_OPENGL:
-      return "OpenGL";
-    case CONFIG_DISPLAY_RENDERER_VULKAN:
-      return "Vulkan";
-    case CONFIG_DISPLAY_RENDERER_NULL:
-      return "Null";
-    default:
-      return "Unknown";
-  }
-}
-
-static int g_next_dvd_fdset_id = 9000;
 
 static bool EnsureDirExists(const std::string& path) {
   if (path.empty()) return false;
   if (mkdir(path.c_str(), 0755) == 0) return true;
   return errno == EEXIST;
-}
-
-static std::string GetInternalPersistentStoragePath() {
-  const char* internal = SDL_AndroidGetInternalStoragePath();
-  if (!internal || internal[0] == '\0') {
-    return {};
-  }
-  return std::string(internal);
-}
-
-static std::string GetPreferredPersistentStoragePath() {
-  int extState = SDL_AndroidGetExternalStorageState();
-  if (extState & SDL_ANDROID_EXTERNAL_STORAGE_WRITE) {
-    const char* external = SDL_AndroidGetExternalStoragePath();
-    if (external && external[0] != '\0') {
-      return std::string(external);
-    }
-  }
-  return GetInternalPersistentStoragePath();
 }
 
 static bool FileExists(const std::string& path) {
@@ -195,56 +130,55 @@ static bool FileExists(const std::string& path) {
   return stat(path.c_str(), &st) == 0;
 }
 
-static std::string CurrentNativeLogTimestamp() {
-  std::time_t now = std::time(nullptr);
-  std::tm local_time {};
-  localtime_r(&now, &local_time);
-  char buffer[32] = {};
-  std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &local_time);
-  return std::string(buffer);
+static int64_t FileSize(const std::string& path) {
+  if (path.empty()) return -1;
+  struct stat st {};
+  if (stat(path.c_str(), &st) != 0) return -1;
+  return static_cast<int64_t>(st.st_size);
 }
 
-static bool NativeDebugLoggingEnabled() {
-  return g_native_debug_logging_enabled.load() && !g_native_debug_log_path.empty();
-}
+static void LogQcow2Info(const std::string& path) {
+  FILE* f = fopen(path.c_str(), "rb");
+  if (!f) return;
 
-extern "C" bool xemu_android_is_debug_logging_enabled(void) {
-  return NativeDebugLoggingEnabled();
-}
-
-static void AppendNativeDebugLog(const char* level, const char* message) {
-  if (!NativeDebugLoggingEnabled() || !level || !message || !g_native_debug_log_mutex) {
+  uint8_t hdr[72];
+  if (fread(hdr, 1, sizeof(hdr), f) < sizeof(hdr)) {
+    fclose(f);
     return;
   }
 
-  SDL_LockMutex(g_native_debug_log_mutex);
-
-  /* Use POSIX write() with O_APPEND instead of std::ofstream to avoid
-   * repeated file open/close overhead and C++ stream construction. */
-  struct stat st {};
-  if (stat(g_native_debug_log_path.c_str(), &st) == 0 &&
-      st.st_size > kMaxDebugLogBytes) {
-    /* Truncate oversized log file */
-    int tfd = open(g_native_debug_log_path.c_str(), O_WRONLY | O_TRUNC);
-    if (tfd >= 0) close(tfd);
+  uint32_t magic = (uint32_t)hdr[0] << 24 | hdr[1] << 16 | hdr[2] << 8 | hdr[3];
+  if (magic != 0x514649fbu) {
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "QCOW2 check: %s is raw (magic=0x%08x)", path.c_str(), magic);
+    fclose(f);
+    return;
   }
 
-  int fd = open(g_native_debug_log_path.c_str(),
-                O_WRONLY | O_CREAT | O_APPEND, 0644);
-  if (fd >= 0) {
-    char buf[2048];
-    std::string ts = CurrentNativeLogTimestamp();
-    int len = snprintf(buf, sizeof(buf), "%s %s/%s: %s\n",
-                       ts.c_str(), level, kLogTag, message);
-    if (len > 0) {
-      size_t bytes_to_write =
-          (size_t)((len < (int)sizeof(buf) - 1) ? len : (int)sizeof(buf) - 1);
-      (void)write(fd, buf, bytes_to_write);
-    }
-    close(fd);
-  }
+  uint64_t backing_offset = 0;
+  uint32_t backing_size = 0;
+  for (int i = 0; i < 8; i++) backing_offset = (backing_offset << 8) | hdr[8 + i];
+  for (int i = 0; i < 4; i++) backing_size   = (backing_size   << 8) | hdr[16 + i];
 
-  SDL_UnlockMutex(g_native_debug_log_mutex);
+  uint64_t virtual_size = 0;
+  for (int i = 0; i < 8; i++) virtual_size = (virtual_size << 8) | hdr[24 + i];
+
+  __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                      "QCOW2: %s  virtual_size=%" PRIu64 " (%.1f GB)  file_size=%" PRId64,
+                      path.c_str(), virtual_size,
+                      (double)virtual_size / (1024.0 * 1024.0 * 1024.0),
+                      FileSize(path));
+
+  if (backing_offset != 0 && backing_size != 0 && backing_size < 4096) {
+    std::vector<char> backing(backing_size + 1, '\0');
+    fseek(f, (long)backing_offset, SEEK_SET);
+    fread(backing.data(), 1, backing_size, f);
+    __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                        "QCOW2 WARNING: backing file = '%s'  -- reads of unmodified "
+                        "sectors will FAIL if this file is missing!",
+                        backing.data());
+  }
+  fclose(f);
 }
 
 static bool IsTcgTuningEnabled() {
@@ -338,7 +272,7 @@ static const char* GetTcgThreadFromEnv() {
 }
 
 static int GetTcgTbSizeFromEnv() {
-  constexpr int kDefaultTbSize = 128;
+  constexpr int kDefaultTbSize = 256;
   constexpr int kMinTbSize = 32;
   constexpr int kMaxTbSize = 512;
 
@@ -358,65 +292,6 @@ static int GetTcgTbSizeFromEnv() {
     parsed = kMaxTbSize;
   }
   return static_cast<int>(parsed);
-}
-
-static std::string ToLowerAscii(std::string value) {
-  for (char& c : value) {
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  }
-  return value;
-}
-
-static std::string ResolveAndroidAudioDriverHint() {
-  // OpenSL ES is preferred over AAudio because AAudio exclusively requests
-  // MMAP no-IRQ low-latency outputs (AUDIO_OUTPUT_FLAG_MMAP_NOIRQ). On some
-  // devices the MMAP output count is capped and openDirectOutput fails when
-  // the limit is reached, leaving the audio stream inactive. The standard
-  // Android AudioTrack backend remains the safe fallback.
-  constexpr const char* kDefaultAudioDriverHint = "openslES,android,dummy";
-  const char* value = SDL_getenv("XEMU_ANDROID_AUDIO_DRIVER");
-  if (!value || value[0] == '\0') {
-    return kDefaultAudioDriverHint;
-  }
-
-  std::string raw(value);
-  std::string normalized = ToLowerAscii(raw);
-  if (normalized == "auto" || normalized == "default") {
-    return kDefaultAudioDriverHint;
-  }
-  if (normalized == "opensl" || normalized == "opensles") {
-    return "openslES,android,dummy";
-  }
-  if (normalized == "aaudio") {
-    return "aaudio,android,dummy";
-  }
-  if (normalized == "android" || normalized == "audiotrack") {
-    // Legacy recovery: a saved "android" preference should no longer force
-    // AudioTrack first, because that path was found to exit immediately on
-    // some devices. Fall back to the old OpenSL ES-first behavior.
-    return "openslES,android,dummy";
-  }
-  if (normalized == "null" || normalized == "none" || normalized == "dummy") {
-    return "dummy";
-  }
-  return raw;
-}
-
-static std::string ResolveAndroidOrientationHint(JNIEnv* env, jobject activity) {
-  constexpr const char* kDefaultOrientationHint = "LandscapeLeft LandscapeRight";
-  if (!env || !activity) {
-    return kDefaultOrientationHint;
-  }
-
-  std::string value =
-      ToLowerAscii(GetEffectivePrefString(env, activity, "setting_game_orientation"));
-  if (value == "landscape") {
-    return "LandscapeLeft";
-  }
-  if (value == "reverse_landscape") {
-    return "LandscapeRight";
-  }
-  return kDefaultOrientationHint;
 }
 
 static JNIEnv* GetEnv() {
@@ -445,57 +320,6 @@ static std::string JStringToString(JNIEnv* env, jstring value) {
   return out;
 }
 
-static std::string GetFilesDirPath(JNIEnv* env, jobject activity) {
-  if (!env || !activity) {
-    return {};
-  }
-
-  jclass activityClass = env->GetObjectClass(activity);
-  if (!activityClass) {
-    return {};
-  }
-
-  jmethodID getFilesDir =
-      env->GetMethodID(activityClass, "getFilesDir", "()Ljava/io/File;");
-  env->DeleteLocalRef(activityClass);
-  if (!getFilesDir) {
-    return {};
-  }
-
-  jobject fileObj = env->CallObjectMethod(activity, getFilesDir);
-  if (HasException(env, "Activity.getFilesDir") || !fileObj) {
-    return {};
-  }
-
-  jclass fileClass = env->GetObjectClass(fileObj);
-  if (!fileClass) {
-    env->DeleteLocalRef(fileObj);
-    return {};
-  }
-
-  jmethodID getAbsolutePath =
-      env->GetMethodID(fileClass, "getAbsolutePath", "()Ljava/lang/String;");
-  if (!getAbsolutePath) {
-    env->DeleteLocalRef(fileClass);
-    env->DeleteLocalRef(fileObj);
-    return {};
-  }
-
-  jstring pathValue = static_cast<jstring>(
-      env->CallObjectMethod(fileObj, getAbsolutePath));
-  std::string path;
-  if (!HasException(env, "File.getAbsolutePath")) {
-    path = JStringToString(env, pathValue);
-  }
-
-  if (pathValue) {
-    env->DeleteLocalRef(pathValue);
-  }
-  env->DeleteLocalRef(fileClass);
-  env->DeleteLocalRef(fileObj);
-  return path;
-}
-
 static bool HasInlineAioCrashFlag(const std::string& flag_path) {
   if (flag_path.empty()) {
     return false;
@@ -513,729 +337,186 @@ static bool ShouldEnableInlineAioWorkaround(const std::string& crash_flag_path) 
   if (HasInlineAioCrashFlag(crash_flag_path)) {
     LogInfoFmt("Inline AIO enabled from crash marker: %s",
                crash_flag_path.c_str());
-    return true;
   }
 
-  return false;
+  return true;
 }
 
 static std::string GetPrefString(JNIEnv* env, jobject activity, const char* key) {
-  if (!env || !activity || !key || key[0] == '\0') {
-    return {};
-  }
+  jclass activityClass = env->GetObjectClass(activity);
+  jmethodID getPrefs = env->GetMethodID(activityClass, "getSharedPreferences",
+                                        "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
+  if (!getPrefs) return {};
+  jstring prefsName = env->NewStringUTF(kPrefsName);
+  jobject prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
+  env->DeleteLocalRef(prefsName);
+  if (HasException(env, "getSharedPreferences") || !prefs) return {};
 
-  std::string out;
-  jclass activityClass = nullptr;
-  jobject prefs = nullptr;
-  jclass prefsClass = nullptr;
-  jstring value = nullptr;
-  jmethodID getPrefs = nullptr;
-  jmethodID getString = nullptr;
-
-  activityClass = env->GetObjectClass(activity);
-  if (!activityClass) {
-    return {};
-  }
-
-  getPrefs = env->GetMethodID(activityClass, "getSharedPreferences",
-                              "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
-  if (!getPrefs) {
-    goto cleanup;
-  }
-
-  {
-    jstring prefsName = env->NewStringUTF(kPrefsName);
-    if (!prefsName) {
-      goto cleanup;
-    }
-    prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
-    env->DeleteLocalRef(prefsName);
-  }
-  if (HasException(env, "getSharedPreferences") || !prefs) {
-    goto cleanup;
-  }
-
-  prefsClass = env->GetObjectClass(prefs);
-  if (!prefsClass) {
-    goto cleanup;
-  }
-  getString = env->GetMethodID(
+  jclass prefsClass = env->GetObjectClass(prefs);
+  jmethodID getString = env->GetMethodID(
       prefsClass, "getString", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-  if (!getString) {
-    goto cleanup;
-  }
+  if (!getString) return {};
 
-  {
-    jstring jkey = env->NewStringUTF(key);
-    if (!jkey) {
-      goto cleanup;
-    }
-    jstring jdefault = nullptr;
-    value = static_cast<jstring>(env->CallObjectMethod(prefs, getString, jkey, jdefault));
-    env->DeleteLocalRef(jkey);
-  }
-  if (HasException(env, "SharedPreferences.getString")) {
-    goto cleanup;
-  }
+  jstring jkey = env->NewStringUTF(key);
+  jstring jdefault = nullptr;
+  jstring value = static_cast<jstring>(env->CallObjectMethod(prefs, getString, jkey, jdefault));
+  env->DeleteLocalRef(jkey);
+  if (HasException(env, "SharedPreferences.getString")) return {};
 
-  out = JStringToString(env, value);
-
-cleanup:
+  std::string out = JStringToString(env, value);
   if (value) env->DeleteLocalRef(value);
-  if (prefsClass) env->DeleteLocalRef(prefsClass);
-  if (prefs) env->DeleteLocalRef(prefs);
-  if (activityClass) env->DeleteLocalRef(activityClass);
   return out;
 }
 
-static bool GetPrefBool(JNIEnv* env, jobject activity, const char* key, bool defValue) {
-  if (!env || !activity || !key || key[0] == '\0') {
-    return defValue;
-  }
-  bool out = defValue;
+static int GetPrefInt(JNIEnv* env, jobject activity, const char* key, int defaultValue) {
   jclass activityClass = env->GetObjectClass(activity);
-  if (!activityClass) return defValue;
   jmethodID getPrefs = env->GetMethodID(activityClass, "getSharedPreferences",
                                         "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
-  env->DeleteLocalRef(activityClass);
-  if (!getPrefs) return defValue;
+  if (!getPrefs) return defaultValue;
   jstring prefsName = env->NewStringUTF(kPrefsName);
-  if (!prefsName) return defValue;
   jobject prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
   env->DeleteLocalRef(prefsName);
-  if (HasException(env, "getSharedPreferences") || !prefs) return defValue;
-  jclass prefsClass = env->GetObjectClass(prefs);
-  if (prefsClass) {
-    jmethodID contains = env->GetMethodID(prefsClass, "contains", "(Ljava/lang/String;)Z");
-    jmethodID getBool  = env->GetMethodID(prefsClass, "getBoolean", "(Ljava/lang/String;Z)Z");
-    if (contains && getBool) {
-      jstring jkey = env->NewStringUTF(key);
-      if (jkey) {
-        jboolean hasKey = env->CallBooleanMethod(prefs, contains, jkey);
-        if (!HasException(env, "contains") && hasKey) {
-          out = (bool)env->CallBooleanMethod(prefs, getBool, jkey, (jboolean)defValue);
-          HasException(env, "getBoolean");
-        }
-        env->DeleteLocalRef(jkey);
-      }
-    }
-    env->DeleteLocalRef(prefsClass);
-  }
-  env->DeleteLocalRef(prefs);
-  return out;
-}
-
-static void ApplyHrtfDefaultOffMigration(JNIEnv* env, jobject activity) {
-  if (!env || !activity) {
-    return;
-  }
-
-  jclass activityClass = env->GetObjectClass(activity);
-  if (!activityClass) {
-    return;
-  }
-
-  jmethodID getPrefs = env->GetMethodID(
-      activityClass, "getSharedPreferences",
-      "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
-  env->DeleteLocalRef(activityClass);
-  if (!getPrefs) {
-    return;
-  }
-
-  jstring prefsName = env->NewStringUTF(kPrefsName);
-  if (!prefsName) {
-    return;
-  }
-
-  jobject prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
-  env->DeleteLocalRef(prefsName);
-  if (HasException(env, "getSharedPreferences") || !prefs) {
-    return;
-  }
+  if (HasException(env, "getSharedPreferences") || !prefs) return defaultValue;
 
   jclass prefsClass = env->GetObjectClass(prefs);
-  if (!prefsClass) {
-    env->DeleteLocalRef(prefs);
-    return;
-  }
+  jmethodID getInt = env->GetMethodID(prefsClass, "getInt", "(Ljava/lang/String;I)I");
+  if (!getInt) return defaultValue;
 
-  jmethodID getBool =
-      env->GetMethodID(prefsClass, "getBoolean", "(Ljava/lang/String;Z)Z");
-  jmethodID edit =
-      env->GetMethodID(prefsClass, "edit",
-                       "()Landroid/content/SharedPreferences$Editor;");
-  if (!getBool || !edit) {
-    env->DeleteLocalRef(prefsClass);
-    env->DeleteLocalRef(prefs);
-    return;
-  }
+  jstring jkey = env->NewStringUTF(key);
+  jint result = env->CallIntMethod(prefs, getInt, jkey, (jint)defaultValue);
+  env->DeleteLocalRef(jkey);
+  if (HasException(env, "SharedPreferences.getInt")) return defaultValue;
 
-  jstring migrationKey = env->NewStringUTF(kHrtfDefaultOffMigrationPrefKey);
-  if (!migrationKey) {
-    env->DeleteLocalRef(prefsClass);
-    env->DeleteLocalRef(prefs);
-    return;
-  }
-
-  const jboolean migrated =
-      env->CallBooleanMethod(prefs, getBool, migrationKey, JNI_FALSE);
-  if (HasException(env, "SharedPreferences.getBoolean")) {
-    env->DeleteLocalRef(migrationKey);
-    env->DeleteLocalRef(prefsClass);
-    env->DeleteLocalRef(prefs);
-    return;
-  }
-
-  if (migrated == JNI_TRUE) {
-    env->DeleteLocalRef(migrationKey);
-    env->DeleteLocalRef(prefsClass);
-    env->DeleteLocalRef(prefs);
-    return;
-  }
-
-  jobject editor = env->CallObjectMethod(prefs, edit);
-  if (HasException(env, "SharedPreferences.edit") || !editor) {
-    env->DeleteLocalRef(migrationKey);
-    env->DeleteLocalRef(prefsClass);
-    env->DeleteLocalRef(prefs);
-    return;
-  }
-
-  jclass editorClass = env->GetObjectClass(editor);
-  if (!editorClass) {
-    env->DeleteLocalRef(editor);
-    env->DeleteLocalRef(migrationKey);
-    env->DeleteLocalRef(prefsClass);
-    env->DeleteLocalRef(prefs);
-    return;
-  }
-
-  jmethodID putBool = env->GetMethodID(
-      editorClass, "putBoolean",
-      "(Ljava/lang/String;Z)Landroid/content/SharedPreferences$Editor;");
-  jmethodID apply = env->GetMethodID(editorClass, "apply", "()V");
-  if (!putBool || !apply) {
-    env->DeleteLocalRef(editorClass);
-    env->DeleteLocalRef(editor);
-    env->DeleteLocalRef(migrationKey);
-    env->DeleteLocalRef(prefsClass);
-    env->DeleteLocalRef(prefs);
-    return;
-  }
-
-  jstring hrtfKey = env->NewStringUTF(kHrtfPrefKey);
-  if (!hrtfKey) {
-    env->DeleteLocalRef(editorClass);
-    env->DeleteLocalRef(editor);
-    env->DeleteLocalRef(migrationKey);
-    env->DeleteLocalRef(prefsClass);
-    env->DeleteLocalRef(prefs);
-    return;
-  }
-
-  env->CallObjectMethod(editor, putBool, hrtfKey, JNI_FALSE);
-  if (!HasException(env, "Editor.putBoolean")) {
-    env->CallObjectMethod(editor, putBool, migrationKey, JNI_TRUE);
-    if (!HasException(env, "Editor.putBoolean")) {
-      env->CallVoidMethod(editor, apply);
-      if (!HasException(env, "Editor.apply")) {
-        LogInfo("Applied one-time Android HRTF default-off migration");
-      }
-    }
-  }
-
-  env->DeleteLocalRef(hrtfKey);
-  env->DeleteLocalRef(editorClass);
-  env->DeleteLocalRef(editor);
-  env->DeleteLocalRef(migrationKey);
-  env->DeleteLocalRef(prefsClass);
-  env->DeleteLocalRef(prefs);
+  return result;
 }
 
-static int GetPrefInt(JNIEnv* env, jobject activity, const char* key, int defValue) {
-  if (!env || !activity || !key || key[0] == '\0') {
-    return defValue;
-  }
-  int out = defValue;
+static bool GetPrefBool(JNIEnv* env, jobject activity, const char* key, bool defaultValue) {
   jclass activityClass = env->GetObjectClass(activity);
-  if (!activityClass) return defValue;
   jmethodID getPrefs = env->GetMethodID(activityClass, "getSharedPreferences",
                                         "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
-  env->DeleteLocalRef(activityClass);
-  if (!getPrefs) return defValue;
+  if (!getPrefs) return defaultValue;
   jstring prefsName = env->NewStringUTF(kPrefsName);
-  if (!prefsName) return defValue;
   jobject prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
   env->DeleteLocalRef(prefsName);
-  if (HasException(env, "getSharedPreferences") || !prefs) return defValue;
+  if (HasException(env, "getSharedPreferences") || !prefs) return defaultValue;
+
   jclass prefsClass = env->GetObjectClass(prefs);
-  if (prefsClass) {
-    jmethodID contains = env->GetMethodID(prefsClass, "contains", "(Ljava/lang/String;)Z");
-    jmethodID getInt   = env->GetMethodID(prefsClass, "getInt", "(Ljava/lang/String;I)I");
-    if (contains && getInt) {
-      jstring jkey = env->NewStringUTF(key);
-      if (jkey) {
-        jboolean hasKey = env->CallBooleanMethod(prefs, contains, jkey);
-        if (!HasException(env, "contains") && hasKey) {
-          out = (int)env->CallIntMethod(prefs, getInt, jkey, (jint)defValue);
-          HasException(env, "getInt");
-        }
-        env->DeleteLocalRef(jkey);
-      }
-    }
-    env->DeleteLocalRef(prefsClass);
-  }
-  env->DeleteLocalRef(prefs);
-  return out;
+  jmethodID getBool = env->GetMethodID(prefsClass, "getBoolean", "(Ljava/lang/String;Z)Z");
+  if (!getBool) return defaultValue;
+
+  jstring jkey = env->NewStringUTF(key);
+  jboolean result = env->CallBooleanMethod(prefs, getBool, jkey, (jboolean)defaultValue);
+  env->DeleteLocalRef(jkey);
+  if (HasException(env, "SharedPreferences.getBoolean")) return defaultValue;
+
+  return result;
 }
 
-static bool PrefContainsKey(JNIEnv* env, jobject activity, const char* key) {
-  if (!env || !activity || !key || key[0] == '\0') {
-    return false;
-  }
-  bool containsKey = false;
+static int OpenUriAsNativeFd(JNIEnv* env, jobject activity, const std::string& uriString) {
+  if (uriString.empty()) return -1;
+
   jclass activityClass = env->GetObjectClass(activity);
-  if (!activityClass) return false;
-  jmethodID getPrefs = env->GetMethodID(activityClass, "getSharedPreferences",
-                                        "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
-  env->DeleteLocalRef(activityClass);
-  if (!getPrefs) return false;
-  jstring prefsName = env->NewStringUTF(kPrefsName);
-  if (!prefsName) return false;
-  jobject prefs = env->CallObjectMethod(activity, getPrefs, prefsName, 0);
-  env->DeleteLocalRef(prefsName);
-  if (HasException(env, "getSharedPreferences") || !prefs) return false;
-  jclass prefsClass = env->GetObjectClass(prefs);
-  if (prefsClass) {
-    jmethodID contains = env->GetMethodID(prefsClass, "contains",
-                                          "(Ljava/lang/String;)Z");
-    if (contains) {
-      jstring jkey = env->NewStringUTF(key);
-      if (jkey) {
-        containsKey = env->CallBooleanMethod(prefs, contains, jkey) == JNI_TRUE;
-        HasException(env, "contains");
-        env->DeleteLocalRef(jkey);
-      }
-    }
-    env->DeleteLocalRef(prefsClass);
-  }
-  env->DeleteLocalRef(prefs);
-  return containsKey;
-}
+  jmethodID getContentResolver = env->GetMethodID(activityClass, "getContentResolver",
+                                                   "()Landroid/content/ContentResolver;");
+  if (!getContentResolver) return -1;
+  jobject resolver = env->CallObjectMethod(activity, getContentResolver);
+  if (HasException(env, "getContentResolver") || !resolver) return -1;
 
-static std::string BuildRuntimeOverrideKey(const char* key) {
-  if (!key || key[0] == '\0') {
-    return {};
-  }
-  return std::string(kRuntimeOverridePrefPrefix) + key;
-}
+  jclass uriClass = env->FindClass("android/net/Uri");
+  jmethodID parse = env->GetStaticMethodID(uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+  jstring juri = env->NewStringUTF(uriString.c_str());
+  jobject uri = env->CallStaticObjectMethod(uriClass, parse, juri);
+  env->DeleteLocalRef(juri);
+  if (HasException(env, "Uri.parse") || !uri) return -1;
 
-static bool ParseOverrideBool(const std::string& value, bool* out) {
-  if (!out) {
-    return false;
-  }
-  const std::string normalized = ToLowerAscii(value);
-  if (normalized == "true" || normalized == "1") {
-    *out = true;
-    return true;
-  }
-  if (normalized == "false" || normalized == "0") {
-    *out = false;
-    return true;
-  }
-  return false;
-}
+  jclass resolverClass = env->GetObjectClass(resolver);
+  jmethodID openFd = env->GetMethodID(resolverClass, "openFileDescriptor",
+      "(Landroid/net/Uri;Ljava/lang/String;)Landroid/os/ParcelFileDescriptor;");
+  if (!openFd) return -1;
 
-static std::string GetEffectivePrefString(JNIEnv* env, jobject activity,
-                                          const char* key) {
-  const std::string runtimeKey = BuildRuntimeOverrideKey(key);
-  if (!runtimeKey.empty()) {
-    const std::string overrideValue =
-        GetPrefString(env, activity, runtimeKey.c_str());
-    if (!overrideValue.empty()) {
-      return overrideValue;
-    }
-  }
-  return GetPrefString(env, activity, key);
-}
+  jstring mode = env->NewStringUTF("r");
+  jobject pfd = env->CallObjectMethod(resolver, openFd, uri, mode);
+  env->DeleteLocalRef(mode);
+  if (HasException(env, "openFileDescriptor") || !pfd) return -1;
 
-static bool GetEffectivePrefBool(JNIEnv* env, jobject activity, const char* key,
-                                 bool defValue) {
-  const std::string runtimeKey = BuildRuntimeOverrideKey(key);
-  if (!runtimeKey.empty()) {
-    const std::string overrideValue =
-        GetPrefString(env, activity, runtimeKey.c_str());
-    bool parsed = false;
-    if (ParseOverrideBool(overrideValue, &parsed)) {
-      return parsed;
-    }
-  }
-  return GetPrefBool(env, activity, key, defValue);
-}
-
-static int GetEffectivePrefInt(JNIEnv* env, jobject activity, const char* key,
-                               int defValue) {
-  const std::string runtimeKey = BuildRuntimeOverrideKey(key);
-  if (!runtimeKey.empty()) {
-    const std::string overrideValue =
-        GetPrefString(env, activity, runtimeKey.c_str());
-    if (!overrideValue.empty()) {
-      char* end = nullptr;
-      const long parsed = std::strtol(overrideValue.c_str(), &end, 10);
-      if (end != overrideValue.c_str() && end && *end == '\0' &&
-          parsed >= INT_MIN && parsed <= INT_MAX) {
-        return static_cast<int>(parsed);
-      }
-    }
-  }
-  return GetPrefInt(env, activity, key, defValue);
-}
-
-static bool GetEffectiveFpJitPref(JNIEnv* env, jobject activity,
-                                  bool defValue) {
-  const std::string runtimeKey = BuildRuntimeOverrideKey("setting_fp_jit");
-  if (!runtimeKey.empty()) {
-    const std::string overrideValue =
-        GetPrefString(env, activity, runtimeKey.c_str());
-    bool parsed = false;
-    if (ParseOverrideBool(overrideValue, &parsed)) {
-      return parsed;
-    }
+  jclass pfdClass = env->GetObjectClass(pfd);
+  jmethodID detach = env->GetMethodID(pfdClass, "detachFd", "()I");
+  if (!detach) {
+    jmethodID closePfd = env->GetMethodID(pfdClass, "close", "()V");
+    if (closePfd) env->CallVoidMethod(pfd, closePfd);
+    return -1;
   }
 
-  if (PrefContainsKey(env, activity, "setting_fp_jit")) {
-    return GetPrefBool(env, activity, "setting_fp_jit", defValue);
-  }
+  jint fd = env->CallIntMethod(pfd, detach);
+  if (HasException(env, "ParcelFileDescriptor.detachFd")) return -1;
 
-  return GetEffectivePrefBool(env, activity, "setting_hard_fpu", defValue);
-}
-
-static void ConfigureNativeDebugLogging(JNIEnv* env, jobject activity) {
-  g_native_debug_logging_enabled.store(
-      GetPrefBool(env, activity, kDebugLogPrefKey, false));
-  g_native_debug_log_path.clear();
-
-  if (!g_native_debug_logging_enabled.load()) {
-    return;
-  }
-
-  const std::string files_dir = GetFilesDirPath(env, activity);
-  if (files_dir.empty()) {
-    g_native_debug_logging_enabled.store(false);
-    return;
-  }
-
-  const std::string log_dir = files_dir + "/" + kDebugLogRelativeDir;
-  EnsureDirExists(files_dir + "/x1box");
-  EnsureDirExists(log_dir);
-  g_native_debug_log_path = log_dir + "/" + kNativeDebugLogFileName;
-
-  if (!g_native_debug_log_mutex) {
-    g_native_debug_log_mutex = SDL_CreateMutex();
-  }
-}
-
-static bool IsSeekableFd(int fd) {
-  errno = 0;
-  return lseek(fd, 0, SEEK_CUR) != static_cast<off_t>(-1);
+  return static_cast<int>(fd);
 }
 
 static bool CopyUriToPath(JNIEnv* env, jobject activity, const std::string& uriString, const std::string& path) {
-  if (!env || !activity || uriString.empty() || path.empty()) return false;
+  if (uriString.empty() || path.empty()) return false;
 
-  bool success = false;
-  jclass activityClass = nullptr;
-  jobject resolver = nullptr;
-  jclass uriClass = nullptr;
-  jobject uri = nullptr;
-  jclass resolverClass = nullptr;
-  jobject inputStream = nullptr;
-  jclass fosClass = nullptr;
-  jobject outputStream = nullptr;
-  jclass inputClass = nullptr;
-  jclass outputClass = nullptr;
-  jbyteArray buffer = nullptr;
-  jmethodID readMethod = nullptr;
-  jmethodID writeMethod = nullptr;
-  jmethodID closeInput = nullptr;
-  jmethodID closeOutput = nullptr;
+  jclass activityClass = env->GetObjectClass(activity);
+  jmethodID getContentResolver = env->GetMethodID(activityClass, "getContentResolver",
+                                                 "()Landroid/content/ContentResolver;");
+  if (!getContentResolver) return false;
+  jobject resolver = env->CallObjectMethod(activity, getContentResolver);
+  if (HasException(env, "getContentResolver") || !resolver) return false;
 
-  activityClass = env->GetObjectClass(activity);
-  if (!activityClass) {
-    goto cleanup;
-  }
+  jclass uriClass = env->FindClass("android/net/Uri");
+  jmethodID parse = env->GetStaticMethodID(uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+  jstring juri = env->NewStringUTF(uriString.c_str());
+  jobject uri = env->CallStaticObjectMethod(uriClass, parse, juri);
+  env->DeleteLocalRef(juri);
+  if (HasException(env, "Uri.parse") || !uri) return false;
 
-  {
-    jmethodID getContentResolver = env->GetMethodID(activityClass, "getContentResolver",
-                                                    "()Landroid/content/ContentResolver;");
-    if (!getContentResolver) {
-      goto cleanup;
-    }
-    resolver = env->CallObjectMethod(activity, getContentResolver);
-    if (HasException(env, "getContentResolver") || !resolver) {
-      goto cleanup;
-    }
-  }
+  jclass resolverClass = env->GetObjectClass(resolver);
+  jmethodID openInputStream = env->GetMethodID(
+      resolverClass, "openInputStream", "(Landroid/net/Uri;)Ljava/io/InputStream;");
+  jobject inputStream = env->CallObjectMethod(resolver, openInputStream, uri);
+  if (HasException(env, "openInputStream") || !inputStream) return false;
 
-  uriClass = env->FindClass("android/net/Uri");
-  if (!uriClass) {
-    goto cleanup;
-  }
-  {
-    jmethodID parse = env->GetStaticMethodID(uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
-    if (!parse) {
-      goto cleanup;
-    }
-    jstring juri = env->NewStringUTF(uriString.c_str());
-    if (!juri) {
-      goto cleanup;
-    }
-    uri = env->CallStaticObjectMethod(uriClass, parse, juri);
-    env->DeleteLocalRef(juri);
-    if (HasException(env, "Uri.parse") || !uri) {
-      goto cleanup;
-    }
-  }
+  jclass fosClass = env->FindClass("java/io/FileOutputStream");
+  jmethodID fosCtor = env->GetMethodID(fosClass, "<init>", "(Ljava/lang/String;)V");
+  jstring jpath = env->NewStringUTF(path.c_str());
+  jobject outputStream = env->NewObject(fosClass, fosCtor, jpath);
+  env->DeleteLocalRef(jpath);
+  if (HasException(env, "FileOutputStream.<init>") || !outputStream) return false;
 
-  resolverClass = env->GetObjectClass(resolver);
-  if (!resolverClass) {
-    goto cleanup;
-  }
-  {
-    jmethodID openInputStream = env->GetMethodID(
-        resolverClass, "openInputStream", "(Landroid/net/Uri;)Ljava/io/InputStream;");
-    if (!openInputStream) {
-      goto cleanup;
-    }
-    inputStream = env->CallObjectMethod(resolver, openInputStream, uri);
-    if (HasException(env, "openInputStream") || !inputStream) {
-      goto cleanup;
-    }
-  }
+  jclass inputClass = env->GetObjectClass(inputStream);
+  jclass outputClass = env->GetObjectClass(outputStream);
+  jmethodID readMethod = env->GetMethodID(inputClass, "read", "([B)I");
+  jmethodID closeInput = env->GetMethodID(inputClass, "close", "()V");
+  jmethodID writeMethod = env->GetMethodID(outputClass, "write", "([BII)V");
+  jmethodID closeOutput = env->GetMethodID(outputClass, "close", "()V");
+  if (!readMethod || !writeMethod) return false;
 
-  fosClass = env->FindClass("java/io/FileOutputStream");
-  if (!fosClass) {
-    goto cleanup;
+  bool ok = true;
+  int64_t totalBytes = 0;
+  const int kBufferSize = 64 * 1024;
+  jbyteArray buffer = env->NewByteArray(kBufferSize);
+  while (true) {
+    jint read = env->CallIntMethod(inputStream, readMethod, buffer);
+    if (HasException(env, "InputStream.read")) { ok = false; break; }
+    if (read <= 0) break;
+    env->CallVoidMethod(outputStream, writeMethod, buffer, 0, read);
+    if (HasException(env, "OutputStream.write")) { ok = false; break; }
+    totalBytes += read;
   }
-  {
-    jmethodID fosCtor = env->GetMethodID(fosClass, "<init>", "(Ljava/lang/String;)V");
-    if (!fosCtor) {
-      goto cleanup;
-    }
-    jstring jpath = env->NewStringUTF(path.c_str());
-    if (!jpath) {
-      goto cleanup;
-    }
-    outputStream = env->NewObject(fosClass, fosCtor, jpath);
-    env->DeleteLocalRef(jpath);
-    if (HasException(env, "FileOutputStream.<init>") || !outputStream) {
-      goto cleanup;
-    }
-  }
+  env->DeleteLocalRef(buffer);
+  env->CallVoidMethod(inputStream, closeInput);
+  env->CallVoidMethod(outputStream, closeOutput);
+  HasException(env, "close streams");
 
-  inputClass = env->GetObjectClass(inputStream);
-  outputClass = env->GetObjectClass(outputStream);
-  if (!inputClass || !outputClass) {
-    goto cleanup;
+  __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                      "CopyUriToPath: %s -> %s  bytes=%" PRId64 " ok=%d",
+                      uriString.c_str(), path.c_str(), totalBytes, ok);
+  if (ok && totalBytes == 0) {
+    LogError("CopyUriToPath: source was empty or unreadable");
+    ok = false;
   }
-  readMethod = env->GetMethodID(inputClass, "read", "([B)I");
-  closeInput = env->GetMethodID(inputClass, "close", "()V");
-  writeMethod = env->GetMethodID(outputClass, "write", "([BII)V");
-  closeOutput = env->GetMethodID(outputClass, "close", "()V");
-  if (!readMethod || !writeMethod || !closeInput || !closeOutput) {
-    goto cleanup;
-  }
-
-  {
-    const int kBufferSize = 64 * 1024;
-    buffer = env->NewByteArray(kBufferSize);
-    if (!buffer) {
-      goto cleanup;
-    }
-
-    while (true) {
-      jint read = env->CallIntMethod(inputStream, readMethod, buffer);
-      if (HasException(env, "InputStream.read")) {
-        goto cleanup;
-      }
-      if (read < 0) {
-        break;
-      }
-      if (read == 0) {
-        continue;
-      }
-      env->CallVoidMethod(outputStream, writeMethod, buffer, 0, read);
-      if (HasException(env, "OutputStream.write")) {
-        goto cleanup;
-      }
-    }
-    success = true;
-  }
-
-cleanup:
-  if (buffer) env->DeleteLocalRef(buffer);
-  if (inputStream && closeInput) {
-    env->CallVoidMethod(inputStream, closeInput);
-    if (HasException(env, "InputStream.close")) {
-      success = false;
-    }
-  }
-  if (outputStream && closeOutput) {
-    env->CallVoidMethod(outputStream, closeOutput);
-    if (HasException(env, "OutputStream.close")) {
-      success = false;
-    }
-  }
-  if (outputClass) env->DeleteLocalRef(outputClass);
-  if (inputClass) env->DeleteLocalRef(inputClass);
-  if (outputStream) env->DeleteLocalRef(outputStream);
-  if (fosClass) env->DeleteLocalRef(fosClass);
-  if (inputStream) env->DeleteLocalRef(inputStream);
-  if (resolverClass) env->DeleteLocalRef(resolverClass);
-  if (uri) env->DeleteLocalRef(uri);
-  if (uriClass) env->DeleteLocalRef(uriClass);
-  if (resolver) env->DeleteLocalRef(resolver);
-  if (activityClass) env->DeleteLocalRef(activityClass);
-  return success;
+  return ok;
 }
-
-static std::string OpenUriAsReadOnlyFdPath(JNIEnv* env,
-                                           jobject activity,
-                                           const std::string& uriString) {
-  if (!env || !activity || uriString.empty()) {
-    return {};
-  }
-
-  std::string out;
-  jclass activityClass = nullptr;
-  jobject resolver = nullptr;
-  jclass resolverClass = nullptr;
-  jclass uriClass = nullptr;
-  jobject uri = nullptr;
-  jobject parcelFd = nullptr;
-  jclass parcelFdClass = nullptr;
-
-  activityClass = env->GetObjectClass(activity);
-  if (!activityClass) {
-    goto cleanup;
-  }
-
-  {
-    jmethodID getContentResolver = env->GetMethodID(
-        activityClass, "getContentResolver",
-        "()Landroid/content/ContentResolver;");
-    if (!getContentResolver) {
-      goto cleanup;
-    }
-    resolver = env->CallObjectMethod(activity, getContentResolver);
-    if (HasException(env, "getContentResolver") || !resolver) {
-      goto cleanup;
-    }
-  }
-
-  uriClass = env->FindClass("android/net/Uri");
-  if (!uriClass) {
-    goto cleanup;
-  }
-  {
-    jmethodID parse = env->GetStaticMethodID(
-        uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
-    if (!parse) {
-      goto cleanup;
-    }
-    jstring juri = env->NewStringUTF(uriString.c_str());
-    if (!juri) {
-      goto cleanup;
-    }
-    uri = env->CallStaticObjectMethod(uriClass, parse, juri);
-    env->DeleteLocalRef(juri);
-    if (HasException(env, "Uri.parse") || !uri) {
-      goto cleanup;
-    }
-  }
-
-  resolverClass = env->GetObjectClass(resolver);
-  if (!resolverClass) {
-    goto cleanup;
-  }
-  {
-    jmethodID openFileDescriptor = env->GetMethodID(
-        resolverClass, "openFileDescriptor",
-        "(Landroid/net/Uri;Ljava/lang/String;)Landroid/os/ParcelFileDescriptor;");
-    if (!openFileDescriptor) {
-      goto cleanup;
-    }
-
-    jstring readMode = env->NewStringUTF("r");
-    if (!readMode) {
-      goto cleanup;
-    }
-    parcelFd = env->CallObjectMethod(resolver, openFileDescriptor, uri, readMode);
-    env->DeleteLocalRef(readMode);
-    if (HasException(env, "openFileDescriptor") || !parcelFd) {
-      goto cleanup;
-    }
-  }
-
-  parcelFdClass = env->GetObjectClass(parcelFd);
-  if (!parcelFdClass) {
-    goto cleanup;
-  }
-  {
-    jmethodID detachFd = env->GetMethodID(parcelFdClass, "detachFd", "()I");
-    if (!detachFd) {
-      goto cleanup;
-    }
-    jint fd = env->CallIntMethod(parcelFd, detachFd);
-    if (HasException(env, "ParcelFileDescriptor.detachFd") || fd < 0) {
-      goto cleanup;
-    }
-    if (!IsSeekableFd(fd)) {
-      LogInfo("DVD descriptor is not seekable; falling back to staged copy");
-      close(fd);
-      goto cleanup;
-    }
-
-    {
-      const int fdsetId = g_next_dvd_fdset_id++;
-      AddfdInfo* fdinfo =
-          monitor_fdset_add_fd(fd, true, fdsetId, "android-dvd", nullptr);
-      if (!fdinfo) {
-        LogError("Failed to register DVD fd with QEMU fdset");
-        close(fd);
-        goto cleanup;
-      }
-      out = "/dev/fdset/" + std::to_string(fdsetId);
-    }
-  }
-
-cleanup:
-  if (parcelFdClass) env->DeleteLocalRef(parcelFdClass);
-  if (parcelFd) env->DeleteLocalRef(parcelFd);
-  if (uri) env->DeleteLocalRef(uri);
-  if (uriClass) env->DeleteLocalRef(uriClass);
-  if (resolverClass) env->DeleteLocalRef(resolverClass);
-  if (resolver) env->DeleteLocalRef(resolver);
-  if (activityClass) env->DeleteLocalRef(activityClass);
-  return out;
-}
-
-struct EmulatorSettings {
-  int surface_scale    = 1;           // 1, 2, or 3
-  int system_memory_mib = 64;         // 64 or 128
-  std::string tcg_thread = "multi";   // "single" or "multi"
-  std::string renderer = "vulkan";    // "vulkan" or "opengl"
-  std::string filtering = "linear";   // "linear" or "nearest"
-  int display_mode     = 0;           // 0=stretch, 1=4:3, 2=16:9
-  bool use_dsp         = false;
-  bool hrtf            = false;
-  bool cache_shaders   = true;
-  bool hard_fpu        = true;
-  bool vsync           = false;
-  bool skip_boot_anim  = false;
-  bool network_enabled = false;
-};
 
 struct SetupFiles {
   std::string mcpx;
@@ -1245,7 +526,15 @@ struct SetupFiles {
   std::string eeprom;
   std::string config_path;
   std::string inline_aio_flag_path;
-  std::string audio_driver; // raw pref value, e.g. "openslES", "aaudio", "dummy"
+};
+
+struct DisplaySettings {
+  int surface_scale = 1;
+  bool vsync = false;
+  bool unlock_framerate = true;
+  bool validation_layers = false;
+  std::string filtering = "nearest";
+  std::string aspect_ratio = "auto";
 };
 
 static bool WriteConfigToml(const std::string& config_path,
@@ -1254,7 +543,8 @@ static bool WriteConfigToml(const std::string& config_path,
                             const std::string& hdd,
                             const std::string& dvd,
                             const std::string& eeprom,
-                            const EmulatorSettings& settings) {
+                            int tcg_tb_size = 128,
+                            const DisplaySettings& ds = {}) {
   if (config_path.empty()) return false;
   toml::table tbl;
 
@@ -1278,75 +568,60 @@ static bool WriteConfigToml(const std::string& config_path,
 
   toml::table* general = EnsureTable(tbl, "general");
   toml::table* display = EnsureTable(tbl, "display");
-  toml::table* display_quality = EnsureTable(*display, "quality");
-  toml::table* display_ui = EnsureTable(*display, "ui");
   toml::table* display_window = EnsureTable(*display, "window");
   toml::table* audio = EnsureTable(tbl, "audio");
   toml::table* audio_vp = EnsureTable(*audio, "vp");
   toml::table* android = EnsureTable(tbl, "android");
-  toml::table* net = EnsureTable(tbl, "net");
-  toml::table* net_nat = EnsureTable(*net, "nat");
   toml::table* sys = EnsureTable(tbl, "sys");
-  toml::table* perf = EnsureTable(tbl, "perf");
   toml::table* files = EnsureTable(*sys, "files");
-  if (!general || !display || !display_quality || !display_ui ||
-      !display_window || !audio || !audio_vp || !android || !net ||
-      !net_nat || !sys || !perf || !files) {
+  if (!general || !display || !display_window || !audio || !audio_vp ||
+      !android || !sys || !files) {
     LogErrorFmt("Failed to build config tables at %s", config_path.c_str());
     return false;
   }
 
   general->insert_or_assign("show_welcome", false);
-  general->insert_or_assign("skip_boot_anim", settings.skip_boot_anim);
-  {
-    const std::string r = (settings.renderer == "opengl") ? "opengl" : "vulkan";
-    display->insert_or_assign("renderer", r);
+  display->insert_or_assign("renderer", "vulkan");
+  display->insert_or_assign("filtering", ds.filtering);
+  display_window->insert_or_assign("vsync", ds.vsync);
+
+  toml::table* display_quality = EnsureTable(*display, "quality");
+  if (display_quality) {
+    display_quality->insert_or_assign("surface_scale", ds.surface_scale);
   }
-  display->insert_or_assign(
-      "filtering", settings.filtering == "nearest" ? "nearest" : "linear");
-  display_window->insert_or_assign("vsync", settings.vsync);
-  // User-controlled settings (always written so they take effect immediately)
-  {
-    int scale = settings.surface_scale;
-    if (scale < 1) scale = 1;
-    if (scale > 3) scale = 3;
-    display_quality->insert_or_assign("surface_scale", scale);
+
+  toml::table* display_ui = EnsureTable(*display, "ui");
+  if (display_ui) {
+    display_ui->insert_or_assign("aspect_ratio", ds.aspect_ratio);
   }
-  {
-    const char *aspect_ratio = "fit";
-    if (settings.display_mode == 1) {
-      aspect_ratio = "4:3";
-    } else if (settings.display_mode == 2) {
-      aspect_ratio = "16:9";
-    }
-    display_ui->insert_or_assign("aspect_ratio", aspect_ratio);
+  toml::table* display_vulkan = EnsureTable(*display, "vulkan");
+  if (display_vulkan) {
+    display_vulkan->insert_or_assign("validation_layers", ds.validation_layers);
   }
-  audio->insert_or_assign("use_dsp", settings.use_dsp);
-  audio->insert_or_assign("hrtf", settings.hrtf);
-  perf->insert_or_assign("cache_shaders", settings.cache_shaders);
-  perf->insert_or_assign("fp_jit", settings.hard_fpu);
-  android->insert_or_assign("tcg_thread",
-    (settings.tcg_thread == "single") ? "single" : "multi");
-  android->insert_or_assign("frame_rate_limit", 60);
   if (!audio_vp->contains("num_workers")) {
     audio_vp->insert_or_assign("num_workers", 0);
+  }
+  if (!audio->contains("hrtf")) {
+    audio->insert_or_assign("hrtf", true);
   }
   if (!audio->contains("volume_limit")) {
     audio->insert_or_assign("volume_limit", 1.0);
   }
+  if (!android->contains("force_cpu_blit")) {
+    android->insert_or_assign("force_cpu_blit", false);
+  }
   if (!android->contains("tcg_tuning")) {
     android->insert_or_assign("tcg_tuning", true);
   }
-  if (!android->contains("tcg_tb_size")) {
-    android->insert_or_assign("tcg_tb_size", 128);
+  if (!android->contains("tcg_thread")) {
+    android->insert_or_assign("tcg_thread", "multi");
   }
-  if (!android->contains("audio_driver")) {
-    android->insert_or_assign("audio_driver", "openslES");
+  android->insert_or_assign("tcg_tb_size", tcg_tb_size);
+
+  toml::table* perf = EnsureTable(tbl, "perf");
+  if (perf) {
+    perf->insert_or_assign("unlock_framerate", ds.unlock_framerate);
   }
-  net->insert_or_assign("enable", settings.network_enabled);
-  net->insert_or_assign("backend", "nat");
-  sys->insert_or_assign(
-      "mem_limit", settings.system_memory_mib == 128 ? "128" : "64");
 
   files->insert_or_assign("bootrom_path", mcpx);
   files->insert_or_assign("flashrom_path", flash);
@@ -1388,12 +663,26 @@ static SetupFiles SyncSetupFiles() {
   }
   LogInfoFmt("SyncSetupFiles: base path %s", basePath);
 
-  ApplyHrtfDefaultOffMigration(env, activity);
-
   std::string base = std::string(basePath) + "/x1box";
   EnsureDirExists(base);
   out.eeprom = base + "/eeprom.bin";
   out.inline_aio_flag_path = base + "/inline_aio_required.flag";
+
+  std::string envVars = GetPrefString(env, activity, "env_vars");
+  if (!envVars.empty()) {
+    std::istringstream stream(envVars);
+    std::string line;
+    while (std::getline(stream, line)) {
+      if (line.empty()) continue;
+      auto eq = line.find('=');
+      if (eq == std::string::npos || eq == 0) continue;
+      std::string key = line.substr(0, eq);
+      std::string val = line.substr(eq + 1);
+      setenv(key.c_str(), val.c_str(), 1);
+      __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                          "env: %s=%s", key.c_str(), val.c_str());
+    }
+  }
 
   const std::string mcpxPath = GetPrefString(env, activity, "mcpxPath");
   const std::string flashPath = GetPrefString(env, activity, "flashPath");
@@ -1418,7 +707,9 @@ static SetupFiles SyncSetupFiles() {
   }
   if (out.mcpx.empty() && !mcpxUri.empty()) {
     out.mcpx = base + "/mcpx.bin";
-    if (CopyUriToPath(env, activity, mcpxUri, out.mcpx)) {
+    if (FileExists(out.mcpx)) {
+      LogInfo("MCPX ROM already in app storage, skipping copy");
+    } else if (CopyUriToPath(env, activity, mcpxUri, out.mcpx)) {
       LogInfo("MCPX ROM synced to app storage");
     } else {
       LogError("Failed to sync MCPX ROM");
@@ -1429,7 +720,9 @@ static SetupFiles SyncSetupFiles() {
   }
   if (out.flash.empty() && !flashUri.empty()) {
     out.flash = base + "/flash.bin";
-    if (CopyUriToPath(env, activity, flashUri, out.flash)) {
+    if (FileExists(out.flash)) {
+      LogInfo("Flash ROM already in app storage, skipping copy");
+    } else if (CopyUriToPath(env, activity, flashUri, out.flash)) {
       LogInfo("Flash ROM synced to app storage");
     } else {
       LogError("Failed to sync flash ROM");
@@ -1437,143 +730,137 @@ static SetupFiles SyncSetupFiles() {
   }
   if (!hddPath.empty() && FileExists(hddPath)) {
     out.hdd = hddPath;
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "HDD from pref: %s  size=%" PRId64, hddPath.c_str(), FileSize(hddPath));
   }
   if (out.hdd.empty() && !hddUri.empty()) {
     out.hdd = base + "/hdd.img";
-    if (CopyUriToPath(env, activity, hddUri, out.hdd)) {
+    if (FileExists(out.hdd)) {
+      LogInfo("HDD image already in app storage, skipping copy");
+    } else if (CopyUriToPath(env, activity, hddUri, out.hdd)) {
       LogInfo("HDD image synced to app storage");
     } else {
       LogError("Failed to sync HDD image");
+      unlink(out.hdd.c_str());
+      out.hdd.clear();
     }
+  }
+  if (!out.hdd.empty()) {
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "HDD resolved: %s  size=%" PRId64, out.hdd.c_str(), FileSize(out.hdd));
+    LogQcow2Info(out.hdd);
   }
 
   if (!dvdPath.empty() && FileExists(dvdPath)) {
     out.dvd = dvdPath;
   }
   if (out.dvd.empty() && !dvdUri.empty()) {
-    out.dvd = OpenUriAsReadOnlyFdPath(env, activity, dvdUri);
-    if (!out.dvd.empty()) {
-      LogInfoFmt("DVD image opened directly from SAF fd: %s", out.dvd.c_str());
+    if (g_dvd_fd >= 0) {
+      close(g_dvd_fd);
+      g_dvd_fd = -1;
+    }
+    int fd = OpenUriAsNativeFd(env, activity, dvdUri);
+    if (fd >= 0) {
+      g_dvd_fd = fd;
+      out.dvd = "/dev/fdset/0";
+      LogInfoInt("DVD image opened via fd %d (zero-copy, fdset)", fd);
     } else {
-      out.dvd = base + "/dvd.iso";
-      if (CopyUriToPath(env, activity, dvdUri, out.dvd)) {
-        LogInfo("DVD image synced to app storage");
+      LogError("Failed to open DVD URI as fd, falling back to copy");
+      std::string copy_dst = base + "/dvd.iso";
+      if (CopyUriToPath(env, activity, dvdUri, copy_dst)) {
+        out.dvd = copy_dst;
+        LogInfo("DVD image synced to app storage (fallback copy)");
       } else {
         LogError("Failed to sync DVD image");
       }
     }
   }
 
-  EmulatorSettings emuSettings;
-  emuSettings.surface_scale =
-      GetEffectivePrefInt(env, activity, "setting_surface_scale", 1);
-  emuSettings.system_memory_mib =
-      GetEffectivePrefInt(env, activity, "setting_system_memory_mib", 64);
-  if (emuSettings.system_memory_mib != 64 &&
-      emuSettings.system_memory_mib != 128) {
-    emuSettings.system_memory_mib = 64;
-  }
-  emuSettings.use_dsp =
-      GetEffectivePrefBool(env, activity, "setting_use_dsp", false);
-  emuSettings.hrtf =
-      GetEffectivePrefBool(env, activity, kHrtfPrefKey, false);
-  emuSettings.cache_shaders =
-      GetEffectivePrefBool(env, activity, "setting_cache_shaders", true);
-  emuSettings.hard_fpu = GetEffectiveFpJitPref(env, activity, true);
-  emuSettings.skip_boot_anim =
-      GetEffectivePrefBool(env, activity, "setting_skip_boot_anim", false);
-  emuSettings.network_enabled =
-      GetEffectivePrefBool(env, activity, "setting_network_enable", false);
-  {
-    std::string tcgThread =
-        GetEffectivePrefString(env, activity, "setting_tcg_thread");
-    if (tcgThread == "single") {
-      emuSettings.tcg_thread = "single";
-    }
-  }
-  {
-    std::string rendererPref =
-        GetEffectivePrefString(env, activity, "setting_renderer");
-    if (rendererPref == "vulkan") {
-      emuSettings.renderer = "vulkan";
-    } else if (rendererPref == "opengl") {
-      emuSettings.renderer = "opengl";
-    }
-  }
-  {
-    std::string filteringPref =
-        GetEffectivePrefString(env, activity, "setting_filtering");
-    if (filteringPref == "nearest") {
-      emuSettings.filtering = "nearest";
-    }
-  }
-  emuSettings.vsync =
-      GetEffectivePrefBool(env, activity, "setting_vsync", false);
-  out.audio_driver =
-      GetEffectivePrefString(env, activity, "setting_audio_driver");
-  {
-    std::string normalized = ToLowerAscii(out.audio_driver);
-    if (normalized == "android" || normalized == "audiotrack") {
-      out.audio_driver = "openslES";
-    }
-  }
-
-  emuSettings.display_mode =
-      GetEffectivePrefInt(env, activity, "setting_display_mode", 0);
-  if (emuSettings.display_mode < 0 || emuSettings.display_mode > 2) {
-    emuSettings.display_mode = 0;
-  }
-
-  const bool fpSafe = GetEffectivePrefBool(env, activity, "fp_safe", true);
-  const bool fpJit =
-      GetEffectivePrefBool(env, activity, "fp_jit", emuSettings.hard_fpu);
-  const bool fastFences =
-      GetEffectivePrefBool(env, activity, "fast_fences", false);
-  const bool drawReorder =
-      GetEffectivePrefBool(env, activity, "draw_reorder", false);
-  const bool drawMerge =
-      GetEffectivePrefBool(env, activity, "draw_merge", false);
-  const bool bindlessTextures =
-      GetEffectivePrefBool(env, activity, "bindless_textures", false);
-  const bool asyncCompile =
-      GetEffectivePrefBool(env, activity, "async_compile", false);
-  const bool frameSkip =
-      GetEffectivePrefBool(env, activity, "frame_skip", false);
-  const int submitFrames =
-      GetEffectivePrefInt(env, activity, "submit_frames", 2);
-
-  xemu_set_fp_safe(fpSafe);
-  xemu_set_fp_jit(fpJit);
-  xemu_set_fast_fences(fastFences);
-  xemu_set_draw_reorder(drawReorder);
-  xemu_set_draw_merge(drawMerge);
-  xemu_set_bindless_textures(bindlessTextures);
-  xemu_set_async_compile(asyncCompile);
-  xemu_set_frame_skip(frameSkip);
-  xemu_set_submit_frames(submitFrames);
-
-  LogInfoInt("Config runtime fp_safe=%d", fpSafe ? 1 : 0);
-  LogInfoInt("Config runtime fp_jit_pref=%d", fpJit ? 1 : 0);
-  LogInfoInt("Config runtime fast_fences=%d", fastFences ? 1 : 0);
-  LogInfoInt("Config runtime draw_reorder=%d", drawReorder ? 1 : 0);
-  LogInfoInt("Config runtime draw_merge=%d", drawMerge ? 1 : 0);
-  LogInfoInt("Config runtime bindless_textures=%d",
-             bindlessTextures ? 1 : 0);
-  LogInfoInt("Config runtime async_compile=%d", asyncCompile ? 1 : 0);
-  LogInfoInt("Config runtime frame_skip=%d", frameSkip ? 1 : 0);
-  LogInfoInt("Config runtime submit_frames=%d", submitFrames);
-
-  // Custom Vulkan driver loading is handled by GpuDriverHelper via adrenotools
-  // in MainActivity.loadLibraries(), before the native library initializes.
-
   out.config_path = base + "/xemu.toml";
-  WriteConfigToml(out.config_path, out.mcpx, out.flash, out.hdd, out.dvd, out.eeprom, emuSettings);
+  int tbSize = GetPrefInt(env, activity, "tcg_tb_size", 128);
+
+  DisplaySettings ds;
+  ds.surface_scale = GetPrefInt(env, activity, "surface_scale", 1);
+  if (ds.surface_scale < 1) ds.surface_scale = 1;
+  if (ds.surface_scale > 4) ds.surface_scale = 4;
+  ds.vsync = GetPrefBool(env, activity, "vsync", false);
+  ds.unlock_framerate = GetPrefBool(env, activity, "unlock_framerate", true);
+  ds.validation_layers = GetPrefBool(env, activity, "validation_layers", false);
+
+  bool fp_safe = GetPrefBool(env, activity, "fp_safe", true);
+  xemu_set_fp_safe(fp_safe);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "FP safe (native arithmetic): %s", fp_safe ? "ON" : "OFF");
+
+  bool fp_jit = GetPrefBool(env, activity, "fp_jit", true);
+  xemu_set_fp_jit(fp_jit);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "FP JIT (native storage + inline ops): %s", fp_jit ? "ON" : "OFF");
+
+  bool fast_fences = GetPrefBool(env, activity, "fast_fences", false);
+  xemu_set_fast_fences(fast_fences);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "fast fences: %s", fast_fences ? "ON" : "OFF");
+
+  bool draw_reorder = GetPrefBool(env, activity, "draw_reorder", false);
+  xemu_set_draw_reorder(draw_reorder);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "draw reorder: %s", draw_reorder ? "ON" : "OFF");
+
+  bool draw_merge = GetPrefBool(env, activity, "draw_merge", false);
+  xemu_set_draw_merge(draw_merge);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "draw merge: %s", draw_merge ? "ON" : "OFF");
+
+  bool bindless_tex = GetPrefBool(env, activity, "bindless_textures", false);
+  xemu_set_bindless_textures(bindless_tex);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "bindless textures: %s", bindless_tex ? "ON" : "OFF");
+
+  bool async_compile = GetPrefBool(env, activity, "async_compile", false);
+  xemu_set_async_compile(async_compile);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "async compile: %s", async_compile ? "ON" : "OFF");
+
+  bool frame_skip = GetPrefBool(env, activity, "frame_skip", false);
+  xemu_set_frame_skip(frame_skip);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "frame skip: %s", frame_skip ? "ON" : "OFF");
+
+  int submit_frames = GetPrefInt(env, activity, "submit_frames", 2);
+  xemu_set_submit_frames(submit_frames);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "submit frames: %d", submit_frames);
+
+  int tier1_threshold = GetPrefInt(env, activity, "tier1_threshold", 64);
+  xemu_set_tier1_threshold(tier1_threshold);
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "tier1 threshold: %d", tier1_threshold);
+
+  std::string filterPref = GetPrefString(env, activity, "filtering");
+  if (!filterPref.empty()) ds.filtering = filterPref;
+  std::string arPref = GetPrefString(env, activity, "aspect_ratio");
+  if (!arPref.empty()) ds.aspect_ratio = arPref;
+
+  WriteConfigToml(out.config_path, out.mcpx, out.flash, out.hdd, out.dvd, out.eeprom, tbSize, ds);
   LogInfoFmt("SyncSetupFiles: config %s", out.config_path.c_str());
   LogInfoFmt("Resolved mcpx=%s", out.mcpx.c_str());
   LogInfoFmt("Resolved flash=%s", out.flash.c_str());
   LogInfoFmt("Resolved hdd=%s", out.hdd.c_str());
   LogInfoFmt("Resolved dvd=%s", out.dvd.c_str());
   LogInfoFmt("Resolved eeprom=%s", out.eeprom.c_str());
+
+  {
+    FILE *f = fopen(out.config_path.c_str(), "r");
+    if (f) {
+      char buf[4096];
+      size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+      buf[n] = '\0';
+      fclose(f);
+      __android_log_print(ANDROID_LOG_INFO, "hakuX-config",
+                          "--- xemu.toml ---\n%s\n--- end ---", buf);
+    }
+  }
   return out;
 }
 }
@@ -1586,17 +873,53 @@ extern "C" void xemu_android_display_wait_ready(void);
 extern "C" void xemu_android_display_loop(void);
 extern "C" void xemu_android_set_inline_aio_crash_flag_path(const char* path);
 
-#ifndef XEMU_OPT_TB_CACHE_HINTS
-#define XEMU_OPT_TB_CACHE_HINTS 1
+#ifndef XEMU_OPT_THREAD_AFFINITY
+#define XEMU_OPT_THREAD_AFFINITY 0
 #endif
 
-#if XEMU_OPT_TB_CACHE_HINTS
-extern "C" void tb_cache_set_save_target(const char* path, uint32_t game_hash);
-extern "C" void tb_cache_save(const char* path, uint32_t game_hash);
-extern "C" int tb_cache_load(const char* path, uint32_t game_hash);
-extern "C" uint32_t tb_cache_compute_game_hash(const char* bootrom_path,
-                                               const char* flashrom_path);
-extern "C" void tb_cache_cleanup(void);
+#if XEMU_OPT_THREAD_AFFINITY
+#include <sys/syscall.h>
+#include <sys/resource.h>
+
+static void xemu_pin_to_big_cores_cpp(const char *label) {
+  int ncpus = sysconf(_SC_NPROCESSORS_CONF);
+  if (ncpus <= 0 || ncpus > 64) return;
+
+  unsigned long max_freq = 0;
+  unsigned long freqs[64];
+  for (int i = 0; i < ncpus; i++) {
+    char path[128];
+    snprintf(path, sizeof(path),
+             "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+    FILE *f = fopen(path, "r");
+    if (f) {
+      if (fscanf(f, "%lu", &freqs[i]) != 1) freqs[i] = 0;
+      fclose(f);
+    } else {
+      freqs[i] = 0;
+    }
+    if (freqs[i] > max_freq) max_freq = freqs[i];
+  }
+  if (max_freq == 0) return;
+
+  unsigned long threshold = max_freq * 9 / 10;
+  unsigned long mask = 0;
+  int big_count = 0;
+  for (int i = 0; i < ncpus && i < (int)(sizeof(mask) * 8); i++) {
+    if (freqs[i] >= threshold) {
+      mask |= (1UL << i);
+      big_count++;
+    }
+  }
+  if (big_count > 0 && big_count < ncpus) {
+    if (syscall(__NR_sched_setaffinity, 0, sizeof(mask), &mask) == 0) {
+      __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                          "%s: pinned to %d big cores (max_freq=%lu)",
+                          label, big_count, max_freq);
+    }
+  }
+  setpriority(PRIO_PROCESS, 0, -10);
+}
 #endif
 
 struct QemuLaunchContext {
@@ -1605,6 +928,9 @@ struct QemuLaunchContext {
 };
 
 static int SDLCALL QemuThreadMain(void* data) {
+#if XEMU_OPT_THREAD_AFFINITY
+  xemu_pin_to_big_cores_cpp("qemu_cpu_thread");
+#endif
   auto* ctx = static_cast<QemuLaunchContext*>(data);
   LogInfoInt("QemuThreadMain: show_welcome=%d", g_config.general.show_welcome ? 1 : 0);
   LogInfoFmt("QemuThreadMain: bootrom=%s", g_config.sys.files.bootrom_path ? g_config.sys.files.bootrom_path : "(null)");
@@ -1612,53 +938,62 @@ static int SDLCALL QemuThreadMain(void* data) {
   return xemu_android_main(ctx->argc, ctx->argv);
 }
 
+#ifndef XEMU_OPT_TB_CACHE_HINTS
+#define XEMU_OPT_TB_CACHE_HINTS 1
+#endif
+
+#if XEMU_OPT_TB_CACHE_HINTS
+extern "C" void tb_cache_save(const char *path, uint32_t game_hash);
+extern "C" int  tb_cache_load(const char *path, uint32_t game_hash);
+extern "C" uint32_t tb_cache_compute_game_hash(const char *bootrom_path,
+                                               const char *flashrom_path);
+extern "C" void tb_cache_cleanup(void);
+#endif
+
 extern "C" int xemu_android_main(int argc, char** argv) {
-  bool expected = false;
-  if (!g_qemu_init_started.compare_exchange_strong(expected, true)) {
-    LogError("xemu_android_main: qemu_init re-entry detected; stale :xemu process reuse");
-    return 1;
-  }
-  struct ResetInitGuard {
-    ~ResetInitGuard() { g_qemu_init_started.store(false); }
-  } reset_init_guard;
   if (!qemu_main) {
     LogError("xemu core not linked; qemu_main missing");
     return 1;
   }
   LogInfo("xemu_android_main: qemu_init");
+  auto t_init_start = SDL_GetTicks();
   qemu_init(argc, argv);
+  auto t_init_end = SDL_GetTicks();
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "qemu_init took %u ms", t_init_end - t_init_start);
+
+  /* qemu_init's cleanup_add_fd already closed the original fd */
+  g_dvd_fd = -1;
 
 #if XEMU_OPT_TB_CACHE_HINTS
-  std::string cache_storage = GetPreferredPersistentStoragePath();
-  std::string internal_storage = GetInternalPersistentStoragePath();
-  if (!cache_storage.empty()) {
-    std::string cache_dir = cache_storage + "/x1box";
-    EnsureDirExists(cache_dir);
+  /* Load translation block cache hints for pre-warming */
+  const char *storage_load = SDL_AndroidGetInternalStoragePath();
+
+  const char *dump_storage = NULL;
+  if (SDL_AndroidGetExternalStorageState() & SDL_ANDROID_EXTERNAL_STORAGE_WRITE) {
+    dump_storage = SDL_AndroidGetExternalStoragePath();
+  }
+  if (!dump_storage || !dump_storage[0]) {
+    dump_storage = storage_load;
+  }
+  if (dump_storage) {
+    char dump_dir[PATH_MAX];
+    snprintf(dump_dir, sizeof(dump_dir), "%s/rt_dumps", dump_storage);
+    nv2a_dbg_set_rt_dump_path(dump_dir);
+  }
+
+  /* Load translation block cache hints for pre-warming */
+  if (storage_load) {
     char cache_path[PATH_MAX];
-    snprintf(cache_path, sizeof(cache_path), "%s/tb_cache.bin",
-             cache_dir.c_str());
-    std::string load_path = cache_path;
-    if (load_path != internal_storage + "/x1box/tb_cache.bin" &&
-        !FileExists(load_path) && !internal_storage.empty()) {
-      std::string internal_cache_dir = internal_storage + "/x1box";
-      std::string internal_cache_path = internal_cache_dir + "/tb_cache.bin";
-      if (FileExists(internal_cache_path)) {
-        load_path = internal_cache_path;
-      }
-    }
+    snprintf(cache_path, sizeof(cache_path), "%s/x1box/tb_cache.bin", storage_load);
     uint32_t game_hash = tb_cache_compute_game_hash(
         g_config.sys.files.bootrom_path, g_config.sys.files.flashrom_path);
-    game_hash ^= (xemu_get_fp_safe() ? 0x1u : 0u)
-              |  (xemu_get_fp_jit() ? 0x2u : 0u);
-    tb_cache_set_save_target(cache_path, game_hash);
-    int nhints = tb_cache_load(load_path.c_str(), game_hash);
-    if (NativeDebugLoggingEnabled()) {
-      char tb_cache_msg[PATH_MAX + 64] = {};
-      std::snprintf(tb_cache_msg, sizeof(tb_cache_msg),
-                    "TB cache loaded %d hints from %s", nhints,
-                    load_path.c_str());
-      LogInfo(tb_cache_msg);
-    }
+    /* Fold code-generation-affecting settings into the hash so that a
+     * cache saved with different FP modes is automatically rejected. */
+    game_hash ^= (xemu_get_fp_safe() ? 0x1u : 0) | (xemu_get_fp_jit() ? 0x2u : 0);
+    int nhints = tb_cache_load(cache_path, game_hash);
+    __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                        "TB cache: loaded %d hints from %s", nhints, cache_path);
   }
 #endif
 
@@ -1667,21 +1002,26 @@ extern "C" int xemu_android_main(int argc, char** argv) {
   LogErrorInt("xemu_android_main: qemu_main returned %d", rc);
 
 #if XEMU_OPT_TB_CACHE_HINTS
-  std::string save_storage = GetPreferredPersistentStoragePath();
-  if (!save_storage.empty()) {
-    std::string cache_dir = save_storage + "/x1box";
-    EnsureDirExists(cache_dir);
+  /* Save translation block cache hints for next launch */
+  const char *storage = SDL_AndroidGetInternalStoragePath();
+  if (storage) {
+    char dir_path[PATH_MAX];
+    snprintf(dir_path, sizeof(dir_path), "%s/x1box", storage);
+    mkdir(dir_path, 0755);
     char cache_path[PATH_MAX];
-    snprintf(cache_path, sizeof(cache_path), "%s/tb_cache.bin",
-             cache_dir.c_str());
+    snprintf(cache_path, sizeof(cache_path), "%s/tb_cache.bin", dir_path);
     uint32_t game_hash = tb_cache_compute_game_hash(
         g_config.sys.files.bootrom_path, g_config.sys.files.flashrom_path);
-    game_hash ^= (xemu_get_fp_safe() ? 0x1u : 0u)
-              |  (xemu_get_fp_jit() ? 0x2u : 0u);
+    game_hash ^= (xemu_get_fp_safe() ? 0x1u : 0) | (xemu_get_fp_jit() ? 0x2u : 0);
     tb_cache_save(cache_path, game_hash);
   }
   tb_cache_cleanup();
 #endif
+
+  if (g_dvd_fd >= 0) {
+    close(g_dvd_fd);
+    g_dvd_fd = -1;
+  }
 
   return rc;
 }
@@ -1690,17 +1030,11 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   (void)argc;
   (void)argv;
 
-  ConfigureNativeDebugLogging(GetEnv(), GetActivity(GetEnv()));
   LogInfo("SDL_main: start");
-  JNIEnv* env = GetEnv();
-  jobject activity = GetActivity(env);
-  std::string audio_driver_hint = ResolveAndroidAudioDriverHint();
-  SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, audio_driver_hint.c_str(),
+  // Prefer AAudio on Android, but keep Android AudioTrack as fallback.
+  SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, "aaudio,android",
                           SDL_HINT_OVERRIDE);
-  LogInfoFmt("SDL_HINT_AUDIODRIVER=%s", audio_driver_hint.c_str());
-  std::string orientation_hint = ResolveAndroidOrientationHint(env, activity);
-  SDL_SetHint(SDL_HINT_ORIENTATIONS, orientation_hint.c_str());
-  LogInfoFmt("SDL_HINT_ORIENTATIONS=%s", orientation_hint.c_str());
+  SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
   SDL_DisableScreenSaver();
 
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
@@ -1710,20 +1044,11 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   SDL_GameControllerEventState(SDL_ENABLE);
   LoadGameControllerMappingsFromAssets();
 
+  auto t_sync_start = SDL_GetTicks();
   SetupFiles setup = SyncSetupFiles();
-
-  // If the user explicitly chose an audio driver in Settings, override the
-  // hint we set at startup.  Audio is not initialized until qemu_init() so
-  // it is safe to change SDL_HINT_AUDIODRIVER here.
-  if (!setup.audio_driver.empty()) {
-    // Reuse ResolveAndroidAudioDriverHint logic by temporarily writing the
-    // pref value into XEMU_ANDROID_AUDIO_DRIVER and re-resolving.
-    setenv("XEMU_ANDROID_AUDIO_DRIVER", setup.audio_driver.c_str(), 1);
-    std::string resolved = ResolveAndroidAudioDriverHint();
-    SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, resolved.c_str(),
-                            SDL_HINT_OVERRIDE);
-    LogInfoFmt("SDL_HINT_AUDIODRIVER (from prefs)=%s", resolved.c_str());
-  }
+  auto t_sync_end = SDL_GetTicks();
+  __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                      "SyncSetupFiles took %u ms", t_sync_end - t_sync_start);
 
   xemu_android_set_inline_aio_crash_flag_path(setup.inline_aio_flag_path.empty()
                                                    ? nullptr
@@ -1778,7 +1103,7 @@ extern "C" int SDL_main(int argc, char* argv[]) {
     }
     if (!setup.dvd.empty()) {
       xemu_settings_set_string(&g_config.sys.files.dvd_path, setup.dvd.c_str());
-    } else if (!g_config.sys.files.dvd_path) {
+    } else {
       xemu_settings_set_string(&g_config.sys.files.dvd_path, "");
     }
     if (!setup.eeprom.empty()) {
@@ -1786,13 +1111,24 @@ extern "C" int SDL_main(int argc, char* argv[]) {
     } else if (!g_config.sys.files.eeprom_path) {
       xemu_settings_set_string(&g_config.sys.files.eeprom_path, "");
     }
+    setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
     g_config.general.show_welcome = false;
     g_config.perf.cache_shaders = true;
+
+    // Apply renderer preference from SharedPreferences
+    {
+      const char *renderer_pref = SDL_getenv("XEMU_RENDERER");
+      if (renderer_pref && strcmp(renderer_pref, "opengl") == 0) {
+        g_config.display.renderer = CONFIG_DISPLAY_RENDERER_OPENGL;
+        LogInfo("Renderer override: OpenGL ES (from pref)");
+      } else {
+        g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
+      }
+    }
+
     LogInfoInt("Config final show_welcome=%d", g_config.general.show_welcome ? 1 : 0);
     LogInfoInt("Config final cache_shaders=%d", g_config.perf.cache_shaders ? 1 : 0);
-    LogInfoInt("Config final fp_jit=%d", g_config.perf.fp_jit ? 1 : 0);
-    LogInfoFmt("Config final renderer=%s",
-               RendererName(g_config.display.renderer));
+    LogInfoInt("Config final renderer=%d", (int)g_config.display.renderer);
     LogInfoFmt("Config final bootrom=%s", g_config.sys.files.bootrom_path ? g_config.sys.files.bootrom_path : "(null)");
     LogInfoFmt("Config final flashrom=%s", g_config.sys.files.flashrom_path ? g_config.sys.files.flashrom_path : "(null)");
     LogInfoFmt("Config final hdd=%s", g_config.sys.files.hdd_path ? g_config.sys.files.hdd_path : "(null)");
@@ -1814,6 +1150,18 @@ extern "C" int SDL_main(int argc, char* argv[]) {
       LogInfo("SDL_main: TCG tuning disabled");
     }
 
+    if (g_dvd_fd >= 0) {
+      int flags = fcntl(g_dvd_fd, F_GETFD);
+      if (flags != -1 && (flags & FD_CLOEXEC)) {
+        fcntl(g_dvd_fd, F_SETFD, flags & ~FD_CLOEXEC);
+      }
+      char add_fd_arg[64];
+      snprintf(add_fd_arg, sizeof(add_fd_arg), "fd=%d,set=0", g_dvd_fd);
+      arg_storage.emplace_back("-add-fd");
+      arg_storage.emplace_back(add_fd_arg);
+      LogInfoInt("SDL_main: passing DVD fd %d via -add-fd", g_dvd_fd);
+    }
+
     std::vector<char*> xemu_argv;
     xemu_argv.reserve(arg_storage.size() + 1);
     for (auto& arg : arg_storage) {
@@ -1833,15 +1181,17 @@ extern "C" int SDL_main(int argc, char* argv[]) {
       return 1;
     }
     LogInfo("SDL_main: qemu thread started");
-    (void)qemu_thread;
     xemu_android_display_wait_ready();
     LogInfo("SDL_main: display ready, entering render loop");
     xemu_android_display_loop();
-    // Force process exit so Android cannot freeze-and-reuse this process for a
-    // subsequent game launch.  qemu_init() cannot be called twice in the same
-    // process; if the process is thawed and SDL_main is re-entered, qemu_init
-    // asserts/aborts (confirmed by Burnout 3 logcat: SIGABRT in tid 29278).
-    _exit(0);
+
+    LogInfo("SDL_main: display loop exited, waiting for QEMU thread");
+    int qemu_rc = 0;
+    SDL_WaitThread(qemu_thread, &qemu_rc);
+    LogInfoInt("SDL_main: QEMU thread exited with %d", qemu_rc);
+
+    LogInfo("SDL_main: QEMU cleanup complete, terminating process");
+    _exit(qemu_rc);
   }
 
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
@@ -1909,15 +1259,213 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   return 0;
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rfandango_haku_1x_MainActivity_nativeGetFps(JNIEnv *, jobject)
+{
+    return static_cast<jint>(g_nv2a_stats.increment_fps);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_rfandango_haku_1x_MainActivity_nativeGetFramePacing(JNIEnv *env, jobject)
+{
+    char buf[256];
+    nv2a_profile_get_pacing_str(buf, sizeof(buf));
+    return env->NewStringUTF(buf);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_rfandango_haku_1x_MainActivity_nativeGetShaderStats(JNIEnv *env, jobject)
+{
+    char buf[256];
+    nv2a_profile_get_shader_stats_str(buf, sizeof(buf));
+    return env->NewStringUTF(buf);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rfandango_haku_1x_MainActivity_nativeCaptureFrame(JNIEnv *, jobject)
+{
+#ifdef CONFIG_RENDERDOC
+    if (nv2a_dbg_renderdoc_available()) {
+        nv2a_dbg_renderdoc_capture_frames(1, false);
+        return JNI_TRUE;
+    }
+#endif
+    return JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_MainActivity_nativeDumpDiagFrames(JNIEnv *, jobject, jint numFrames)
+{
+    nv2a_dbg_trigger_diag_frames((int)numFrames);
+}
+
+extern "C" char g_vulkan_driver_info[256];
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_rfandango_haku_1x_MainActivity_nativeGetDriverInfo(JNIEnv *env, jobject)
+{
+    return env->NewStringUTF(g_vulkan_driver_info);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetFpSafe(JNIEnv *, jobject)
+{
+    return xemu_get_fp_safe() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetFpSafe(JNIEnv *, jobject, jboolean enable)
+{
+    xemu_set_fp_safe(enable == JNI_TRUE);
+    const char *storage = SDL_AndroidGetInternalStoragePath();
+    if (storage) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/x1box/tb_cache.bin", storage);
+        remove(path);
+    }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetFastFences(JNIEnv *, jobject)
+{
+    return xemu_get_fast_fences() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetFastFences(JNIEnv *, jobject, jboolean enable)
+{
+    xemu_set_fast_fences(enable == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetDrawReorder(JNIEnv *, jobject)
+{
+    return xemu_get_draw_reorder() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetDrawReorder(JNIEnv *, jobject, jboolean enable)
+{
+    xemu_set_draw_reorder(enable == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetDrawMerge(JNIEnv *, jobject)
+{
+    return xemu_get_draw_merge() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetDrawMerge(JNIEnv *, jobject, jboolean enable)
+{
+    xemu_set_draw_merge(enable == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetBindlessTextures(JNIEnv *, jobject)
+{
+    return xemu_get_bindless_textures() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetBindlessTextures(JNIEnv *, jobject, jboolean enable)
+{
+    xemu_set_bindless_textures(enable == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetAsyncCompile(JNIEnv *, jobject)
+{
+    return xemu_get_async_compile() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetAsyncCompile(JNIEnv *, jobject, jboolean enable)
+{
+    xemu_set_async_compile(enable == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetFrameSkip(JNIEnv *, jobject)
+{
+    return xemu_get_frame_skip() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetFrameSkip(JNIEnv *, jobject, jboolean enable)
+{
+    xemu_set_frame_skip(enable == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetSubmitFrames(JNIEnv *, jobject)
+{
+    return static_cast<jint>(xemu_get_submit_frames());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetSubmitFrames(JNIEnv *, jobject, jint count)
+{
+    xemu_set_submit_frames(static_cast<int>(count));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetTier1Threshold(JNIEnv *, jobject)
+{
+    return static_cast<jint>(xemu_get_tier1_threshold());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetTier1Threshold(JNIEnv *, jobject, jint value)
+{
+    xemu_set_tier1_threshold(static_cast<int>(value));
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeGetFpJit(JNIEnv *, jobject)
+{
+    return xemu_get_fp_jit() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_SettingsActivity_nativeSetFpJit(JNIEnv *, jobject, jboolean enable)
+{
+    xemu_set_fp_jit(enable == JNI_TRUE);
+    const char *storage = SDL_AndroidGetInternalStoragePath();
+    if (storage) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/x1box/tb_cache.bin", storage);
+        remove(path);
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_MainActivity_nativePauseEmulation(JNIEnv *, jobject)
+{
+    xemu_android_pause_emulation();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_MainActivity_nativeResumeEmulation(JNIEnv *, jobject)
+{
+    xemu_android_resume_emulation();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rfandango_haku_1x_MainActivity_nativeExitEmulation(JNIEnv *, jobject)
+{
+    xemu_android_request_exit();
+}
+
 #ifdef CONFIG_VULKAN
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_izzy2lost_x1box_GpuDriverHelper_nativeSupportsCustomDriverLoading(JNIEnv *, jclass)
+Java_com_rfandango_haku_1x_GpuDriverHelper_nativeSupportsCustomDriverLoading(JNIEnv *, jclass)
 {
     return access("/dev/kgsl-3d0", F_OK) == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_izzy2lost_x1box_GpuDriverHelper_nativeInitializeDriver(
+Java_com_rfandango_haku_1x_GpuDriverHelper_nativeInitializeDriver(
     JNIEnv *env, jclass,
     jstring hookLibDir, jstring customDriverDir,
     jstring customDriverName)
@@ -1927,11 +1475,9 @@ Java_com_izzy2lost_x1box_GpuDriverHelper_nativeInitializeDriver(
     const char *driver_name = customDriverName ? env->GetStringUTFChars(customDriverName, nullptr) : nullptr;
 
     void *handle = nullptr;
-    g_custom_vulkan_library = nullptr;
-    g_system_vulkan_library = nullptr;
 
     if (driver_name && driver_name[0] != '\0') {
-        __android_log_print(ANDROID_LOG_INFO, kLogTag,
+        __android_log_print(ANDROID_LOG_INFO, "hakuX",
                             "Loading custom Vulkan driver: %s from %s",
                             driver_name, driver_dir ? driver_dir : "(null)");
         handle = adrenotools_open_libvulkan(
@@ -1946,33 +1492,15 @@ Java_com_izzy2lost_x1box_GpuDriverHelper_nativeInitializeDriver(
 
         if (handle) {
             g_custom_vulkan_library = handle;
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+            __android_log_print(ANDROID_LOG_INFO, "hakuX",
                                 "Custom Vulkan driver loaded successfully via adrenotools");
         } else {
-            __android_log_print(ANDROID_LOG_WARN, kLogTag,
+            __android_log_print(ANDROID_LOG_WARN, "hakuX",
                                 "adrenotools failed to load custom driver, will fall back to system default");
         }
     } else {
-        __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                            "No custom driver specified, initializing system Vulkan via adrenotools");
-        handle = adrenotools_open_libvulkan(
-            RTLD_NOW,
-            0,
-            nullptr,
-            hook_dir,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr);
-
-        if (handle) {
-            g_system_vulkan_library = handle;
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                                "System Vulkan initialized via adrenotools; exposing hooked vkGetInstanceProcAddr");
-        } else {
-            __android_log_print(ANDROID_LOG_WARN, kLogTag,
-                                "adrenotools failed to initialize system Vulkan driver, using plain system loader");
-        }
+        __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                            "No custom driver specified, using system Vulkan driver");
     }
 
     if (driver_name) env->ReleaseStringUTFChars(customDriverName, driver_name);
@@ -1980,25 +1508,3 @@ Java_com_izzy2lost_x1box_GpuDriverHelper_nativeInitializeDriver(
     if (hook_dir) env->ReleaseStringUTFChars(hookLibDir, hook_dir);
 }
 #endif
-
-extern "C" void xemu_android_pause_emulation(void);
-extern "C" void xemu_android_resume_emulation(void);
-extern "C" void xemu_android_request_exit(void);
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_izzy2lost_x1box_MainActivity_nativePauseEmulation(JNIEnv *, jobject)
-{
-    xemu_android_pause_emulation();
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_izzy2lost_x1box_MainActivity_nativeResumeEmulation(JNIEnv *, jobject)
-{
-    xemu_android_resume_emulation();
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_izzy2lost_x1box_MainActivity_nativeExitEmulation(JNIEnv *, jobject)
-{
-    xemu_android_request_exit();
-}

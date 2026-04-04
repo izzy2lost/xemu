@@ -158,6 +158,12 @@ typedef struct PGRAPHState {
 
     hwaddr dma_a, dma_b;
     bool texture_dirty[NV2A_MAX_TEXTURES];
+    uint32_t texture_state_gen;
+    uint32_t vertex_attr_gen;
+    uint32_t shader_state_gen;
+    uint32_t pipeline_state_gen;
+    uint32_t any_reg_gen;
+    uint32_t non_dynamic_reg_gen;
 
     bool texture_matrix_enable[NV2A_MAX_TEXTURES];
 
@@ -181,14 +187,18 @@ typedef struct PGRAPHState {
 
     uint32_t vsh_constants[NV2A_VERTEXSHADER_CONSTANTS][4];
     bool vsh_constants_dirty[NV2A_VERTEXSHADER_CONSTANTS];
+    bool vsh_constants_any_dirty;
 
     /* lighting constant arrays */
     uint32_t ltctxa[NV2A_LTCTXA_COUNT][4];
     bool ltctxa_dirty[NV2A_LTCTXA_COUNT];
+    bool ltctxa_any_dirty;
     uint32_t ltctxb[NV2A_LTCTXB_COUNT][4];
     bool ltctxb_dirty[NV2A_LTCTXB_COUNT];
+    bool ltctxb_any_dirty;
     uint32_t ltc1[NV2A_LTC1_COUNT][4];
     bool ltc1_dirty[NV2A_LTC1_COUNT];
+    bool ltc1_any_dirty;
 
     float material_alpha;
 
@@ -229,6 +239,9 @@ typedef struct PGRAPHState {
 
     uint32_t regs_[0x2000];
     DECLARE_BITMAP(regs_dirty, 0x2000 / sizeof(uint32_t));
+
+    unsigned int last_subchannel;
+    uint32_t cached_graphics_class;
 
     bool clearing; // FIXME: Internal
     bool waiting_for_nop;
@@ -277,6 +290,10 @@ int pgraph_method(NV2AState *d, unsigned int subchannel, unsigned int method,
                   uint32_t parameter, uint32_t *parameters,
                   size_t num_words_available, size_t max_lookahead_words,
                   bool inc);
+int pgraph_method_try_fast(NV2AState *d, unsigned int subchannel,
+                           unsigned int method, uint32_t parameter,
+                           uint32_t *parameters, size_t num_words_available,
+                           size_t max_lookahead_words);
 void pgraph_check_within_begin_end_block(PGRAPHState *pg);
 
 void *pfifo_thread(void *arg);
@@ -290,6 +307,13 @@ extern NV2AState *g_nv2a;
 
 // FIXME: Add new function pgraph_is_texture_sampler_active()
 
+#define REG_CAT_SHADER   (1 << 0)
+#define REG_CAT_PIPELINE (1 << 1)
+#define REG_CAT_TEXTURE  (1 << 2)
+extern uint8_t pgraph_reg_category_table[];
+extern uint32_t pgraph_reg_dynamic_mask_table[];
+void pgraph_init_reg_dynamic_masks(bool eds1, bool eds3);
+
 static inline uint32_t pgraph_reg_r(PGRAPHState *pg, unsigned int r)
 {
     assert(r % 4 == 0);
@@ -301,8 +325,60 @@ static inline void pgraph_reg_w(PGRAPHState *pg, unsigned int r, uint32_t v)
     assert(r % 4 == 0);
     if (pg->regs_[r] != v) {
         bitmap_set(pg->regs_dirty, r / sizeof(uint32_t), 1);
+        uint8_t cat = pgraph_reg_category_table[r / 4];
+        uint32_t dyn_mask = pgraph_reg_dynamic_mask_table[r / 4];
+        uint32_t non_dyn_changed = (pg->regs_[r] ^ v) & ~dyn_mask;
+        if (cat & REG_CAT_SHADER) {
+            if (non_dyn_changed) pg->shader_state_gen++;
+        }
+        if (cat & REG_CAT_PIPELINE) {
+            if (non_dyn_changed) pg->pipeline_state_gen++;
+        }
+        if (cat & REG_CAT_TEXTURE)  pg->texture_state_gen++;
+        bool tex_only = cat && !(cat & ~REG_CAT_TEXTURE);
+        if (non_dyn_changed && !tex_only)
+            pg->non_dynamic_reg_gen++;
+        pg->any_reg_gen++;
     }
     pg->regs_[r] = v;
+}
+
+/*
+ * Atomic variant of pgraph_reg_w for lockless method dispatch.
+ * Uses atomic ops for dirty bitmap and generation counters so the vCPU
+ * MMIO path (under pgraph.lock) and the lockless PFIFO fast-path can
+ * safely update state concurrently. Relaxed ordering is sufficient
+ * because the render thread re-validates under pgraph.lock at draw time.
+ */
+static inline void pgraph_reg_w_atomic(PGRAPHState *pg, unsigned int r,
+                                       uint32_t v)
+{
+    assert(r % 4 == 0);
+    uint32_t old = qatomic_read(&pg->regs_[r]);
+    if (old != v) {
+        bitmap_set_atomic(pg->regs_dirty, r / sizeof(uint32_t), 1);
+        uint8_t cat = pgraph_reg_category_table[r / 4];
+        uint32_t dyn_mask = pgraph_reg_dynamic_mask_table[r / 4];
+        uint32_t non_dyn_changed = (old ^ v) & ~dyn_mask;
+        if (cat & REG_CAT_SHADER) {
+            if (non_dyn_changed)
+                __atomic_fetch_add(&pg->shader_state_gen, 1,
+                                   __ATOMIC_RELAXED);
+        }
+        if (cat & REG_CAT_PIPELINE) {
+            if (non_dyn_changed)
+                __atomic_fetch_add(&pg->pipeline_state_gen, 1,
+                                   __ATOMIC_RELAXED);
+        }
+        if (cat & REG_CAT_TEXTURE)
+            __atomic_fetch_add(&pg->texture_state_gen, 1, __ATOMIC_RELAXED);
+        bool tex_only = cat && !(cat & ~REG_CAT_TEXTURE);
+        if (non_dyn_changed && !tex_only)
+            __atomic_fetch_add(&pg->non_dynamic_reg_gen, 1,
+                               __ATOMIC_RELAXED);
+        __atomic_fetch_add(&pg->any_reg_gen, 1, __ATOMIC_RELAXED);
+    }
+    qatomic_set(&pg->regs_[r], v);
 }
 
 void pgraph_clear_dirty_reg_map(PGRAPHState *pg);
@@ -310,6 +386,14 @@ void pgraph_clear_dirty_reg_map(PGRAPHState *pg);
 static inline bool pgraph_is_reg_dirty(PGRAPHState *pg, unsigned int reg)
 {
     return test_bit(reg / sizeof(uint32_t), pg->regs_dirty);
+}
+
+static inline bool pgraph_has_dirty_regs(PGRAPHState *pg)
+{
+    for (int i = 0; i < ARRAY_SIZE(pg->regs_dirty); i++) {
+        if (pg->regs_dirty[i]) return true;
+    }
+    return false;
 }
 
 static inline bool pgraph_is_texture_stage_active(PGRAPHState *pg, unsigned int stage)

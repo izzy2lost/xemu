@@ -21,6 +21,7 @@
 
 #include "hw/xbox/nv2a/nv2a_int.h"
 #include "qemu/main-loop.h"
+#include "ui/xemu-settings.h"
 
 void nv2a_update_irq(NV2AState *d)
 {
@@ -193,16 +194,174 @@ int nv2a_get_screen_off(void)
     return g_nv2a->vga.sr[VGA_SEQ_CLOCK_MODE] & VGA_SR01_SCREEN_OFF;
 }
 
+static int64_t nv2a_calc_vblank_period_ns(NV2AState *d)
+{
+    uint32_t vdisplay = d->pramdac.fp_vdisplay_end;
+
+    if (vdisplay > 480) {
+        /* PAL (576i/576p): ~50 Hz */
+        return NANOSECONDS_PER_SECOND / 50;
+    }
+
+    /* NTSC / HDTV (480i/480p/720p/1080i): ~59.94 Hz */
+    return 16683750;
+}
+
+static int64_t s_last_vblank_fire_ns;
+
+static void nv2a_vblank_timer_cb(void *opaque)
+{
+    NV2AState *d = opaque;
+    int64_t period = nv2a_calc_vblank_period_ns(d);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
+    /*
+     * Adaptive VBLANK: defer this VBLANK when the game is actively
+     * rendering and barely missed the deadline.
+     *
+     * In normal mode, the deferral window covers ~1.25 VBLANK periods
+     * after the last FLIP call, targeting games that take slightly
+     * longer than one period to render.
+     *
+     * "Unlock framerate" mode widens the window and cap, but only
+     * engages when the game's frame time is near one VBLANK period
+     * (i.e. targeting ~60fps). 30fps games (frame time ~2 periods)
+     * always use normal deferral so their intermediate VBLANKs are
+     * preserved for frame-count-based timing.
+     *
+     * The !waiting_for_flip check ensures we never defer a VBLANK
+     * that the game is actively waiting for. When the game calls
+     * FLIP_STALL, it fires the deferred VBLANK immediately via
+     * timer_mod, so actual deferral latency is minimal.
+     */
+    /*
+     * Use the smoothed frame time to determine unlock mode with
+     * hysteresis to prevent thrashing at the boundary.
+     *
+     * Enter unlock mode when frame time < 1.5 periods (~60fps zone).
+     * Exit only when frame time > 2.5 periods (well into 30fps).
+     *
+     * Without hysteresis, a game dipping from 60fps to ~40fps would
+     * cross the threshold, lose the generous deferral window, fall to
+     * 30fps, and get permanently trapped because the 30fps frame time
+     * keeps the threshold exceeded.
+     */
+    int64_t effective_frame_ns = d->avg_frame_ns ? d->avg_frame_ns
+                                                 : d->last_frame_ns;
+    if (g_config.perf.unlock_framerate && effective_frame_ns > 0) {
+        int64_t enter_thresh = period + period / 2;
+        int64_t exit_thresh  = period * 2 + period / 2;
+        if (!d->unlock_mode_active && effective_frame_ns < enter_thresh) {
+            d->unlock_mode_active = true;
+        } else if (d->unlock_mode_active && effective_frame_ns > exit_thresh) {
+            d->unlock_mode_active = false;
+        }
+    } else {
+        d->unlock_mode_active = false;
+    }
+    bool unlocked = d->unlock_mode_active;
+    int64_t time_in_frame = d->last_flip_ns ? (now - d->last_flip_ns) : 0;
+    int64_t defer_window;
+    if (unlocked) {
+        defer_window = period * 3;
+    } else {
+        /*
+         * Graduated deferral: scale the window to the actual frame time
+         * with 20% headroom so the game can finish, but cap below
+         * 2 periods so genuine 30fps games' intermediate VBLANKs fire.
+         */
+        int64_t adaptive = effective_frame_ns + effective_frame_ns / 5;
+        int64_t floor    = period + period / 4;
+        int64_t cap      = period * 2 - period / 4;
+        defer_window = MIN(MAX(adaptive, floor), cap);
+    }
+    int defer_cap = unlocked ? 16 : 4;
+    int64_t poll_interval = unlocked ? period / 16 : period / 8;
+    bool in_deferral_window = effective_frame_ns > 0 &&
+                              time_in_frame < defer_window;
+
+    if (in_deferral_window &&
+        d->flip_active &&
+        !qatomic_read(&d->pgraph.waiting_for_flip) &&
+        !d->vblank_deferred) {
+        int64_t max_defer = poll_interval * defer_cap;
+        int64_t remaining = defer_window - time_in_frame;
+        int64_t fire_at = now + MIN(max_defer, remaining);
+
+        d->vblank_defer_count = 1;
+        qatomic_set(&d->vblank_deferred, true);
+        timer_mod(d->vblank_timer, fire_at);
+        return;
+    }
+
+    bool was_deferred = d->vblank_defer_count > 0;
+    d->vblank_defer_count = 0;
+    qatomic_set(&d->vblank_deferred, false);
+
+    /* Track VBLANK firing stats */
+    g_nv2a_stats.pacing.vblank_fired++;
+    g_nv2a_stats.pacing.unlock_mode_active = unlocked;
+    if (was_deferred) {
+        g_nv2a_stats.pacing.defers_total++;
+        if (d->vblank_defer_request_ns) {
+            float delivery_ms = (float)(now - d->vblank_defer_request_ns) / 1e6f;
+            g_nv2a_stats.pacing.vblank_delivery_ms =
+                g_nv2a_stats.pacing.vblank_delivery_ms * 0.8f + delivery_ms * 0.2f;
+            d->vblank_defer_request_ns = 0;
+        }
+    }
+    if (s_last_vblank_fire_ns) {
+        float delta_ms = (float)(now - s_last_vblank_fire_ns) / 1e6f;
+        float expected_ms = (float)period / 1e6f;
+        float jitter = delta_ms - expected_ms;
+        if (jitter < 0) jitter = -jitter;
+        g_nv2a_stats.pacing.vblank_jitter_ms =
+            g_nv2a_stats.pacing.vblank_jitter_ms * 0.9f + jitter * 0.1f;
+    }
+    s_last_vblank_fire_ns = now;
+
+    d->pcrtc.pending_interrupts |= NV_PCRTC_INTR_0_VBLANK;
+    d->pcrtc.raster = 0;
+    nv2a_update_irq(d);
+
+    /*
+     * Advance the VBLANK target.
+     *
+     * When the VBLANK was deferred (game missed the deadline), reset
+     * the grid from now so the game gets a full period for the next
+     * frame.  Without this, the grid advances from the *scheduled*
+     * position, leaving less than a full period and causing a cascade
+     * where every subsequent frame also misses -- locking the game to
+     * 30fps.
+     *
+     * When the game is on time (no deferral), advance the grid by
+     * exactly one period to maintain a strict 60Hz cadence for games
+     * that count VBLANKs for timing.
+     */
+    if (was_deferred || unlocked) {
+        d->vblank_next_target_ns = now + period;
+    } else {
+        d->vblank_next_target_ns += period;
+        if (d->vblank_next_target_ns <= now) {
+            d->vblank_next_target_ns = now + period;
+        }
+    }
+    timer_mod(d->vblank_timer, d->vblank_next_target_ns);
+}
+
+void nv2a_vblank_recalc(NV2AState *d)
+{
+    if (d->vblank_timer) {
+        int64_t period = nv2a_calc_vblank_period_ns(d);
+        d->vblank_next_target_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + period;
+        timer_mod(d->vblank_timer, d->vblank_next_target_ns);
+    }
+}
+
 static void nv2a_vga_gfx_update(void *opaque)
 {
     VGACommonState *vga = opaque;
     vga->hw_ops->gfx_update(vga);
-
-    NV2AState *d = container_of(vga, NV2AState, vga);
-    d->pcrtc.pending_interrupts |= NV_PCRTC_INTR_0_VBLANK;
-    d->pcrtc.raster = 0;
-
-    nv2a_update_irq(d);
 }
 
 static void nv2a_init_memory(NV2AState *d, MemoryRegion *ram)
@@ -260,11 +419,24 @@ static void nv2a_init_vga(NV2AState *d)
                              d->vram, 0, memory_region_size(d->vram));
     vga->vram_ptr = memory_region_get_ram_ptr(&vga->vram);
     vga_dirty_log_start(vga);
+
+    d->vblank_timer = timer_new_ns(QEMU_CLOCK_REALTIME,
+                                   nv2a_vblank_timer_cb, d);
+    d->vblank_next_target_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
+                               NANOSECONDS_PER_SECOND / 60;
+    d->flip_active = false;
+    d->vblank_defer_count = 0;
+    d->last_flip_ns = 0;
+    d->last_frame_ns = 0;
+    d->avg_frame_ns = 0;
+    d->unlock_mode_active = false;
+    timer_mod(d->vblank_timer, d->vblank_next_target_ns);
 }
 
 static void nv2a_lock_fifo(NV2AState *d)
 {
     qemu_mutex_lock(&d->pfifo.lock);
+    d->pfifo.fifo_kick = true;
     qemu_cond_broadcast(&d->pfifo.fifo_cond);
     bql_unlock();
     qemu_cond_wait(&d->pfifo.fifo_idle_cond, &d->pfifo.lock);
@@ -315,6 +487,13 @@ static void nv2a_reset(NV2AState *d)
 
     d->pgraph.waiting_for_nop = false;
     d->pgraph.waiting_for_flip = false;
+    d->flip_active = false;
+    d->vblank_defer_count = 0;
+    d->last_flip_ns = 0;
+    d->last_frame_ns = 0;
+    d->avg_frame_ns = 0;
+    d->unlock_mode_active = false;
+    d->vblank_deferred = false;
     d->pgraph.waiting_for_context_switch = false;
 
     d->pmc.pending_interrupts = 0;

@@ -193,6 +193,20 @@ typedef struct PGRAPHGLState {
     bool download_dirty_surfaces_pending;
     QemuEvent dirty_surfaces_download_complete; // common
 
+#ifdef __ANDROID__
+    GLuint gl_download_pbo;
+    size_t gl_download_pbo_size;
+
+    /* Persistent scratch buffers for RGBA8 format conversion.
+     * Avoids per-frame g_malloc/g_free in surface upload/download hot paths. */
+    uint8_t *android_conv_buf;       /* upload conversion (pgraph_gl_upload_surface_data) */
+    size_t   android_conv_buf_size;
+    uint8_t *android_s2t_conv_buf;   /* render-to-texture conversion */
+    size_t   android_s2t_conv_buf_size;
+    uint8_t *android_tex_conv_buf;   /* texture upload conversion */
+    size_t   android_tex_conv_buf_size;
+#endif
+
     TextureBinding *texture_binding[NV2A_MAX_TEXTURES];
     Lru texture_cache;
     TextureLruNode *texture_cache_entries;
@@ -217,6 +231,11 @@ typedef struct PGRAPHGLState {
     struct s2t_rndr {
         GLuint fbo, vao, vbo, prog;
         GLuint tex_loc, surface_size_loc;
+#ifdef __ANDROID__
+        GLuint depth_prog;
+        GLuint depth_tex_loc;
+        GLint depth_scale_loc;
+#endif
     } s2t_rndr;
 
     struct disp_rndr {
@@ -242,11 +261,16 @@ typedef struct PGRAPHGLState {
 
     struct supported_extensions {
         GLboolean texture_filter_anisotropic;
+        GLboolean texture_border_clamp;
+        GLboolean texture_lod_bias;
+        GLboolean occlusion_query_boolean;
         GLfloat max_texture_max_anisotropy;
     } supported_extensions;
 
 #ifdef __ANDROID__
     bool bgra_supported;
+    bool geometry_shaders_supported;
+    int gles_version; /* GLSL ES version: 300, 310, or 320 */
 #endif
 } PGRAPHGLState;
 

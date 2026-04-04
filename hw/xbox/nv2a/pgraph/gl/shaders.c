@@ -45,6 +45,45 @@ static GLenum get_gl_primitive_mode(enum ShaderPrimitiveMode primitive_mode)
     }
 }
 
+#ifdef __ANDROID__
+static void android_log_shader_stage_errors(const char *ctx)
+{
+    GLenum err;
+
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        __android_log_print(ANDROID_LOG_WARN, "hakuX",
+                            "GL error 0x%X at %s", err, ctx);
+    }
+}
+
+static void android_log_apply_uniform_entry_errors(const char *uniform_set)
+{
+    GLenum err;
+
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        __android_log_print(ANDROID_LOG_WARN, "hakuX",
+                            "GL error 0x%X before apply_uniform_updates:%s",
+                            err, uniform_set);
+    }
+}
+
+static void android_log_uniform_update_errors(const char *uniform_set,
+                                              const UniformInfo *info,
+                                              int loc)
+{
+    GLenum err;
+
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        __android_log_print(
+            ANDROID_LOG_WARN, "hakuX",
+            "GL error 0x%X at apply_uniform_updates:%s.%s type=%s count=%zu "
+            "loc=%d",
+            err, uniform_set, info->name,
+            uniform_element_type_to_str[info->type], info->count, loc);
+    }
+}
+#endif
+
 static void log_shader_source_with_line_numbers(const char *name,
                                                 const char *code)
 {
@@ -56,7 +95,7 @@ static void log_shader_source_with_line_numbers(const char *name,
         size_t len = line_end ? (size_t)(line_end - line) : strlen(line);
 
 #ifdef __ANDROID__
-        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                             "%s %4d | %.*s", name, line_no, (int)len, line);
 #endif
         fprintf(stderr, "%s %4d | %.*s\n", name, line_no, (int)len, line);
@@ -94,15 +133,22 @@ static GLuint create_gl_shader(GLenum gl_shader_type,
         log = g_malloc(log_length * sizeof(GLchar));
         glGetShaderInfoLog(shader, log_length, NULL, log);
 #ifdef __ANDROID__
-        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                             "nv2a: %s compilation failed: %s", name, log);
+        /* Log first 500 chars of shader source for debugging */
+        char src_preview[501];
+        strncpy(src_preview, code, 500);
+        src_preview[500] = '\0';
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX",
+                            "nv2a: %s source preview: %s", name, src_preview);
 #endif
         fprintf(stderr, "nv2a: %s compilation failed: %s\n", name, log);
         log_shader_source_with_line_numbers(name, code);
         g_free(log);
 
         NV2A_GL_DGROUP_END();
-        abort();
+        glDeleteShader(shader);
+        return 0;
     }
 
     NV2A_GL_DGROUP_END();
@@ -216,13 +262,21 @@ static void generate_shaders(PGRAPHGLState *r, ShaderBinding *binding)
     ShaderModuleCacheKey key;
 #ifdef __ANDROID__
     const bool gles = true;
-    const int gles_version = 320;
+    const int gles_version = r->gles_version;
 #else
     const bool gles = false;
     const int gles_version = 0;
 #endif
 
     bool need_geometry_shader = pgraph_glsl_need_geom(&state->geom);
+#ifdef __ANDROID__
+    /* GLES 3.0/3.1 doesn't support geometry shaders. Skip if unavailable.
+     * Visual impact: flat shading provoking vertex may be wrong, wireframe
+     * mode won't work. Preferable to crashing. */
+    if (need_geometry_shader && !r->geometry_shaders_supported) {
+        need_geometry_shader = false;
+    }
+#endif
     if (need_geometry_shader) {
         memset(&key, 0, sizeof(key));
         key.kind = GL_GEOMETRY_SHADER;
@@ -257,7 +311,16 @@ static void generate_shaders(PGRAPHGLState *r, ShaderBinding *binding)
         GLchar log[2048];
         glGetProgramInfoLog(program, 2048, NULL, log);
         fprintf(stderr, "nv2a: shader linking failed: %s\n", log);
-        abort();
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX",
+                            "nv2a: shader linking failed: %s", log);
+#endif
+        /* Mark as initialized with program 0 so callers don't assert.
+         * glUseProgram(0) is valid and renders nothing. */
+        binding->gl_program = 0;
+        binding->initialized = true;
+        glDeleteProgram(program);
+        return;
     }
 
     glUseProgram(program);
@@ -277,7 +340,11 @@ static void generate_shaders(PGRAPHGLState *r, ShaderBinding *binding)
         GLchar log[1024];
         glGetProgramInfoLog(program, 1024, NULL, log);
         fprintf(stderr, "nv2a: shader validation failed: %s\n", log);
-        abort();
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_WARN, "hakuX",
+                            "nv2a: shader validation failed: %s", log);
+#endif
+        /* Continue anyway — validation failures are often non-fatal */
     }
 
     update_shader_uniform_locs(binding);
@@ -585,7 +652,7 @@ void pgraph_gl_init_shaders(PGRAPHState *pg)
 
     /* FIXME: Make this configurable */
     const size_t shader_cache_size = 50*1024;
-    lru_init(&r->shader_cache, 1u << 16);
+    lru_init(&r->shader_cache, 1 << 16);
     r->shader_cache_entries = malloc(shader_cache_size * sizeof(ShaderBinding));
     assert(r->shader_cache_entries != NULL);
     for (int i = 0; i < shader_cache_size; i++) {
@@ -601,7 +668,7 @@ void pgraph_gl_init_shaders(PGRAPHState *pg)
 
     /* FIXME: Make this configurable */
     const size_t shader_module_cache_size = 50*1024;
-    lru_init(&r->shader_module_cache, 1u << 16);
+    lru_init(&r->shader_module_cache, 1 << 16);
     r->shader_module_cache_entries =
         g_malloc_n(shader_module_cache_size, sizeof(ShaderModuleCacheEntry));
     assert(r->shader_module_cache_entries != NULL);
@@ -734,9 +801,14 @@ void pgraph_gl_shader_cache_to_disk(ShaderBinding *binding)
     qemu_thread_create(binding->save_thread, name, shader_write_to_disk, binding, QEMU_THREAD_JOINABLE);
 }
 
-static void apply_uniform_updates(const UniformInfo *info, int *locs,
+static void apply_uniform_updates(const char *uniform_set,
+                                  const UniformInfo *info, int *locs,
                                   void *values, size_t count)
 {
+#ifdef __ANDROID__
+    android_log_apply_uniform_entry_errors(uniform_set);
+#endif
+
     for (int i = 0; i < count; i++) {
         if (locs[i] == -1) {
             continue;
@@ -775,13 +847,13 @@ static void apply_uniform_updates(const UniformInfo *info, int *locs,
         default:
             g_assert_not_reached();
         }
-    }
 
 #ifdef __ANDROID__
-    while (glGetError() != GL_NO_ERROR) {
-        /* Ignore uniform update GL errors on Android. */
+        android_log_uniform_update_errors(uniform_set, &info[i], locs[i]);
+#endif
     }
-#else
+
+#ifndef __ANDROID__
     assert(glGetError() == GL_NO_ERROR);
 #endif
 }
@@ -795,7 +867,7 @@ static void update_shader_uniforms(PGRAPHState *pg, ShaderBinding *binding)
     VshUniformValues vsh_values;
     pgraph_glsl_set_vsh_uniform_values(pg, &binding->state.vsh,
                                   binding->uniform_locs.vsh, &vsh_values);
-    apply_uniform_updates(VshUniformInfo, binding->uniform_locs.vsh,
+    apply_uniform_updates("vsh", VshUniformInfo, binding->uniform_locs.vsh,
                           &vsh_values, VshUniform__COUNT);
 
     PshUniformValues psh_values;
@@ -807,7 +879,7 @@ static void update_shader_uniforms(PGRAPHState *pg, ShaderBinding *binding)
             psh_values.texScale[i] = scale;
         }
     }
-    apply_uniform_updates(PshUniformInfo, binding->uniform_locs.psh,
+    apply_uniform_updates("psh", PshUniformInfo, binding->uniform_locs.psh,
                           &psh_values, PshUniform__COUNT);
 }
 
@@ -843,7 +915,11 @@ void pgraph_gl_bind_shaders(PGRAPHState *pg)
             pgraph_gl_shader_cache_to_disk(binding);
         }
     }
-    assert(binding->initialized);
+    if (!binding->initialized) {
+        /* Shader generation failed — skip this draw */
+        qemu_mutex_unlock(&r->shader_cache_lock);
+        return;
+    }
     r->shader_binding = binding;
     pg->program_data_dirty = false;
 
@@ -853,6 +929,10 @@ void pgraph_gl_bind_shaders(PGRAPHState *pg)
     if (binding_changed) {
         nv2a_profile_inc_counter(NV2A_PROF_SHADER_BIND);
         glUseProgram(r->shader_binding->gl_program);
+#ifdef __ANDROID__
+        android_log_shader_stage_errors(
+            "pgraph_gl_bind_shaders: binding_changed");
+#endif
     }
 
     NV2A_GL_DGROUP_END();
@@ -860,6 +940,10 @@ void pgraph_gl_bind_shaders(PGRAPHState *pg)
 update_uniforms:
     assert(r->shader_binding);
     assert(r->shader_binding->initialized);
+    glUseProgram(r->shader_binding->gl_program);
+#ifdef __ANDROID__
+    android_log_shader_stage_errors("pgraph_gl_bind_shaders: update_uniforms");
+#endif
     update_shader_uniforms(pg, r->shader_binding);
 }
 

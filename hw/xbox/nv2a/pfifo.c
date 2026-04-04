@@ -21,6 +21,75 @@
 
 #include "nv2a_int.h"
 
+#ifndef XEMU_OPT_THREAD_AFFINITY
+#define XEMU_OPT_THREAD_AFFINITY 0
+#endif
+
+#ifndef XEMU_OPT_PFIFO_LOCK_BATCH
+#define XEMU_OPT_PFIFO_LOCK_BATCH 1
+#endif
+
+#ifndef XEMU_OPT_LOCKLESS_FAST_DISPATCH
+#define XEMU_OPT_LOCKLESS_FAST_DISPATCH XEMU_OPT_PFIFO_LOCK_BATCH
+#endif
+
+#ifndef XEMU_OPT_FIFO_SPIN
+#define XEMU_OPT_FIFO_SPIN 1
+#endif
+
+#if XEMU_OPT_FIFO_SPIN
+#define FIFO_SPIN_ACTIVE_NS 100000 /* 100µs active spin window */
+#endif
+
+#if defined(__ANDROID__) && XEMU_OPT_THREAD_AFFINITY
+#include <sys/syscall.h>
+#include <sys/resource.h>
+
+static void xemu_pin_to_big_cores(const char *label)
+{
+    int ncpus = sysconf(_SC_NPROCESSORS_CONF);
+    if (ncpus <= 0 || ncpus > 64) return;
+
+    unsigned long max_freq = 0;
+    unsigned long freqs[64];
+    for (int i = 0; i < ncpus; i++) {
+        char path[128];
+        snprintf(path, sizeof(path),
+                 "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        FILE *f = fopen(path, "r");
+        if (f) {
+            if (fscanf(f, "%lu", &freqs[i]) != 1) freqs[i] = 0;
+            fclose(f);
+        } else {
+            freqs[i] = 0;
+        }
+        if (freqs[i] > max_freq) max_freq = freqs[i];
+    }
+
+    if (max_freq == 0) return;
+
+    unsigned long threshold = max_freq * 9 / 10;
+    /* Build affinity mask manually (avoid cpu_set_t header issues on bionic) */
+    unsigned long mask = 0;
+    int big_count = 0;
+    for (int i = 0; i < ncpus && i < (int)(sizeof(mask) * 8); i++) {
+        if (freqs[i] >= threshold) {
+            mask |= (1UL << i);
+            big_count++;
+        }
+    }
+
+    if (big_count > 0 && big_count < ncpus) {
+        if (syscall(__NR_sched_setaffinity, 0, sizeof(mask), &mask) == 0) {
+            fprintf(stderr, "[xemu] %s: pinned to %d big cores (max_freq=%lu)\n",
+                    label, big_count, max_freq);
+        }
+    }
+
+    setpriority(PRIO_PROCESS, 0, -10);
+}
+#endif
+
 typedef struct RAMHTEntry {
     uint32_t handle;
     hwaddr instance;
@@ -91,8 +160,10 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
 
 void pfifo_kick(NV2AState *d)
 {
-    d->pfifo.fifo_kick = true;
-    qemu_cond_broadcast(&d->pfifo.fifo_cond);
+    if (!d->pfifo.fifo_kick) {
+        d->pfifo.fifo_kick = true;
+        qemu_cond_broadcast(&d->pfifo.fifo_cond);
+    }
 }
 
 static bool can_fifo_access(NV2AState *d) {
@@ -127,6 +198,7 @@ static bool pfifo_stall_for_flip(NV2AState *d)
     bool should_stall = false;
 
     if (qatomic_read(&d->pgraph.waiting_for_flip)) {
+        NV2A_PHASE_TIMER_BEGIN(flip_idle);
         qemu_mutex_lock(&d->pgraph.lock);
         if (!is_flip_stall_complete(d)) {
             should_stall = true;
@@ -134,6 +206,7 @@ static bool pfifo_stall_for_flip(NV2AState *d)
             d->pgraph.waiting_for_flip = false;
         }
         qemu_mutex_unlock(&d->pgraph.lock);
+        NV2A_PHASE_TIMER_END(flip_idle);
     }
 
     return should_stall;
@@ -173,6 +246,7 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
         GET_MASK(method_entry, NV_PFIFO_CACHE1_METHOD_SUBCHANNEL);
     bool inc = !GET_MASK(method_entry, NV_PFIFO_CACHE1_METHOD_TYPE);
 
+
     if (method == 0) {
         RAMHTEntry entry = ramht_lookup(d, parameter);
         assert(entry.valid);
@@ -184,22 +258,39 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
         SET_MASK(*engine_reg, 3 << (4*subchannel), entry.engine);
         SET_MASK(*pull1, NV_PFIFO_CACHE1_PULL1_ENGINE, entry.engine);
 
-        // TODO: this is fucked
-        qemu_mutex_unlock(&d->pfifo.lock);
+#if XEMU_OPT_PFIFO_LOCK_BATCH
         qemu_mutex_lock(&d->pgraph.lock);
+        qemu_mutex_unlock(&d->pfifo.lock);
 
-        // Switch contexts if necessary
         if (can_fifo_access(d)) {
             pgraph_context_switch(d, entry.channel_id);
             if (!d->pgraph.waiting_for_context_switch) {
                 num_proc =
                     pgraph_method(d, subchannel, 0, entry.instance, parameters,
                                   num_words_available, max_lookahead_words, inc);
+                g_nv2a_stats.cpu_working.method_count++;
             }
         }
 
         qemu_mutex_unlock(&d->pgraph.lock);
         qemu_mutex_lock(&d->pfifo.lock);
+#else
+        qemu_mutex_unlock(&d->pfifo.lock);
+        qemu_mutex_lock(&d->pgraph.lock);
+
+        if (can_fifo_access(d)) {
+            pgraph_context_switch(d, entry.channel_id);
+            if (!d->pgraph.waiting_for_context_switch) {
+                num_proc =
+                    pgraph_method(d, subchannel, 0, entry.instance, parameters,
+                                  num_words_available, max_lookahead_words, inc);
+                g_nv2a_stats.cpu_working.method_count++;
+            }
+        }
+
+        qemu_mutex_unlock(&d->pgraph.lock);
+        qemu_mutex_lock(&d->pfifo.lock);
+#endif
 
     } else if (method >= 0x100) {
         // method passed to engine
@@ -219,7 +310,35 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
         assert(engine == ENGINE_GRAPHICS);
         SET_MASK(*pull1, NV_PFIFO_CACHE1_PULL1_ENGINE, engine);
 
-        // TODO: this is fucked
+#if XEMU_OPT_PFIFO_LOCK_BATCH
+#if XEMU_OPT_LOCKLESS_FAST_DISPATCH
+        if (inc && can_fifo_access(d)) {
+            num_proc = pgraph_method_try_fast(
+                d, subchannel, method, parameter,
+                parameters, num_words_available, max_lookahead_words);
+            if (num_proc > 0) {
+                g_nv2a_stats.cpu_working.method_fast_hit += num_proc;
+                g_nv2a_stats.cpu_working.method_count++;
+                goto puller_done;
+            }
+        }
+#endif
+        qemu_mutex_lock(&d->pgraph.lock);
+        qemu_mutex_unlock(&d->pfifo.lock);
+
+        if (can_fifo_access(d)) {
+            num_proc =
+                pgraph_method(d, subchannel, method, parameter, parameters,
+                              num_words_available, max_lookahead_words, inc);
+            g_nv2a_stats.cpu_working.method_count++;
+            if (!inc && num_proc > 0) {
+                g_nv2a_stats.cpu_working.method_noninc_words += num_proc;
+            }
+        }
+
+        qemu_mutex_unlock(&d->pgraph.lock);
+        qemu_mutex_lock(&d->pfifo.lock);
+#else
         qemu_mutex_unlock(&d->pfifo.lock);
         qemu_mutex_lock(&d->pgraph.lock);
 
@@ -227,14 +346,20 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
             num_proc =
                 pgraph_method(d, subchannel, method, parameter, parameters,
                               num_words_available, max_lookahead_words, inc);
+            g_nv2a_stats.cpu_working.method_count++;
+            if (!inc && num_proc > 0) {
+                g_nv2a_stats.cpu_working.method_noninc_words += num_proc;
+            }
         }
 
         qemu_mutex_unlock(&d->pgraph.lock);
         qemu_mutex_lock(&d->pfifo.lock);
+#endif
     } else {
         assert(false);
     }
 
+puller_done:
     if (num_proc > 0) {
         *status |= NV_PFIFO_CACHE1_STATUS_LOW_MARK;
     }
@@ -290,6 +415,8 @@ static void pfifo_run_pusher(NV2AState *d)
 
     hwaddr dma_len;
     uint8_t *dma = nv_dma_map(d, dma_instance, &dma_len);
+
+    uint32_t dma_get_start = *dma_get;
 
     while (!pfifo_pusher_should_stall(d)) {
         uint32_t dma_get_v = *dma_get;
@@ -437,6 +564,12 @@ static void pfifo_run_pusher(NV2AState *d)
     // NV2A_DPRINTF("DMA pusher done: max 0x%" HWADDR_PRIx ", 0x%" HWADDR_PRIx " - 0x%" HWADDR_PRIx "\n",
     //      dma_len, control->dma_get, control->dma_put);
 
+    uint32_t dma_get_end = *dma_get;
+    if (dma_get_end >= dma_get_start) {
+        g_nv2a_stats.cpu_working.pusher_words +=
+            (dma_get_end - dma_get_start) / 4;
+    }
+
     uint32_t error = GET_MASK(*dma_state, NV_PFIFO_CACHE1_DMA_STATE_ERROR);
     if (error) {
         NV2A_DPRINTF("pb error: %d\n", error);
@@ -453,27 +586,86 @@ void *pfifo_thread(void *arg)
 {
     NV2AState *d = (NV2AState *)arg;
 
+#if defined(__ANDROID__) && XEMU_OPT_THREAD_AFFINITY
+    xemu_pin_to_big_cores("pfifo_thread");
+#endif
+
     pgraph_init_thread(d);
 
     rcu_register_thread();
 
     qemu_mutex_lock(&d->pfifo.lock);
+    bool was_active = true;
     while (true) {
+        was_active = d->pfifo.fifo_kick;
         d->pfifo.fifo_kick = false;
 
         pgraph_process_pending(d);
 
         if (!d->pfifo.halt) {
+            uint32_t get_before = d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET];
+            bool was_post_flip = g_nv2a_stats.phase_working.post_flip;
+            int64_t push_t0 = nv2a_clock_ns();
             pfifo_run_pusher(d);
+            g_nv2a_stats.cpu_working.pusher_run_ns +=
+                nv2a_clock_ns() - push_t0;
+            if (d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET] != get_before
+                && was_post_flip) {
+                g_nv2a_stats.phase_working.post_flip = false;
+            }
         }
 
         pgraph_process_pending_reports(d);
 
         if (!d->pfifo.fifo_kick) {
-            qemu_cond_broadcast(&d->pfifo.fifo_idle_cond);
+            int64_t idle_t0 = nv2a_clock_ns();
 
-            // Both the pusher and puller are waiting for some action
+#if XEMU_OPT_FIFO_SPIN
+            if (was_active) {
+                qemu_mutex_unlock(&d->pfifo.lock);
+
+                bool spun_awake = false;
+                int64_t spin_deadline = idle_t0 + FIFO_SPIN_ACTIVE_NS;
+                for (unsigned spin_i = 0; ; spin_i++) {
+                    if (qatomic_read(&d->pfifo.fifo_kick)) {
+                        spun_awake = true;
+                        break;
+                    }
+                    if ((spin_i & 0xFF) == 0 &&
+                        nv2a_clock_ns() >= spin_deadline) {
+                        break;
+                    }
+#ifdef __aarch64__
+                    __asm__ volatile("yield" ::: "memory");
+#endif
+                }
+                if (spun_awake) {
+                    g_nv2a_stats.cpu_working.kick_count_spun++;
+                }
+
+                qemu_mutex_lock(&d->pfifo.lock);
+
+                if (!spun_awake && !d->pfifo.fifo_kick) {
+                    qemu_cond_signal(&d->pfifo.fifo_idle_cond);
+                    qemu_cond_wait(&d->pfifo.fifo_cond, &d->pfifo.lock);
+                }
+            } else {
+                g_nv2a_stats.cpu_working.kick_count_idle++;
+                qemu_cond_signal(&d->pfifo.fifo_idle_cond);
+                qemu_cond_wait(&d->pfifo.fifo_cond, &d->pfifo.lock);
+            }
+#else
+            qemu_cond_signal(&d->pfifo.fifo_idle_cond);
             qemu_cond_wait(&d->pfifo.fifo_cond, &d->pfifo.lock);
+#endif
+
+            int64_t idle_ns = nv2a_clock_ns() - idle_t0;
+            g_nv2a_stats.phase_working.fifo_idle_ns += idle_ns;
+            if (g_nv2a_stats.phase_working.post_flip) {
+                g_nv2a_stats.phase_working.fifo_idle_frame_ns += idle_ns;
+            } else {
+                g_nv2a_stats.phase_working.fifo_idle_starve_ns += idle_ns;
+            }
         }
 
         if (d->exiting) {

@@ -67,6 +67,19 @@ typedef struct DMAObject {
     hwaddr limit;
 } DMAObject;
 
+/*
+ * NV2A Lock Ordering
+ *
+ * When acquiring multiple locks, they must be taken in this order to avoid
+ * deadlocks:
+ *
+ *   pfifo.lock  →  pgraph.lock  →  pgraph.renderer_lock
+ *
+ * Not all locks need to be held simultaneously. Most PGRAPH MMIO register
+ * accesses only require pgraph.lock. Only registers that call pfifo_kick()
+ * (NV_PGRAPH_INTR, NV_PGRAPH_INCREMENT, NV_PGRAPH_FIFO) additionally require
+ * pfifo.lock, which must be acquired first.
+ */
 typedef struct NV2AState {
     /*< private >*/
     PCIDevice parent_obj;
@@ -78,6 +91,20 @@ typedef struct NV2AState {
     VGACommonState vga;
     GraphicHwOps hw_ops;
     QEMUTimer *vblank_timer;
+    int64_t vblank_next_target_ns;
+    bool vblank_deferred;
+    bool flip_active;
+    int vblank_defer_count;
+    int64_t last_flip_ns;
+    int64_t last_frame_ns;
+    int64_t avg_frame_ns;
+    int64_t vblank_defer_request_ns;
+    bool unlock_mode_active;
+
+#define DEFER_RING_SIZE 16
+    uint8_t defer_ring[DEFER_RING_SIZE];
+    int defer_ring_idx;
+    int defer_count;
 
     MemoryRegion *vram;
     MemoryRegion vram_pci;
@@ -161,6 +188,7 @@ typedef struct NV2ABlockInfo {
 extern const NV2ABlockInfo blocktable[NV_NUM_BLOCKS];
 
 void nv2a_update_irq(NV2AState *d);
+void nv2a_vblank_recalc(NV2AState *d);
 
 static inline
 void nv2a_reg_log_read(int block, hwaddr addr, unsigned int size, uint64_t val)

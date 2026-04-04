@@ -29,7 +29,7 @@
 #include "qemu/osdep.h"
 #include "hw/xbox/nv2a/debug.h"
 #include "hw/xbox/nv2a/pgraph/pgraph.h"
-#include "hw/xbox/nv2a/pgraph/texture.h"
+#include "ui/xemu-settings.h"
 #include "psh.h"
 
 DEF_UNIFORM_INFO_ARR(PshUniform, PSH_UNIFORM_DECL_X)
@@ -63,6 +63,29 @@ void pgraph_glsl_set_psh_state(PGRAPHState *pg, PshState *state)
 {
     state->window_clip_exclusive = pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
                                    NV_PGRAPH_SETUPRASTER_WINDOWCLIPTYPE;
+
+    /* Window clip counting — used by VK for shader-based clipping.
+     * GL handles window clips via glScissor, so skip the computation. */
+    if (g_config.display.renderer != CONFIG_DISPLAY_RENDERER_OPENGL) {
+        unsigned int sw = pg->surface_shape.clip_width;
+        unsigned int sh = pg->surface_shape.clip_height;
+        int count = 0;
+        for (int i = 0; i < 8; i++) {
+            uint32_t x = pgraph_reg_r(pg, NV_PGRAPH_WINDOWCLIPX0 + i * 4);
+            uint32_t y = pgraph_reg_r(pg, NV_PGRAPH_WINDOWCLIPY0 + i * 4);
+            unsigned int x_min = GET_MASK(x, NV_PGRAPH_WINDOWCLIPX0_XMIN);
+            unsigned int x_max = GET_MASK(x, NV_PGRAPH_WINDOWCLIPX0_XMAX) + 1;
+            unsigned int y_min = GET_MASK(y, NV_PGRAPH_WINDOWCLIPY0_YMIN);
+            unsigned int y_max = GET_MASK(y, NV_PGRAPH_WINDOWCLIPY0_YMAX) + 1;
+            bool trivial = (x_min == 0 && y_min == 0 &&
+                            x_max >= sw && y_max >= sh);
+            if (!trivial) {
+                count++;
+            }
+        }
+        state->window_clip_count = count;
+    }
+
     state->combiner_control = pgraph_reg_r(pg, NV_PGRAPH_COMBINECTL);
     state->shader_stage_program = pgraph_reg_r(pg, NV_PGRAPH_SHADERPROG);
     state->other_stage_input = pgraph_reg_r(pg, NV_PGRAPH_SHADERCTL);
@@ -91,6 +114,16 @@ void pgraph_glsl_set_psh_state(PGRAPHState *pg, PshState *state)
         GET_MASK(pgraph_reg_r(pg, NV_PGRAPH_ZCOMPRESSOCCLUDE),
                  NV_PGRAPH_ZCOMPRESSOCCLUDE_ZCLAMP_EN) ==
         NV_PGRAPH_ZCOMPRESSOCCLUDE_ZCLAMP_EN_CULL;
+
+    /* Depth needed flag — used by VK for depth output in fragment shader.
+     * GL handles depth via fixed-function pipeline. */
+    if (g_config.display.renderer != CONFIG_DISPLAY_RENDERER_OPENGL) {
+        uint32_t ctl0 = pgraph_reg_r(pg, NV_PGRAPH_CONTROL_0);
+        bool depth_test = ctl0 & NV_PGRAPH_CONTROL_0_ZENABLE;
+        bool depth_write = !!(ctl0 & NV_PGRAPH_CONTROL_0_ZWRITEENABLE);
+        state->depth_needed = depth_test || depth_write ||
+                              state->depth_clipping;
+    }
 
     int num_stages = pgraph_reg_r(pg, NV_PGRAPH_COMBINECTL) & 0xFF;
     for (int i = 0; i < num_stages; i++) {
@@ -180,15 +213,17 @@ void pgraph_glsl_set_psh_state(PGRAPHState *pg, PshState *state)
             }
         }
 
-        /* Keep track of textures that are uploaded as signed normalized data.
-         * Those must not be remapped a second time in the fragment shader. */
-        state->snorm_tex[i] =
-            color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R6G5B5;
+        /* Keep track of textures uploaded as signed normalized data.
+         * Those must not be remapped a second time in the fragment shader.
+         * GLES uploads as unsigned RGBA8, so detect signed via color format. */
+        if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_OPENGL) {
+            state->snorm_tex[i] =
+                color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R6G5B5;
+        }
+        /* VK/desktop GL: snorm_tex left at default (false) — FIXME */
         state->shadow_map[i] = f.depth;
 
         uint32_t filter = pgraph_reg_r(pg, NV_PGRAPH_TEXFILTER0 + i * 4);
-        state->tex_signed[i] =
-            pgraph_get_texture_signed_component_mask_from_filter(filter);
         unsigned int min_filter = GET_MASK(filter, NV_PGRAPH_TEXFILTER0_MIN);
         enum ConvolutionFilter kernel = CONVOLUTION_FILTER_DISABLED;
         /* FIXME: We do not distinguish between min and mag when
@@ -462,10 +497,20 @@ static MString* add_stage_code(struct PixelShader *ps,
                                const char *write_mask, bool is_alpha)
 {
     MString *ret = mstring_new();
-    MString *a = get_input_var(ps, input.a, is_alpha);
-    MString *b = get_input_var(ps, input.b, is_alpha);
-    MString *c = get_input_var(ps, input.c, is_alpha);
-    MString *d = get_input_var(ps, input.d, is_alpha);
+
+    bool ab_needed = (output.ab != PS_REGISTER_DISCARD) ||
+                     (output.muxsum != PS_REGISTER_DISCARD);
+    bool cd_needed = (output.cd != PS_REGISTER_DISCARD) ||
+                     (output.muxsum != PS_REGISTER_DISCARD);
+
+    if (!ab_needed && !cd_needed) {
+        return ret;
+    }
+
+    MString *a = ab_needed ? get_input_var(ps, input.a, is_alpha) : NULL;
+    MString *b = ab_needed ? get_input_var(ps, input.b, is_alpha) : NULL;
+    MString *c = cd_needed ? get_input_var(ps, input.c, is_alpha) : NULL;
+    MString *d = cd_needed ? get_input_var(ps, input.d, is_alpha) : NULL;
 
     const char *caster = "";
     if (strlen(write_mask) == 3) {
@@ -473,7 +518,9 @@ static MString* add_stage_code(struct PixelShader *ps,
     }
 
     MString *ab;
-    if (output.ab_op == PS_COMBINEROUTPUT_AB_DOT_PRODUCT) {
+    if (!ab_needed) {
+        ab = mstring_from_str("0.0");
+    } else if (output.ab_op == PS_COMBINEROUTPUT_AB_DOT_PRODUCT) {
         ab = mstring_from_fmt("dot(%s, %s)",
                               mstring_get_str(a), mstring_get_str(b));
     } else {
@@ -482,7 +529,9 @@ static MString* add_stage_code(struct PixelShader *ps,
     }
 
     MString *cd;
-    if (output.cd_op == PS_COMBINEROUTPUT_CD_DOT_PRODUCT) {
+    if (!cd_needed) {
+        cd = mstring_from_str("0.0");
+    } else if (output.cd_op == PS_COMBINEROUTPUT_CD_DOT_PRODUCT) {
         cd = mstring_from_fmt("dot(%s, %s)",
                               mstring_get_str(c), mstring_get_str(d));
     } else {
@@ -520,24 +569,28 @@ static MString* add_stage_code(struct PixelShader *ps,
         cd_dest = cd_mapping;
     }
 
-    MString *muxsum;
-    if (output.muxsum_op == PS_COMBINEROUTPUT_AB_CD_SUM) {
-        muxsum = mstring_from_fmt("(%s + %s)", mstring_get_str(ab),
-                                  mstring_get_str(cd));
-    } else {
-        muxsum = mstring_from_fmt("((%s) ? %s(%s) : %s(%s))",
-                                  (ps->flags & PS_COMBINERCOUNT_MUX_MSB) ?
-                                      "r0.a >= 0.5" :
-                                      "(uint(r0.a * 255.0) & 1u) == 1u",
-                                  caster, mstring_get_str(cd), caster,
-                                  mstring_get_str(ab));
-    }
+    MString *muxsum = NULL;
+    MString *muxsum_mapping = NULL;
 
-    MString *muxsum_mapping = get_output(muxsum, output.mapping);
-    if (mstring_get_length(muxsum_dest)) {
-        mstring_append_fmt(ps->code, "mux_sum.%s = clamp(%s(%s), -1.0, 1.0);\n",
-                           write_mask, caster, mstring_get_str(muxsum_mapping));
-        assign_muxsum = true;
+    if (output.muxsum != PS_REGISTER_DISCARD) {
+        if (output.muxsum_op == PS_COMBINEROUTPUT_AB_CD_SUM) {
+            muxsum = mstring_from_fmt("(%s + %s)", mstring_get_str(ab),
+                                      mstring_get_str(cd));
+        } else {
+            muxsum = mstring_from_fmt("((%s) ? %s(%s) : %s(%s))",
+                                      (ps->flags & PS_COMBINERCOUNT_MUX_MSB) ?
+                                          "r0.a >= 0.5" :
+                                          "(uint(r0.a * 255.0) & 1u) == 1u",
+                                      caster, mstring_get_str(cd), caster,
+                                      mstring_get_str(ab));
+        }
+
+        muxsum_mapping = get_output(muxsum, output.mapping);
+        if (mstring_get_length(muxsum_dest)) {
+            mstring_append_fmt(ps->code, "mux_sum.%s = clamp(%s(%s), -1.0, 1.0);\n",
+                               write_mask, caster, mstring_get_str(muxsum_mapping));
+            assign_muxsum = true;
+        }
     }
 
     if (assign_ab) {
@@ -563,10 +616,10 @@ static MString* add_stage_code(struct PixelShader *ps,
                            mstring_get_str(muxsum_dest), write_mask, write_mask);
     }
 
-    mstring_unref(a);
-    mstring_unref(b);
-    mstring_unref(c);
-    mstring_unref(d);
+    if (a) mstring_unref(a);
+    if (b) mstring_unref(b);
+    if (c) mstring_unref(c);
+    if (d) mstring_unref(d);
     mstring_unref(ab);
     mstring_unref(cd);
     mstring_unref(ab_mapping);
@@ -574,8 +627,8 @@ static MString* add_stage_code(struct PixelShader *ps,
     mstring_unref(ab_dest);
     mstring_unref(cd_dest);
     mstring_unref(muxsum_dest);
-    mstring_unref(muxsum);
-    mstring_unref(muxsum_mapping);
+    if (muxsum) mstring_unref(muxsum);
+    if (muxsum_mapping) mstring_unref(muxsum_mapping);
 
     return ret;
 }
@@ -769,18 +822,33 @@ static void apply_border_adjustment(const struct PixelShader *ps, MString *vars,
 static void apply_convolution_filter(const struct PixelShader *ps, MString *vars, int tex)
 {
     assert(ps->state->dim_tex[tex] == 2);
-    // FIXME: Quincunx
 
     g_autofree gchar *normalize_tex_coords = g_strdup_printf("norm%d", tex);
     const char *tex_remap = ps->state->rect_tex[tex] ? normalize_tex_coords : "";
 
+    static const float offsets[9][2] = {
+        {-1,-1},{0,-1},{1,-1},{-1,0},{0,0},{1,0},{-1,1},{0,1},{1,1}
+    };
+    static const char *weights[9] = {
+        "1.0/16.0","2.0/16.0","1.0/16.0",
+        "2.0/16.0","4.0/16.0","2.0/16.0",
+        "1.0/16.0","2.0/16.0","1.0/16.0"
+    };
+
     mstring_append_fmt(vars,
-        "vec4 t%d = vec4(0.0);\n"
-        "for (int i = 0; i < 9; i++) {\n"
-        "    vec3 texCoordDelta = vec3(convolution3x3[i], 0.0);\n"
-        "    texCoordDelta.xy /= vec2(textureSize(texSamp%d, 0));\n"
-        "    t%d += textureProj(texSamp%d, %s(pT%d.xyw) + texCoordDelta) * gaussian3x3[i];\n"
-        "}\n", tex, tex, tex, tex, tex_remap, tex);
+        "vec4 t%d;\n"
+        "{\n"
+        "vec2 convTexelSize = 1.0 / vec2(textureSize(texSamp%d, 0));\n"
+        "vec3 convBase = %s(pT%d.xyw);\n",
+        tex, tex, tex_remap, tex);
+    mstring_append_fmt(vars, "t%d = ", tex);
+    for (int i = 0; i < 9; i++) {
+        mstring_append_fmt(vars,
+            "%stextureProj(texSamp%d, convBase + vec3(vec2(%.1f,%.1f)*convTexelSize, 0.0)) * %s",
+            i > 0 ? "\n  + " : "",
+            tex, offsets[i][0], offsets[i][1], weights[i]);
+    }
+    mstring_append(vars, ";\n}\n");
 }
 
 static void define_colorkey_comparator(MString *preflight)
@@ -796,26 +864,6 @@ static void define_colorkey_comparator(MString *preflight)
     // clang-format on
 }
 
-static bool texture_channels_are_signed(const struct PixelShader *ps, int tex,
-                                        uint8_t mask)
-{
-    return (ps->state->tex_signed[tex] & mask) == mask;
-}
-
-static void apply_signed_texture_remap(const struct PixelShader *ps,
-                                       MString *vars, int tex)
-{
-    uint8_t mask = ps->state->tex_signed[tex];
-    if (mask & PGRAPH_TEXTURE_SIGNED_R)
-        mstring_append_fmt(vars, "t%d.r = sign3(t%d.r);\n", tex, tex);
-    if (mask & PGRAPH_TEXTURE_SIGNED_G)
-        mstring_append_fmt(vars, "t%d.g = sign3(t%d.g);\n", tex, tex);
-    if (mask & PGRAPH_TEXTURE_SIGNED_B)
-        mstring_append_fmt(vars, "t%d.b = sign3(t%d.b);\n", tex, tex);
-    if (mask & PGRAPH_TEXTURE_SIGNED_A)
-        mstring_append_fmt(vars, "t%d.a = sign3(t%d.a);\n", tex, tex);
-}
-
 static MString* psh_convert(struct PixelShader *ps)
 {
     MString *preflight = mstring_new();
@@ -823,11 +871,19 @@ static MString* psh_convert(struct PixelShader *ps)
                              ps->state->smooth_shading, true, false, false);
 
     if (ps->opts.vulkan) {
-        mstring_append_fmt(
-            preflight,
-            "layout(location = 0) out vec4 fragColor;\n"
-            "layout(binding = %d, std140) uniform PshUniforms {\n",
-            ps->opts.ubo_binding);
+        if (ps->opts.ubo_set > 0) {
+            mstring_append_fmt(
+                preflight,
+                "layout(location = 0) out vec4 fragColor;\n"
+                "layout(set = %d, binding = %d, std140) uniform PshUniforms {\n",
+                ps->opts.ubo_set, ps->opts.ubo_binding);
+        } else {
+            mstring_append_fmt(
+                preflight,
+                "layout(location = 0) out vec4 fragColor;\n"
+                "layout(binding = %d, std140) uniform PshUniforms {\n",
+                ps->opts.ubo_binding);
+        }
     } else {
         mstring_append_fmt(preflight,
                            "layout(location = 0) out vec4 fragColor;\n");
@@ -856,6 +912,18 @@ static MString* psh_convert(struct PixelShader *ps)
         mstring_append(preflight, "};\n");
     }
 
+    if (ps->opts.bindless) {
+        mstring_append(preflight,
+            "layout(set = 0, binding = 0) uniform sampler2D texArray2D[1024];\n"
+            "layout(set = 0, binding = 1) uniform sampler3D texArray3D[1024];\n"
+            "layout(set = 0, binding = 2) uniform samplerCube texArrayCube[1024];\n");
+        mstring_append_fmt(preflight,
+            "layout(push_constant) uniform TexPushData {\n"
+            "    layout(offset = %d) uint texIdx[4];\n"
+            "};\n",
+            ps->opts.tex_push_offset);
+    }
+
     const char *dotmap_funcs[] = {
         "dotmap_zero_to_one",
         "dotmap_minus1_to_1_d3d",
@@ -875,17 +943,16 @@ static MString* psh_convert(struct PixelShader *ps)
         "float sign2(float x) {\n"
         "    float xf = float(x) * 255.0;\n"
         "    if (xf >= 128.0) return (xf - 255.5) / 127.5;\n"
-        "                else return (xf + 0.5) / 127.5;\n"
+        "               else return (xf + 0.5) / 127.5;\n"
         "}\n"
         "float sign3(float x) {\n"
         "    float xf = float(x) * 255.0;\n"
         "    if (xf >= 128.0) return (xf - 256.0) / 127.0;\n"
-        "                else return xf / 127.0;\n"
+        "               else return xf / 127.0;\n"
         "}\n"
         "float sign3_to_0_to_1(float x) {\n"
-        "    float xf = float(x);\n"
-        "    if (xf >= 0.0) return xf / 2.0;\n"
-        "                else return 1.0 + xf / 2.0;\n"
+        "    if (x >= 0.0) return x/2.0;\n"
+        "           else return 1.0+x/2.0;\n"
         "}\n"
         "vec3 dotmap_zero_to_one(vec4 col) {\n"
         "    return col.rgb;\n"
@@ -916,23 +983,6 @@ static MString* psh_convert(struct PixelShader *ps)
         "}\n"
         "vec3 dotmap_hilo_hemisphere(vec4 col) {\n"
         "    return col.rgb;\n" // FIXME
-        "}\n"
-        // Kahan's algorithm for computing determinant using FMA for higher
-        // precision. See e.g.:
-        // Muller et al, "Handbook of Floating-Point Arithmetic", 2nd ed.
-        // or
-        // Claude-Pierre Jeannerod, Nicolas Louvet, and Jean-Michel Muller,
-        // Further analysis of Kahan's algorithm for the accurate
-        // computation of 2x2 determinants,
-        // Mathematics of Computation 82(284), October 2013.
-        "float kahan_det(vec2 a, vec2 b) {\n"
-        "    precise float cd = a.y*b.x;\n"
-        "    precise float err = fma(-a.y, b.x, cd);\n"
-        "    precise float res = fma(a.x, b.y, -cd) + err;\n"
-        "    return res;\n"
-        "}\n"
-        "float area(vec2 a, vec2 b, vec2 c) {\n"
-        "    return kahan_det(b - a, c - a);\n"
         "}\n"
         "const float[9] gaussian3x3 = float[9](\n"
         "    1.0/16.0, 2.0/16.0, 1.0/16.0,\n"
@@ -984,95 +1034,124 @@ static MString* psh_convert(struct PixelShader *ps)
         "}\n"
         );
 
-    MString *clip = mstring_new();
-    mstring_append_fmt(clip, "/*  Window-clip (%slusive) */\n",
-                       ps->state->window_clip_exclusive ? "Exc" : "Inc");
-    if (!ps->state->window_clip_exclusive) {
-        mstring_append(clip, "bool clipContained = false;\n");
-    }
-    mstring_append(clip, "vec2 coord = gl_FragCoord.xy - 0.5;\n"
-                         "for (int i = 0; i < 8; i++) {\n"
-                         "  bool outside = any(bvec4(\n"
-                         "      lessThan(coord, vec2(clipRegion[i].xy)),\n"
-                         "      greaterThanEqual(coord, vec2(clipRegion[i].zw))));\n"
-                         "  if (!outside) {\n");
-    if (ps->state->window_clip_exclusive) {
-        mstring_append(clip, "    discard;\n");
-    } else {
-        mstring_append(clip, "    clipContained = true;\n"
-                             "    break;\n");
-    }
-    mstring_append(clip, "  }\n"
-                         "}\n");
-    if (!ps->state->window_clip_exclusive) {
-        mstring_append(clip, "if (!clipContained) {\n"
-                             "  discard;\n"
-                             "}\n");
-    }
-
-    if (ps->state->z_perspective) {
-        mstring_append(
-            clip,
-            "vec2 unscaled_xy = gl_FragCoord.xy / vec2(surfaceScale);\n"
-            "precise float bc0 = area(unscaled_xy, vtxPos1.xy, vtxPos2.xy);\n"
-            "precise float bc1 = area(unscaled_xy, vtxPos2.xy, vtxPos0.xy);\n"
-            "precise float bc2 = area(unscaled_xy, vtxPos0.xy, vtxPos1.xy);\n"
-            "bc0 /= vtxPos0.w;\n"
-            "bc1 /= vtxPos1.w;\n"
-            "bc2 /= vtxPos2.w;\n"
-            "float inv_bcsum = 1.0 / (bc0 + bc1 + bc2);\n"
-            // Denominator can be zero in case the rasterized primitive is a
-            // point or a degenerate line or triangle.
-            "if (isinf(inv_bcsum)) {\n"
-            "  inv_bcsum = 0.0;\n"
+    if (ps->state->depth_needed) {
+        mstring_append(preflight,
+            "float kahan_det(vec2 a, vec2 b) {\n"
+            "    precise float cd = a.y*b.x;\n"
+            "    precise float err = fma(-a.y, b.x, cd);\n"
+            "    precise float res = fma(a.x, b.y, -cd) + err;\n"
+            "    return res;\n"
             "}\n"
-            "bc1 *= inv_bcsum;\n"
-            "bc2 *= inv_bcsum;\n"
-            "precise float zvalue = vtxPos0.w + (bc1*(vtxPos1.w - vtxPos0.w) + bc2*(vtxPos2.w - vtxPos0.w));\n"
-            // If GPU clipping is inaccurate, the point gl_FragCoord.xy might
-            // be above the horizon of the plane of a rasterized triangle
-            // making the interpolated w-coordinate above zero or negative. We
-            // should prevent such wrapping through infinity by clamping to
-            // infinity.
-            "if (zvalue > 0.0) {\n"
-            "  float zslopeofs = depthFactor*triMZ*zvalue*zvalue;\n"
-            "  zvalue += depthOffset;\n"
-            "  zvalue += zslopeofs;\n"
-            "} else {\n"
-            "  zvalue = uintBitsToFloat(0x7F7FFFFFu);\n"
-            "}\n"
-            "if (isnan(zvalue)) {\n"
-            "  zvalue = uintBitsToFloat(0x7F7FFFFFu);\n"
+            "float area(vec2 a, vec2 b, vec2 c) {\n"
+            "    return kahan_det(b - a, c - a);\n"
             "}\n");
-    } else {
-        mstring_append(
-            clip,
-            "vec2 unscaled_xy = gl_FragCoord.xy / vec2(surfaceScale);\n"
-            "precise float bc0 = area(unscaled_xy, vtxPos1.xy, vtxPos2.xy);\n"
-            "precise float bc1 = area(unscaled_xy, vtxPos2.xy, vtxPos0.xy);\n"
-            "precise float bc2 = area(unscaled_xy, vtxPos0.xy, vtxPos1.xy);\n"
-            "float inv_bcsum = 1.0 / (bc0 + bc1 + bc2);\n"
-            // Denominator can be zero in case the rasterized primitive is a
-            // point or a degenerate line or triangle.
-            "if (isinf(inv_bcsum)) {\n"
-            "  inv_bcsum = 0.0;\n"
-            "}\n"
-            "bc1 *= inv_bcsum;\n"
-            "bc2 *= inv_bcsum;\n"
-            "precise float zvalue = vtxPos0.z + (bc1*(vtxPos1.z - vtxPos0.z) + bc2*(vtxPos2.z - vtxPos0.z));\n"
-            "zvalue += depthOffset;\n"
-            "zvalue += depthFactor*triMZ;\n");
     }
 
-    /* Depth clipping */
-    if (ps->state->depth_clipping) {
-        mstring_append(
-            clip, "if (zvalue < clipRange.z || clipRange.w < zvalue) {\n"
-                  "  discard;\n"
-                  "}\n");
-    } else {
-        mstring_append(
-            clip, "zvalue = clamp(zvalue, clipRange.z, clipRange.w);\n");
+    MString *clip = mstring_new();
+    int wc_count = ps->state->window_clip_count;
+
+    if (wc_count > 0) {
+        mstring_append_fmt(clip, "/*  Window-clip (%slusive, %d regions) */\n",
+                           ps->state->window_clip_exclusive ? "Exc" : "Inc",
+                           wc_count);
+        if (!ps->state->window_clip_exclusive) {
+            mstring_append(clip, "bool clipContained = false;\n");
+        }
+        mstring_append(clip, "vec2 coord = gl_FragCoord.xy - 0.5;\n");
+
+        if (wc_count == 1) {
+            mstring_append(clip,
+                "{\n"
+                "  bool outside = any(bvec4(\n"
+                "      lessThan(coord, vec2(clipRegion[0].xy)),\n"
+                "      greaterThanEqual(coord, vec2(clipRegion[0].zw))));\n"
+                "  if (!outside) {\n");
+            if (ps->state->window_clip_exclusive) {
+                mstring_append(clip, "    discard;\n");
+            } else {
+                mstring_append(clip, "    clipContained = true;\n");
+            }
+            mstring_append(clip, "  }\n"
+                                 "}\n");
+        } else {
+            mstring_append_fmt(clip,
+                "for (int i = 0; i < %d; i++) {\n"
+                "  bool outside = any(bvec4(\n"
+                "      lessThan(coord, vec2(clipRegion[i].xy)),\n"
+                "      greaterThanEqual(coord, vec2(clipRegion[i].zw))));\n"
+                "  if (!outside) {\n", wc_count);
+            if (ps->state->window_clip_exclusive) {
+                mstring_append(clip, "    discard;\n");
+            } else {
+                mstring_append(clip, "    clipContained = true;\n"
+                                     "    break;\n");
+            }
+            mstring_append(clip, "  }\n"
+                                 "}\n");
+        }
+
+        if (!ps->state->window_clip_exclusive) {
+            mstring_append(clip, "if (!clipContained) {\n"
+                                 "  discard;\n"
+                                 "}\n");
+        }
+    }
+
+    if (ps->state->depth_needed) {
+        if (ps->state->z_perspective) {
+            mstring_append(
+                clip,
+                "vec2 unscaled_xy = gl_FragCoord.xy / vec2(surfaceScale);\n"
+                "precise float bc0 = area(unscaled_xy, vtxPos1.xy, vtxPos2.xy);\n"
+                "precise float bc1 = area(unscaled_xy, vtxPos2.xy, vtxPos0.xy);\n"
+                "precise float bc2 = area(unscaled_xy, vtxPos0.xy, vtxPos1.xy);\n"
+                "bc0 /= vtxPos0.w;\n"
+                "bc1 /= vtxPos1.w;\n"
+                "bc2 /= vtxPos2.w;\n"
+                "float inv_bcsum = 1.0 / (bc0 + bc1 + bc2);\n"
+                "if (isinf(inv_bcsum)) {\n"
+                "  inv_bcsum = 0.0;\n"
+                "}\n"
+                "bc1 *= inv_bcsum;\n"
+                "bc2 *= inv_bcsum;\n"
+                "precise float zvalue = vtxPos0.w + (bc1*(vtxPos1.w - vtxPos0.w) + bc2*(vtxPos2.w - vtxPos0.w));\n"
+                "if (zvalue > 0.0) {\n"
+                "  float zslopeofs = depthFactor*triMZ*zvalue*zvalue;\n"
+                "  zvalue += depthOffset;\n"
+                "  zvalue += zslopeofs;\n"
+                "} else {\n"
+                "  zvalue = uintBitsToFloat(0x7F7FFFFFu);\n"
+                "}\n"
+                "if (isnan(zvalue)) {\n"
+                "  zvalue = uintBitsToFloat(0x7F7FFFFFu);\n"
+                "}\n");
+        } else {
+            mstring_append(
+                clip,
+                "vec2 unscaled_xy = gl_FragCoord.xy / vec2(surfaceScale);\n"
+                "precise float bc0 = area(unscaled_xy, vtxPos1.xy, vtxPos2.xy);\n"
+                "precise float bc1 = area(unscaled_xy, vtxPos2.xy, vtxPos0.xy);\n"
+                "precise float bc2 = area(unscaled_xy, vtxPos0.xy, vtxPos1.xy);\n"
+                "float inv_bcsum = 1.0 / (bc0 + bc1 + bc2);\n"
+                "if (isinf(inv_bcsum)) {\n"
+                "  inv_bcsum = 0.0;\n"
+                "}\n"
+                "bc1 *= inv_bcsum;\n"
+                "bc2 *= inv_bcsum;\n"
+                "precise float zvalue = vtxPos0.z + (bc1*(vtxPos1.z - vtxPos0.z) + bc2*(vtxPos2.z - vtxPos0.z));\n"
+                "zvalue += depthOffset;\n"
+                "zvalue += depthFactor*triMZ;\n");
+        }
+
+        if (ps->state->depth_clipping) {
+            mstring_append(
+                clip, "if (zvalue < clipRange.z || clipRange.w < zvalue) {\n"
+                      "  discard;\n"
+                      "}\n");
+        } else {
+            mstring_append(
+                clip, "zvalue = clamp(zvalue, clipRange.z, clipRange.w);\n");
+        }
     }
 
     MString *vars = mstring_new();
@@ -1187,11 +1266,8 @@ static MString* psh_convert(struct PixelShader *ps)
         case PS_TEXTUREMODES_BUMPENVMAP:
             assert(i >= 1);
 
-            if (ps->state->snorm_tex[ps->input_tex[i]] ||
-                texture_channels_are_signed(
-                    ps, ps->input_tex[i],
-                    PGRAPH_TEXTURE_SIGNED_G | PGRAPH_TEXTURE_SIGNED_B)) {
-                /* Input color channels already signed */
+            if (ps->state->snorm_tex[ps->input_tex[i]]) {
+                /* Input color channels already signed (FIXME: May not always want signed textures in this case) */
                 mstring_append_fmt(vars, "vec2 dsdt%d = t%d.bg;\n",
                                    i, ps->input_tex[i]);
             } else {
@@ -1216,27 +1292,15 @@ static MString* psh_convert(struct PixelShader *ps)
         case PS_TEXTUREMODES_BUMPENVMAP_LUM:
             assert(i >= 1);
 
-        {
-            bool bg_signed =
-                ps->state->snorm_tex[ps->input_tex[i]] ||
-                texture_channels_are_signed(
-                    ps, ps->input_tex[i],
-                    PGRAPH_TEXTURE_SIGNED_G | PGRAPH_TEXTURE_SIGNED_B);
-            bool r_signed =
-                ps->state->snorm_tex[ps->input_tex[i]] ||
-                texture_channels_are_signed(
-                    ps, ps->input_tex[i], PGRAPH_TEXTURE_SIGNED_R);
-            g_autofree gchar *b_expr = g_strdup_printf(
-                bg_signed ? "t%d.b" : "sign3(t%d.b)", ps->input_tex[i]);
-            g_autofree gchar *g_expr = g_strdup_printf(
-                bg_signed ? "t%d.g" : "sign3(t%d.g)", ps->input_tex[i]);
-            g_autofree gchar *r_expr = g_strdup_printf(
-                r_signed ? "sign3_to_0_to_1(t%d.r)" : "t%d.r",
-                ps->input_tex[i]);
-            mstring_append_fmt(vars,
-                               "vec3 dsdtl%d = vec3(%s, %s, %s);\n", i,
-                               b_expr, g_expr, r_expr);
-        }
+            if (ps->state->snorm_tex[ps->input_tex[i]]) {
+                /* Input color channels already signed (FIXME: May not always want signed textures in this case) */
+                mstring_append_fmt(vars, "vec3 dsdtl%d = vec3(t%d.bg, sign3_to_0_to_1(t%d.r));\n",
+                                   i, ps->input_tex[i], ps->input_tex[i]);
+            } else {
+                /* Convert to signed (FIXME: loss of accuracy due to filtering/interpolation) */
+                mstring_append_fmt(vars, "vec3 dsdtl%d = vec3(sign3(t%d.b), sign3(t%d.g), t%d.r);\n",
+                                   i, ps->input_tex[i], ps->input_tex[i], ps->input_tex[i]);
+            }
 
             mstring_append_fmt(vars, "dsdtl%d.st = bumpMat[%d] * dsdtl%d.st;\n",
                                i, i, i);
@@ -1387,10 +1451,25 @@ static MString* psh_convert(struct PixelShader *ps)
         }
 
         if (sampler_type != NULL) {
-            if (ps->opts.vulkan) {
-                mstring_append_fmt(preflight, "layout(binding = %d) ", ps->opts.tex_binding + i);
+            if (ps->opts.bindless) {
+                const char *array_name;
+                if (strcmp(sampler_type, "sampler3D") == 0) {
+                    array_name = "texArray3D";
+                } else if (strcmp(sampler_type, "samplerCube") == 0) {
+                    array_name = "texArrayCube";
+                } else {
+                    array_name = "texArray2D";
+                }
+                mstring_append_fmt(preflight,
+                    "#define texSamp%d %s[texIdx[%d]]\n", i, array_name, i);
+            } else {
+                if (ps->opts.vulkan) {
+                    mstring_append_fmt(preflight, "layout(binding = %d) ",
+                                       ps->opts.tex_binding + i);
+                }
+                mstring_append_fmt(preflight, "uniform %s texSamp%d;\n",
+                                   sampler_type, i);
             }
-            mstring_append_fmt(preflight, "uniform %s texSamp%d;\n", sampler_type, i);
 
             /* As this means a texture fetch does happen, do alphakill */
             if (ps->state->alphakill[i]) {
@@ -1430,10 +1509,6 @@ static MString* psh_convert(struct PixelShader *ps)
                 }
 
                 mstring_append(vars, "}\n");
-            }
-
-            if (!ps->state->shadow_map[i] && !ps->state->tex_x8y24[i]) {
-                apply_signed_texture_remap(ps, vars, i);
             }
 
             if (ps->state->rect_tex[i]) {
@@ -1508,33 +1583,23 @@ static MString* psh_convert(struct PixelShader *ps)
         }
     }
 
-    /* With integer depth buffers Xbox hardware floors values. For gl_FragDepth
-     * range [0,1] Radeon floors values to integer depth buffer, but Intel UHD
-     * 770 rounds to nearest. For 24-bit OpenGL/Vulkan integer depth buffer,
-     * we divide the desired depth integer value by 16777216.0, then add 1 in
-     * integer bit representation to get the same result as dividing the
-     * desired depth integer by 16777215.0 would give. (GPUs can't divide by
-     * 16777215.0, only multiply by 1.0/16777215.0 which gives different results
-     * due to rounding.)
-     */
-
-    switch (ps->state->depth_format) {
-    case DEPTH_FORMAT_D16:
-        // 16-bit unsigned int
-        mstring_append(
-            ps->code,
-            "gl_FragDepth = floor(zvalue) / 65535.0;\n");
-        break;
-    case DEPTH_FORMAT_D24:
-        // 24-bit unsigned int
-        mstring_append(
-            ps->code,
-            "gl_FragDepth = uintBitsToFloat(floatBitsToUint(floor(zvalue) / 16777216.0) + 1u);\n");
-        break;
-    default:
-        // TODO: handle floating-point depth buffers properly
-        mstring_append(ps->code, "gl_FragDepth = zvalue / clipRange.y;\n");
-        break;
+    if (ps->state->depth_needed) {
+        switch (ps->state->depth_format) {
+        case DEPTH_FORMAT_D16:
+            mstring_append(
+                ps->code,
+                "gl_FragDepth = floor(zvalue) / 65535.0;\n");
+            break;
+        case DEPTH_FORMAT_D24:
+            mstring_append(
+                ps->code,
+                "gl_FragDepth = uintBitsToFloat(floatBitsToUint(floor(zvalue) / 16777216.0) + 1u);\n");
+            break;
+        default:
+            mstring_append(ps->code,
+                           "gl_FragDepth = zvalue / clipRange.y;\n");
+            break;
+        }
     }
 
     MString *final = mstring_new();
@@ -1709,7 +1774,7 @@ void pgraph_glsl_set_psh_uniform_values(PGRAPHState *pg,
             }
         }
         if (locs[PshUniform_texScale] != -1) {
-            values->texScale[i] = 1.0; /* Renderer will override this */
+            values->texScale[0] = 1.0; /* Renderer will override this */
         }
     }
 

@@ -67,7 +67,6 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
 
     bool need_triz = false;
     bool need_linez = false;
-    bool need_point_size = false;
     const char *layout_in = NULL;
     const char *layout_out = NULL;
     const char *body = NULL;
@@ -100,7 +99,6 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
                    "  emit_line(2, 0, dz);\n";
         } else {
             assert(polygon_mode == POLY_MODE_POINT);
-            need_point_size = true;
             layout_out = "layout(points, max_vertices = 3) out;\n";
             body = "  mat4 pz = calc_triz(0, 1, 2);\n"
                    "  emit_vertex(0, mat4(pz[0], pz[0], pz[0], pz[3]));\n"
@@ -134,13 +132,13 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
     pgraph_glsl_get_vtx_header(output, opts.vulkan, state->smooth_shading,
                                false, false, false);
 
-    const char *point_size_expr =
-        opts.gles ? "v_vtxPointSize[index]" : "gl_in[index].gl_PointSize";
-    mstring_append(output,
-                   "void emit_vertex(int index, mat4 pz) {\n"
-                   "  gl_Position = gl_in[index].gl_Position;\n");
-    if (need_point_size) {
-        mstring_append_fmt(output, "  gl_PointSize = %s;\n", point_size_expr);
+    mstring_append(
+        output,
+        "void emit_vertex(int index, mat4 pz) {\n"
+        "  gl_Position = gl_in[index].gl_Position;\n");
+    if (!opts.gles) {
+        mstring_append(output,
+            "  gl_PointSize = gl_in[index].gl_PointSize;\n");
     }
     mstring_append_fmt(
         output,

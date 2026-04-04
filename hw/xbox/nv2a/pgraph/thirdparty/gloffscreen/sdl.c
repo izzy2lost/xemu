@@ -115,7 +115,7 @@ static bool android_check_context_sharing(EGLDisplay dpy, EGLContext new_ctx,
     // was created successfully with sharing enabled.
     
     if (eglMakeCurrent(dpy, new_surf, new_surf, new_ctx) != EGL_TRUE) {
-        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                             "glo_context_create: eglMakeCurrent(test) failed");
         return false;
     }
@@ -132,7 +132,7 @@ static bool android_check_context_sharing(EGLDisplay dpy, EGLContext new_ctx,
     bool valid = (glIsTexture(tex) == GL_TRUE && glGetError() == GL_NO_ERROR);
     glDeleteTextures(1, &tex);
 
-    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+    __android_log_print(ANDROID_LOG_INFO, "hakuX",
                         "glo_context_create: context creation test %s",
                         valid ? "PASSED" : "FAILED");
     return valid;
@@ -271,12 +271,12 @@ GloContext *glo_context_create(void)
                         context->egl_context = ctx;
                         context->window = NULL;
                         context->gl_context = NULL;
-                        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        __android_log_print(ANDROID_LOG_INFO, "hakuX",
                                             "%s: created EGL offscreen ctx=%p surf=%p",
                                             __func__, (void *)ctx, (void *)surf);
                         return context;
                     }
-                    __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+                    __android_log_print(ANDROID_LOG_WARN, "hakuX",
                                         "%s: EGL context test failed; falling back to SDL",
                                         __func__);
                 }
@@ -290,7 +290,7 @@ GloContext *glo_context_create(void)
             }
         }
     } else {
-        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+        __android_log_print(ANDROID_LOG_INFO, "hakuX",
                             "%s: EGL offscreen disabled, using SDL context",
                             __func__);
     }
@@ -307,7 +307,7 @@ GloContext *glo_context_create(void)
     if (context->window == NULL) {
         // Fall back to the current window if Android disallows hidden windows.
         context->window = SDL_GL_GetCurrentWindow();
-        __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+        __android_log_print(ANDROID_LOG_WARN, "hakuX",
                             "%s: hidden window failed, using current=%p",
                             __func__, (void *)context->window);
         if (context->window == NULL) {
@@ -316,7 +316,7 @@ GloContext *glo_context_create(void)
             exit(1);
         }
     } else {
-        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+        __android_log_print(ANDROID_LOG_INFO, "hakuX",
                             "%s: created hidden window=%p (current=%p)",
                             __func__, (void *)context->window, (void *)current);
     }
@@ -345,13 +345,13 @@ GloContext *glo_context_create(void)
 #ifdef __ANDROID__
     // Unbind any current context before making the new one current.
     if (SDL_GL_MakeCurrent(NULL, NULL) != 0) {
-        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                             "%s: SDL_GL_MakeCurrent(NULL) failed: %s",
                             __func__, SDL_GetError());
     }
 #endif
 #ifdef __ANDROID__
-    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+    __android_log_print(ANDROID_LOG_INFO, "hakuX",
                         "%s: created GL context=%p for window=%p",
                         __func__, (void *)context->gl_context,
                         (void *)context->window);
@@ -370,7 +370,7 @@ GloContext *glo_context_wrap_current(void)
     if (!window || !gl_context) {
         fprintf(stderr, "%s: No current GL context to wrap\n", __func__);
 #ifdef __ANDROID__
-        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                             "%s: no current GL context (window=%p, ctx=%p)",
                             __func__, (void *)window, (void *)gl_context);
 #endif
@@ -389,15 +389,15 @@ GloContext *glo_context_wrap_current(void)
     glo_android_cache_current_egl_state();
 #endif
 #ifdef __ANDROID__
-    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+    __android_log_print(ANDROID_LOG_INFO, "hakuX",
                         "%s: wrapped window=%p ctx=%p",
                         __func__, (void *)window, (void *)gl_context);
-    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+    __android_log_print(ANDROID_LOG_INFO, "hakuX",
                         "%s: saved egl display=%p share=%p",
                         __func__, (void *)g_android_egl_display,
                         (void *)g_android_egl_share);
     if (g_android_egl_config_id != 0) {
-        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+        __android_log_print(ANDROID_LOG_INFO, "hakuX",
                             "%s: saved egl config id=%d", __func__,
                             (int)g_android_egl_config_id);
     }
@@ -413,7 +413,7 @@ void glo_set_current(GloContext *context)
         EGLDisplay dpy = eglGetCurrentDisplay();
         if (dpy != EGL_NO_DISPLAY) {
             if (eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
-                __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                                     "glo_set_current(NULL) eglMakeCurrent failed");
             }
             return;
@@ -423,7 +423,7 @@ void glo_set_current(GloContext *context)
             fprintf(stderr, "glo_set_current(NULL) failed: %s\n",
                     SDL_GetError());
 #ifdef __ANDROID__
-            __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+            __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                                 "glo_set_current(NULL) failed: %s",
                                 SDL_GetError());
 #endif
@@ -433,7 +433,7 @@ void glo_set_current(GloContext *context)
         if (context->egl_offscreen) {
             if (eglMakeCurrent(context->egl_display, context->egl_surface,
                                context->egl_surface, context->egl_context) != EGL_TRUE) {
-                __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+                __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                                     "glo_set_current(offscreen) failed");
             }
             return;
@@ -444,7 +444,7 @@ void glo_set_current(GloContext *context)
                     (void *)context->window, (void *)context->gl_context,
                     SDL_GetError());
 #ifdef __ANDROID__
-            __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
+            __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                                 "glo_set_current(%p,%p) failed: %s",
                                 (void *)context->window,
                                 (void *)context->gl_context,

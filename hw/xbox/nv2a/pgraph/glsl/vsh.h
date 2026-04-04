@@ -71,8 +71,10 @@ typedef struct {
     bool z_perspective;
 
     bool is_fixed_function;
-    FixedFunctionVshState fixed_function;
-    ProgrammableVshState programmable;
+    union {
+        FixedFunctionVshState fixed_function;
+        ProgrammableVshState programmable;
+    };
 } VshState;
 
 void pgraph_glsl_set_vsh_state(PGRAPHState *pg, VshState *state);
@@ -103,6 +105,8 @@ typedef struct GenVshGlslOptions {
     bool prefix_outputs;
     bool use_push_constants_for_uniform_attrs;
     int ubo_binding;
+    int ubo_set;
+    int vertex_push_offset;
 } GenVshGlslOptions;
 
 MString *pgraph_glsl_gen_vsh(const VshState *state,

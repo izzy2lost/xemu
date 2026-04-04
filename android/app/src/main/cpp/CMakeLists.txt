@@ -9,36 +9,16 @@ include(FetchContent)
 include(ExternalProject)
 
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../.." ABSOLUTE)
-find_program(PYTHON_EXECUTABLE NAMES python3 python)
+find_program(PYTHON_EXECUTABLE NAMES python python3)
 if(NOT PYTHON_EXECUTABLE)
-  message(FATAL_ERROR "python3/python not found in PATH; required for QAPI/trace generation")
+  message(FATAL_ERROR "python not found in PATH; required for QAPI/trace generation")
 endif()
 
 option(XEMU_ENABLE_VULKAN "Enable Vulkan renderer" ON)
 option(XEMU_ENABLE_XISO_CONVERTER "Enable ISO->XISO converter library" ON)
-option(XEMU_ENABLE_LTO "Enable LTO for Android release native builds" OFF)
-
-set(XEMU_LTO_ENABLED FALSE)
-set(XEMU_RELEASE_LIKE_BUILD FALSE)
-if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
-  set(XEMU_RELEASE_LIKE_BUILD TRUE)
-endif()
-
-if(XEMU_ENABLE_LTO AND XEMU_RELEASE_LIKE_BUILD)
-  if(CMAKE_C_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set(XEMU_LTO_ENABLED TRUE)
-    add_compile_options(
-      "$<$<COMPILE_LANGUAGE:C>:-flto>"
-      "$<$<COMPILE_LANGUAGE:CXX>:-flto>"
-    )
-    add_link_options(-flto)
-    message(STATUS "LTO enabled for Android native targets")
-  else()
-    message(WARNING "XEMU_ENABLE_LTO is ON, but the active C/C++ compilers do not support the Android LTO flow; skipping LTO")
-  endif()
-elseif(XEMU_ENABLE_LTO)
-  message(STATUS "LTO requested, but skipped for non-release build type: ${CMAKE_BUILD_TYPE}")
-endif()
+option(XEMU_OPT_NATIVE_FLOAT "Enable native ARM64 float operations for SSE/FPU" OFF)
+option(XEMU_OPT_TCG_PEEPHOLE "Enable TCG optimizer setcond+brcond peephole fusion" OFF)
+option(XEMU_OPT_TB_CACHE_HINTS "Enable persistent TB cache hints (pre-warm on load)" OFF)
 
 find_program(CARGO_EXECUTABLE NAMES cargo cargo.exe)
 if(CARGO_EXECUTABLE MATCHES "-NOTFOUND$" OR NOT CARGO_EXECUTABLE)
@@ -46,11 +26,6 @@ if(CARGO_EXECUTABLE MATCHES "-NOTFOUND$" OR NOT CARGO_EXECUTABLE)
     file(TO_CMAKE_PATH "$ENV{USERPROFILE}/.cargo/bin/cargo.exe" CARGO_USERPROFILE_BIN)
     if(EXISTS "${CARGO_USERPROFILE_BIN}")
       set(CARGO_EXECUTABLE "${CARGO_USERPROFILE_BIN}" CACHE FILEPATH "Path to cargo executable" FORCE)
-    endif()
-  elseif(DEFINED ENV{HOME})
-    file(TO_CMAKE_PATH "$ENV{HOME}/.cargo/bin/cargo" CARGO_HOME_BIN)
-    if(EXISTS "${CARGO_HOME_BIN}")
-      set(CARGO_EXECUTABLE "${CARGO_HOME_BIN}" CACHE FILEPATH "Path to cargo executable" FORCE)
     endif()
   endif()
 endif()
@@ -100,146 +75,6 @@ FetchContent_Declare(
   GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(tomlplusplus)
-
-# --- libsamplerate ---
-set(LIBSAMPLERATE_GIT_REV "c96f5e3de9c4488f4e6c97f59f5245f22fda22f7")
-set(_xemu_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
-set(_xemu_had_build_shared_libs FALSE)
-if(DEFINED BUILD_SHARED_LIBS)
-  set(_xemu_had_build_shared_libs TRUE)
-endif()
-set(_xemu_saved_build_testing "${BUILD_TESTING}")
-set(_xemu_had_build_testing FALSE)
-if(DEFINED BUILD_TESTING)
-  set(_xemu_had_build_testing TRUE)
-endif()
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-set(LIBSAMPLERATE_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(LIBSAMPLERATE_INSTALL OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-  libsamplerate
-  GIT_REPOSITORY "https://github.com/libsndfile/libsamplerate.git"
-  GIT_TAG "${LIBSAMPLERATE_GIT_REV}"
-  GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(libsamplerate)
-if(_xemu_had_build_shared_libs)
-  set(BUILD_SHARED_LIBS "${_xemu_saved_build_shared_libs}" CACHE BOOL "" FORCE)
-else()
-  unset(BUILD_SHARED_LIBS CACHE)
-endif()
-if(_xemu_had_build_testing)
-  set(BUILD_TESTING "${_xemu_saved_build_testing}" CACHE BOOL "" FORCE)
-else()
-  unset(BUILD_TESTING CACHE)
-endif()
-
-# --- xxHash ---
-FetchContent_Declare(
-  xxhash
-  URL "https://github.com/Cyan4973/xxHash/archive/v0.8.3.tar.gz"
-  URL_HASH "SHA256=aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80"
-)
-FetchContent_GetProperties(xxhash)
-if(NOT xxhash_POPULATED)
-  if(POLICY CMP0169)
-    cmake_policy(PUSH)
-    cmake_policy(SET CMP0169 OLD)
-  endif()
-  FetchContent_Populate(xxhash)
-  if(POLICY CMP0169)
-    cmake_policy(POP)
-  endif()
-endif()
-
-# --- nv2a_vsh_cpu ---
-set(NV2A_VSH_CPU_GIT_REV "1115255708c10c4841b65dcd2223262e7a316598")
-set(nv2a_vsh_cpu_UNIT_TEST OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-  nv2a_vsh_cpu
-  GIT_REPOSITORY "https://github.com/xemu-project/nv2a_vsh_cpu.git"
-  GIT_TAG "${NV2A_VSH_CPU_GIT_REV}"
-  GIT_SHALLOW FALSE
-)
-FetchContent_MakeAvailable(nv2a_vsh_cpu)
-
-# --- libslirp ---
-set(LIBSLIRP_GIT_REV "26be815b86e8d49add8c9a8b320239b9594ff03d")
-FetchContent_Declare(
-  libslirp
-  GIT_REPOSITORY "https://gitlab.freedesktop.org/slirp/libslirp.git"
-  GIT_TAG "${LIBSLIRP_GIT_REV}"
-  GIT_SHALLOW FALSE
-)
-FetchContent_GetProperties(libslirp)
-if(NOT libslirp_POPULATED)
-  if(POLICY CMP0169)
-    cmake_policy(PUSH)
-    cmake_policy(SET CMP0169 OLD)
-  endif()
-  FetchContent_Populate(libslirp)
-  if(POLICY CMP0169)
-    cmake_policy(POP)
-  endif()
-endif()
-
-set(LIBSLIRP_GENERATED_DIR "${CMAKE_BINARY_DIR}/libslirp-generated")
-file(MAKE_DIRECTORY "${LIBSLIRP_GENERATED_DIR}")
-file(STRINGS "${libslirp_SOURCE_DIR}/meson.build" LIBSLIRP_VERSION_LINE
-  REGEX "^[ ]*version : '[^']+'")
-if(NOT LIBSLIRP_VERSION_LINE)
-  message(FATAL_ERROR "Failed to determine libslirp version from meson.build")
-endif()
-string(REGEX REPLACE ".*version : '([^']+)'.*" "\\1"
-  LIBSLIRP_VERSION "${LIBSLIRP_VERSION_LINE}")
-string(REPLACE "." ";" LIBSLIRP_VERSION_COMPONENTS "${LIBSLIRP_VERSION}")
-list(LENGTH LIBSLIRP_VERSION_COMPONENTS LIBSLIRP_VERSION_COMPONENT_COUNT)
-if(NOT LIBSLIRP_VERSION_COMPONENT_COUNT EQUAL 3)
-  message(FATAL_ERROR "Unexpected libslirp version format: ${LIBSLIRP_VERSION}")
-endif()
-list(GET LIBSLIRP_VERSION_COMPONENTS 0 SLIRP_MAJOR_VERSION)
-list(GET LIBSLIRP_VERSION_COMPONENTS 1 SLIRP_MINOR_VERSION)
-list(GET LIBSLIRP_VERSION_COMPONENTS 2 SLIRP_MICRO_VERSION)
-set(SLIRP_VERSION_STRING "\"${LIBSLIRP_VERSION}\"")
-configure_file(
-  "${libslirp_SOURCE_DIR}/src/libslirp-version.h.in"
-  "${LIBSLIRP_GENERATED_DIR}/libslirp-version.h"
-  @ONLY
-)
-set(LIBSLIRP_SOURCES
-  "${libslirp_SOURCE_DIR}/src/arp_table.c"
-  "${libslirp_SOURCE_DIR}/src/bootp.c"
-  "${libslirp_SOURCE_DIR}/src/cksum.c"
-  "${libslirp_SOURCE_DIR}/src/dhcpv6.c"
-  "${libslirp_SOURCE_DIR}/src/dnssearch.c"
-  "${libslirp_SOURCE_DIR}/src/if.c"
-  "${libslirp_SOURCE_DIR}/src/ip6_icmp.c"
-  "${libslirp_SOURCE_DIR}/src/ip6_input.c"
-  "${libslirp_SOURCE_DIR}/src/ip6_output.c"
-  "${libslirp_SOURCE_DIR}/src/ip_icmp.c"
-  "${libslirp_SOURCE_DIR}/src/ip_input.c"
-  "${libslirp_SOURCE_DIR}/src/ip_output.c"
-  "${libslirp_SOURCE_DIR}/src/mbuf.c"
-  "${libslirp_SOURCE_DIR}/src/misc.c"
-  "${libslirp_SOURCE_DIR}/src/ncsi.c"
-  "${libslirp_SOURCE_DIR}/src/ndp_table.c"
-  "${libslirp_SOURCE_DIR}/src/sbuf.c"
-  "${libslirp_SOURCE_DIR}/src/slirp.c"
-  "${libslirp_SOURCE_DIR}/src/socket.c"
-  "${libslirp_SOURCE_DIR}/src/state.c"
-  "${libslirp_SOURCE_DIR}/src/stream.c"
-  "${libslirp_SOURCE_DIR}/src/tcp_input.c"
-  "${libslirp_SOURCE_DIR}/src/tcp_output.c"
-  "${libslirp_SOURCE_DIR}/src/tcp_subr.c"
-  "${libslirp_SOURCE_DIR}/src/tcp_timer.c"
-  "${libslirp_SOURCE_DIR}/src/tftp.c"
-  "${libslirp_SOURCE_DIR}/src/udp.c"
-  "${libslirp_SOURCE_DIR}/src/udp6.c"
-  "${libslirp_SOURCE_DIR}/src/util.c"
-  "${libslirp_SOURCE_DIR}/src/version.c"
-  "${libslirp_SOURCE_DIR}/src/vmstate.c"
-)
 
 if(XEMU_ENABLE_VULKAN)
   # --- adrenotools (custom GPU driver loading on Adreno) ---
@@ -342,32 +177,14 @@ if(NOT ANDROID_API)
 endif()
 
 set(ANDROID_TRIPLE "aarch64-none-linux-android${ANDROID_API}")
-if(CMAKE_HOST_WIN32)
-  set(NDK_HOST_TAG "windows-x86_64")
-elseif(CMAKE_HOST_APPLE)
-  if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
-    set(NDK_HOST_TAG "darwin-arm64")
-  else()
-    set(NDK_HOST_TAG "darwin-x86_64")
-  endif()
-elseif(CMAKE_HOST_UNIX)
-  set(NDK_HOST_TAG "linux-x86_64")
-else()
-  message(FATAL_ERROR "Unsupported host platform for Android NDK: ${CMAKE_HOST_SYSTEM_NAME}")
-endif()
-
-set(NDK_PREBUILT_DIR "${NDK_PATH}/toolchains/llvm/prebuilt/${NDK_HOST_TAG}")
-if(NOT EXISTS "${NDK_PREBUILT_DIR}")
-  message(FATAL_ERROR "Android NDK host toolchain not found at ${NDK_PREBUILT_DIR}")
-endif()
-set(NDK_TOOLCHAIN "${NDK_PREBUILT_DIR}/bin")
+set(NDK_TOOLCHAIN "${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin")
 
 if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
   if(CMAKE_HOST_WIN32)
     if(NOT DEFINED XISO_CONVERTER_RUSTUP_TOOLCHAIN OR
        XISO_CONVERTER_RUSTUP_TOOLCHAIN STREQUAL "")
       set(XISO_CONVERTER_RUSTUP_TOOLCHAIN
-        "stable-x86_64-pc-windows-gnu"
+        "stable-x86_64-unknown-linux-gnu"
         CACHE STRING "Rustup host toolchain for ISO->XISO converter"
         FORCE
       )
@@ -389,11 +206,6 @@ if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
      NOT XISO_CONVERTER_RUSTUP_TOOLCHAIN STREQUAL "")
     list(APPEND XISO_CONVERTER_CARGO_ENV_VARS
       "RUSTUP_TOOLCHAIN=${XISO_CONVERTER_RUSTUP_TOOLCHAIN}"
-    )
-  endif()
-  if(XEMU_LTO_ENABLED)
-    list(APPEND XISO_CONVERTER_CARGO_ENV_VARS
-      "CARGO_PROFILE_RELEASE_LTO=fat"
     )
   endif()
 
@@ -476,19 +288,12 @@ file(WRITE "${GLIB_CROSS_FILE}"
 "\n"
 "[properties]\n"
 "needs_exe_wrapper = true\n"
-"sys_root = '${NDK_PREBUILT_DIR}/sysroot'\n"
+"sys_root = '${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot'\n"
 "c_args = ['--target=${ANDROID_TRIPLE}', '-I${CMAKE_CURRENT_LIST_DIR}/iconv_stub']\n"
 "cpp_args = ['--target=${ANDROID_TRIPLE}', '-I${CMAKE_CURRENT_LIST_DIR}/iconv_stub']\n"
 "c_link_args = ['--target=${ANDROID_TRIPLE}', '-L${ICONV_STUB_DIR}', '-liconv']\n"
 "cpp_link_args = ['--target=${ANDROID_TRIPLE}', '-L${ICONV_STUB_DIR}', '-liconv']\n"
 )
-
-set(GLIB_MESON_LTO_OPTIONS "")
-if(XEMU_LTO_ENABLED)
-  list(APPEND GLIB_MESON_LTO_OPTIONS
-    -Db_lto=true
-  )
-endif()
 
 ExternalProject_Add(glib_ep
   URL "https://download.gnome.org/sources/glib/2.66/glib-${GLIB_VERSION}.tar.xz"
@@ -513,7 +318,6 @@ ExternalProject_Add(glib_ep
     -Dnls=disabled
     -Dinternal_pcre=true
     -Dinstalled_tests=false
-    ${GLIB_MESON_LTO_OPTIONS}
   BUILD_COMMAND "${NINJA_EXECUTABLE}" -C "${GLIB_BUILD_DIR}" -j 1
   INSTALL_COMMAND "${MESON_EXECUTABLE}" install -C "${GLIB_BUILD_DIR}"
   BUILD_BYPRODUCTS
@@ -591,7 +395,7 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "accel[\\\\/](hvf|mshv|xen|qtest|kvm
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "accel[\\\\/]tcg[\\\\/]plugin-gen\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "accel[\\\\/]tcg[\\\\/]user-exec\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "accel[\\\\/]tcg[\\\\/]user-exec-stub\\.c$")
-list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "audio[\\\\/](alsaaudio|dbusaudio|dsoundaudio|jackaudio|ossaudio|paaudio|pwaudio|sndioaudio|spiceaudio|audio_win_int|wavaudio)\\.c$")
+list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "audio[\\\\/](alsaaudio|dbusaudio|dsoundaudio|jackaudio|ossaudio|paaudio|pwaudio|sdlaudio|sndioaudio|spiceaudio|audio_win_int|wavaudio)\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "backends[\\\\/]cryptodev-.*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "backends[\\\\/]igvm.*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "backends[\\\\/]tpm[\\\\/].*\\.c$")
@@ -693,6 +497,7 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]gtk.*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]sdl2.*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]console-gl\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]console-vc\\.c$")
+list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]shader\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]vnc.*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]xemu-snapshots\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]xemu-thumbnail\\.cc$")
@@ -702,6 +507,7 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]thirdparty[\\\\/]noc_file_
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]x_keymap\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]vdagent\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]xemu-os-utils-windows\\.c$")
+list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]xemu-net\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]aio-win32\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]atomic64\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]coroutine-ucontext\\.c$")
@@ -711,6 +517,7 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]coroutine-windows\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]cpuinfo-loongarch\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]cpuinfo-ppc\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]cpuinfo-riscv\\.c$")
+list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]fast-hash\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]event_notifier-win32\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]fdmon-epoll\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]fdmon-io_uring\\.c$")
@@ -718,7 +525,7 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]http\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]oslib-win32\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]qemu-thread-win32\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]s390x_pci_mmio\\.c$")
-list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]sys_membarrier\\.c$")
+# sys_membarrier.c is now included (CONFIG_MEMBARRIER enabled)
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "monitor[\\\\/]hmp-target\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "system[\\\\/]async-teardown\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "system[\\\\/]device_tree\\.c$")
@@ -732,6 +539,7 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "net[\\\\/]af-xdp\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "net[\\\\/]netmap\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "net[\\\\/]pcap\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "net[\\\\/]passt\\.c$")
+list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "net[\\\\/]slirp\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "net[\\\\/]tap-bsd\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "net[\\\\/]tap-solaris\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "net[\\\\/]tap-win32\\.c$")
@@ -823,6 +631,9 @@ list(APPEND XEMU_CORE_SOURCES
   "${REPO_ROOT}/ui/vnc-stubs.c"
   "${REPO_ROOT}/target/i386/kvm/hyperv-stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/kvmclock_stub.c"
+  "${CMAKE_CURRENT_LIST_DIR}/nv2a_vsh_emulator_stub.c"
+  "${CMAKE_CURRENT_LIST_DIR}/samplerate_stub.c"
+  "${CMAKE_CURRENT_LIST_DIR}/fast_hash_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/libintl_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/qmp_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/monitor_stub.c"
@@ -833,13 +644,13 @@ list(APPEND XEMU_CORE_SOURCES
   "${CMAKE_CURRENT_LIST_DIR}/watchdog_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/async_teardown_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/block_export_stub.c"
+  "${CMAKE_CURRENT_LIST_DIR}/xemu_net_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/xemu_notifications_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/xemu_snapshots_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/xemu_hud_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/xemu_os_utils_android.c"
   "${CMAKE_CURRENT_LIST_DIR}/qcrypto_random_android.c"
   "${CMAKE_CURRENT_LIST_DIR}/xemu_settings_android.cc"
-  "${xxhash_SOURCE_DIR}/xxhash.c"
 )
 
 # --- QAPI/Trace generation ---
@@ -859,30 +670,6 @@ endif()
 
 file(GLOB_RECURSE QAPI_GEN_SOURCES "${QAPI_GEN_DIR}/*.c")
 list(APPEND XEMU_CORE_SOURCES ${QAPI_GEN_SOURCES})
-
-# Generate GL shader headers used by ui/shader.c.
-set(XEMU_SHADER_GEN_DIR "${CMAKE_BINARY_DIR}/ui/shader")
-set(XEMU_SHADER_INPUTS
-  "${REPO_ROOT}/ui/shader/texture-blit.frag"
-  "${REPO_ROOT}/ui/shader/texture-blit.vert"
-  "${REPO_ROOT}/ui/shader/texture-blit-flip.vert"
-)
-file(MAKE_DIRECTORY "${XEMU_SHADER_GEN_DIR}")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${XEMU_SHADER_INPUTS})
-foreach(SHADER_INPUT ${XEMU_SHADER_INPUTS})
-  get_filename_component(SHADER_NAME "${SHADER_INPUT}" NAME)
-  string(REPLACE "." "-" SHADER_OUTPUT_BASENAME "${SHADER_NAME}")
-  set(SHADER_OUTPUT "${XEMU_SHADER_GEN_DIR}/${SHADER_OUTPUT_BASENAME}.h")
-  execute_process(
-    COMMAND "${PYTHON_EXECUTABLE}" "${REPO_ROOT}/scripts/shaderinclude.py" "${SHADER_INPUT}"
-    OUTPUT_FILE "${SHADER_OUTPUT}"
-    WORKING_DIRECTORY "${REPO_ROOT}"
-    RESULT_VARIABLE SHADER_GEN_RESULT
-  )
-  if(NOT SHADER_GEN_RESULT EQUAL 0)
-    message(FATAL_ERROR "Shader header generation failed for ${SHADER_INPUT}")
-  endif()
-endforeach()
 
 # Generate block coroutine wrapper sources (block-gen.c).
 set(BLOCK_GEN_C "${CMAKE_BINARY_DIR}/block-gen.c")
@@ -1051,14 +838,19 @@ target_compile_definitions(xemu_core PRIVATE
   ANDROID
   __ANDROID__
   XBOX
-  CONFIG_SLIRP
   CONFIG_SDL
   CONFIG_OPENGL
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:CONFIG_VULKAN>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:VK_NO_PROTOTYPES>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:VMA_STATIC_VULKAN_FUNCTIONS=0>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:VMA_DYNAMIC_VULKAN_FUNCTIONS=0>
+  CONFIG_RENDERDOC
+  $<$<BOOL:${XEMU_OPT_NATIVE_FLOAT}>:XEMU_OPT_NATIVE_FLOAT=1>
+  $<$<BOOL:${XEMU_OPT_TCG_PEEPHOLE}>:XEMU_OPT_TCG_PEEPHOLE=1>
+  $<$<BOOL:${XEMU_OPT_TB_CACHE_HINTS}>:XEMU_OPT_TB_CACHE_HINTS=1>
   CONFIG_ATOMIC64
+  CONFIG_PPOLL
+  CONFIG_PRCTL_PR_SET_TIMERSLACK
   COMPILING_PER_TARGET
   CONFIG_TARGET=\"config-target.h\"
   QEMU_VERSION=\"${QEMU_VERSION_STR}\"
@@ -1068,13 +860,11 @@ target_compile_definitions(xemu_core PRIVATE
   CONFIG_TLS_PRIORITY=\"NORMAL\"
 )
 
-target_compile_options(xemu_core PRIVATE -g0
+target_compile_options(xemu_core PRIVATE -g1
   $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:-UNDEBUG>
 )
 
 target_include_directories(xemu_core PRIVATE
-  "${nv2a_vsh_cpu_SOURCE_DIR}/src"
-  "${xxhash_SOURCE_DIR}"
   "${REPO_ROOT}"
   "${REPO_ROOT}/include"
   "${REPO_ROOT}/ui"
@@ -1088,8 +878,6 @@ target_include_directories(xemu_core PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}"
   "${CMAKE_BINARY_DIR}"
   "${QAPI_GEN_DIR}"
-  "${libslirp_SOURCE_DIR}/src"
-  "${LIBSLIRP_GENERATED_DIR}"
   "${GLIB_INSTALL_DIR}/include/glib-2.0"
   "${GLIB_INSTALL_DIR}/lib/glib-2.0/include"
   "${tomlplusplus_SOURCE_DIR}/include"
@@ -1100,13 +888,6 @@ target_include_directories(xemu_core PRIVATE
 )
 
 add_dependencies(xemu_core glib_ep)
-
-target_link_libraries(xemu_core PRIVATE
-  SampleRate::samplerate
-  nv2a_vsh_emulator
-  nv2a_vsh_cpu
-  nv2a_vsh_disassembler
-)
 
 if(TARGET SDL2::SDL2)
   target_link_libraries(xemu_core PRIVATE SDL2::SDL2)
@@ -1137,46 +918,23 @@ set_target_properties(gthread-2.0 PROPERTIES
   IMPORTED_LOCATION "${GLIB_INSTALL_DIR}/lib/libgthread-2.0.a"
 )
 
-add_library(slirp_static STATIC
-  ${LIBSLIRP_SOURCES}
-)
-set_target_properties(slirp_static PROPERTIES
-  POSITION_INDEPENDENT_CODE ON
-)
-target_compile_definitions(slirp_static PRIVATE
-  BUILDING_LIBSLIRP
-  G_LOG_DOMAIN=\"Slirp\"
-  GLIB_STATIC_COMPILATION
-  GIO_STATIC_COMPILATION
-  GMODULE_STATIC_COMPILATION
-  GI_STATIC_COMPILATION
-  GOBJECT_STATIC_COMPILATION
-)
-target_include_directories(slirp_static PRIVATE
-  "${libslirp_SOURCE_DIR}/src"
-  "${LIBSLIRP_GENERATED_DIR}"
-  "${GLIB_INSTALL_DIR}/include/glib-2.0"
-  "${GLIB_INSTALL_DIR}/lib/glib-2.0/include"
-)
-target_link_libraries(slirp_static PRIVATE
-  glib-2.0
-)
-add_dependencies(slirp_static glib_ep)
-
 add_library(xemu SHARED
   xemu_android.cpp
   android_crash_handler.cpp
   vmstate_if_android.c
-  xemu_fatx_import.c
-  xemu_hdd_tools_jni.c
 )
 
-target_compile_definitions(xemu PRIVATE ANDROID __ANDROID__ XBOX CONFIG_SDL CONFIG_OPENGL)
+target_compile_definitions(xemu PRIVATE ANDROID __ANDROID__ XBOX CONFIG_SDL CONFIG_OPENGL
+  CONFIG_RENDERDOC
+  $<$<BOOL:${XEMU_OPT_NATIVE_FLOAT}>:XEMU_OPT_NATIVE_FLOAT=1>
+  $<$<BOOL:${XEMU_OPT_TCG_PEEPHOLE}>:XEMU_OPT_TCG_PEEPHOLE=1>
+  $<$<BOOL:${XEMU_OPT_TB_CACHE_HINTS}>:XEMU_OPT_TB_CACHE_HINTS=1>
+)
 if(XEMU_ENABLE_VULKAN)
   target_compile_definitions(xemu PRIVATE CONFIG_VULKAN VK_NO_PROTOTYPES)
 endif()
 
-target_compile_options(xemu PRIVATE -fexceptions -frtti -g0
+target_compile_options(xemu PRIVATE -fexceptions -frtti -g1
   $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:-UNDEBUG>
 )
 
@@ -1192,6 +950,7 @@ target_include_directories(xemu PRIVATE
   "${GLIB_INSTALL_DIR}/include/glib-2.0"
   "${GLIB_INSTALL_DIR}/lib/glib-2.0/include"
   "${tomlplusplus_SOURCE_DIR}/include"
+  $<$<BOOL:${XEMU_ENABLE_VULKAN}>:${volk_SOURCE_DIR}>
 )
 
 find_library(log-lib log)
@@ -1207,7 +966,7 @@ if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
   )
 
   target_compile_definitions(xiso_converter PRIVATE ANDROID __ANDROID__)
-  target_compile_options(xiso_converter PRIVATE -fexceptions -frtti -g0
+  target_compile_options(xiso_converter PRIVATE -fexceptions -frtti -g1
     $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:-UNDEBUG>
   )
 
@@ -1223,7 +982,6 @@ endif()
 
 target_link_libraries(xemu PRIVATE
   xemu_core
-  slirp_static
   iconv_stub
   glib-2.0
   gobject-2.0
@@ -1234,7 +992,6 @@ target_link_libraries(xemu PRIVATE
   ${android-lib}
   ${egl-lib}
   ${glesv3-lib}
-  $<$<BOOL:${XEMU_ENABLE_VULKAN}>:${vulkan-lib}>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:volk_static>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:adrenotools>
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:spirv_reflect_static>

@@ -25,6 +25,8 @@ void nv2a_init(PCIBus *bus, int devfn, MemoryRegion *ram);
 void nv2a_context_init(void);
 #ifdef __ANDROID__
 void nv2a_android_early_context_init(void);
+bool nv2a_android_copy_readback(uint8_t **buffer, size_t *buffer_size,
+                                int *width, int *height);
 #endif
 int nv2a_get_framebuffer_surface(void);
 void nv2a_release_framebuffer_surface(void);

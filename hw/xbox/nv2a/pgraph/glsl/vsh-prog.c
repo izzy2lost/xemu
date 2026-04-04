@@ -209,7 +209,6 @@ static bool ilu_force_scalar[] = {
     false,
 };
 
-#define OUTPUT_REG_POS 0
 #define OUTPUT_REG_FOG 5
 
 static const char* out_reg_name[] = {
@@ -355,7 +354,6 @@ static MString *decode_opcode(const uint32_t *shader_token,
     MString *ret = mstring_new();
     int reg_num = vsh_get_field(shader_token, FLD_OUT_R);
     bool use_temp_var = false;
-    bool use_temp_opos = false;
 
     /* Test for paired opcodes (in other words : Are both <> NOP?) */
     if (out_mux == OMUX_MAC
@@ -370,8 +368,6 @@ static MString *decode_opcode(const uint32_t *shader_token,
         /* Paired ILU opcodes can only write to R1 */
         reg_num = 1;
     }
-
-    const char *write_mask_str = NULL;
 
     /* See if we must add a muxed opcode too: */
     if (vsh_get_field(shader_token, FLD_OUT_MUX) == out_mux
@@ -390,18 +386,12 @@ static MString *decode_opcode(const uint32_t *shader_token,
                                    shader_token, FLD_OUT_ADDRESS)));
         } else {
             int out_reg = vsh_get_field(shader_token, FLD_OUT_ADDRESS) & 0xF;
-            if (out_reg == OUTPUT_REG_POS && (use_temp_var || mask)) {
-                use_temp_opos = true;
-                mstring_append(ret, "_temp_r12");
-            } else {
-                mstring_append(ret, out_reg_name[out_reg]);
-            }
+            mstring_append(ret,out_reg_name[out_reg]);
             write_fog_register = out_reg == OUTPUT_REG_FOG;
         }
 
         int write_mask = vsh_get_field(shader_token, FLD_OUT_O_MASK);
-        write_mask_str = write_fog_register ? fog_mask_str[write_mask]
-                                            : mask_str[write_mask];
+        const char *write_mask_str = write_fog_register ? fog_mask_str[write_mask] : mask_str[write_mask];
         mstring_append(ret, write_mask_str);
         mstring_append(ret, inputs);
         mstring_append(ret, ");\n");
@@ -438,16 +428,6 @@ static MString *decode_opcode(const uint32_t *shader_token,
         }
     }
 
-    if (use_temp_opos) {
-        if (!*suffix) {
-            *suffix = mstring_new();
-        }
-        assert(write_mask_str && "Temp oPos flagged without a mask");
-        const char *write_mask_components = write_mask_str + 1;
-        mstring_append_fmt(*suffix, "  oPos.%s = _temp_r12.%s;\n",
-                           write_mask_components, write_mask_components);
-    }
-
     return ret;
 }
 
@@ -471,7 +451,7 @@ static MString *decode_token(const uint32_t *shader_token)
                             (vsh_get_field(shader_token, FLD_C_R_HIGH) << 2)
                                 | vsh_get_field(shader_token, FLD_C_R_LOW));
 
-    MString *suffix = NULL;
+    MString *mac_suffix = NULL;
     if (mac != MAC_NOP) {
         MString *inputs_mac = mstring_new();
         if (mac_opcode_params[mac].A) {
@@ -505,7 +485,7 @@ static MString *decode_token(const uint32_t *shader_token)
                             vsh_get_field(shader_token, FLD_OUT_MAC_MASK),
                             mac_opcode[mac],
                             mstring_get_str(inputs_mac),
-                            &suffix);
+                            &mac_suffix);
         mstring_unref(inputs_mac);
     } else {
         ret = mstring_new();
@@ -522,7 +502,7 @@ static MString *decode_token(const uint32_t *shader_token)
                           vsh_get_field(shader_token, FLD_OUT_ILU_MASK),
                           ilu_opcode[ilu],
                           mstring_get_str(inputs_c),
-                          &suffix);
+                          NULL);
 
         mstring_append(ret, mstring_get_str(ilu_op));
 
@@ -532,9 +512,9 @@ static MString *decode_token(const uint32_t *shader_token)
 
     mstring_unref(input_c);
 
-    if (suffix) {
-        mstring_append(ret, mstring_get_str(suffix));
-        mstring_unref(suffix);
+    if (mac_suffix) {
+        mstring_append(ret, mstring_get_str(mac_suffix));
+        mstring_unref(mac_suffix);
     }
 
     return ret;
@@ -562,11 +542,6 @@ static const char* vsh_header =
     /* Used to emulate concurrency of paired MAC+ILU instructions */
     "vec4 _temp_vec;\n"
     "int _temp_addr;\n"
-
-    /* Used to emulate concurrency of multi-output / paired instructions that
-     * write to oPos and read from R12
-     */
-    "vec4 _temp_r12;\n"
 
     /* See:
      * http://msdn.microsoft.com/en-us/library/windows/desktop/bb174703%28v=vs.85%29.aspx

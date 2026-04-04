@@ -24,6 +24,7 @@
  */
 
 #include "hw/xbox/nv2a/nv2a_int.h"
+#include "hw/xbox/nv2a/debug.h"
 #include "renderer.h"
 
 static void perform_blit(int operation, uint8_t *source, uint8_t *dest,
@@ -76,11 +77,24 @@ static void patch_alpha(uint8_t *dest, size_t width_pixels, size_t height,
 void pgraph_vk_image_blit(NV2AState *d)
 {
     PGRAPHState *pg = &d->pgraph;
+    PGRAPHVkState *r = pg->vk_renderer_state;
     ContextSurfaces2DState *context_surfaces = &pg->context_surfaces_2d;
     ImageBlitState *image_blit = &pg->image_blit;
     BetaState *beta = &pg->beta;
 
+    {
+        extern bool xemu_get_frame_skip(void);
+        if (r->frame_skip_active && xemu_get_frame_skip()) {
+            return;
+        }
+    }
+
     pgraph_vk_surface_update(d, false, true, true);
+
+    /* Log blit into diagnostic capture */
+    if (nv2a_dbg_diag_frame_active()) {
+        nv2a_diag_log_blit(d, pg);
+    }
 
     assert(context_surfaces->object_instance == image_blit->context_surfaces);
 
@@ -121,6 +135,7 @@ void pgraph_vk_image_blit(NV2AState *d)
 
     SurfaceBinding *surf_src = pgraph_vk_surface_get(d, source_addr);
     if (surf_src) {
+        OPT_STAT_INC(dif_blit);
         pgraph_vk_surface_download_if_dirty(d, surf_src);
     }
 
@@ -158,6 +173,7 @@ void pgraph_vk_image_blit(NV2AState *d)
     if (surf_dest) {
         if (adjusted_height < surf_dest->height ||
             row_pixels < surf_dest->width) {
+            OPT_STAT_INC(dif_blit);
             pgraph_vk_surface_download_if_dirty(d, surf_dest);
         } else {
             // The blit will completely replace the surface so any pending
@@ -224,12 +240,4 @@ void pgraph_vk_image_blit(NV2AState *d)
                                    DIRTY_MEMORY_VGA);
     memory_region_set_client_dirty(d->vram, dest_addr, clipped_dest_size,
                                    DIRTY_MEMORY_NV2A_TEX);
-    /*
-     * Also mark NV2A surface dirty so that update_surface_part() detects
-     * the blit write and sets upload_pending on any surface bound at this
-     * address. Without this, the surface's VkImage retains stale GPU-
-     * rendered content while VRAM has fresh blit data.
-     */
-    memory_region_set_client_dirty(d->vram, dest_addr, clipped_dest_size,
-                                   DIRTY_MEMORY_NV2A);
 }

@@ -47,7 +47,6 @@ typedef struct PshState {
     bool point_sprite;
     bool rect_tex[4];
     bool snorm_tex[4];
-    uint8_t tex_signed[4];
     bool compare_mode[4][4];
     bool alphakill[4];
     int colorkey_mode[4];
@@ -66,10 +65,12 @@ typedef struct PshState {
     enum PshAlphaFunc alpha_func;
 
     bool window_clip_exclusive;
+    int window_clip_count;
 
     bool smooth_shading;
     bool depth_clipping;
     bool z_perspective;
+    bool depth_needed;
 
     unsigned int surface_zeta_format;
     enum PshDepthFormat depth_format;
@@ -100,7 +101,10 @@ typedef struct GenPshGlslOptions {
     bool gles;
     int gles_version;
     int ubo_binding;
+    int ubo_set;
     int tex_binding;
+    bool bindless;
+    int tex_push_offset;
 } GenPshGlslOptions;
 
 MString *pgraph_glsl_gen_psh(const PshState *state, GenPshGlslOptions opts);

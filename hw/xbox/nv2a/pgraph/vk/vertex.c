@@ -53,17 +53,28 @@ void pgraph_vk_update_vertex_ram_buffer(PGRAPHState *pg, hwaddr offset,
     size_t end_bit = TARGET_PAGE_ALIGN(offset + size) / TARGET_PAGE_SIZE;
     size_t nbits = end_bit - start_bit;
 
-    if (find_next_bit(r->uploaded_bitmap, start_bit + nbits, start_bit) <
-        end_bit) {
-        // Vertex data changed while building the draw list. Finish drawing
-        // before updating RAM buffer.
-        pgraph_vk_finish(pg, VK_FINISH_REASON_VERTEX_BUFFER_DIRTY);
-    }
+    /* Per-frame buffer: no finish needed, each frame has its own copy */
 
     nv2a_profile_inc_counter(NV2A_PROF_GEOM_BUFFER_UPDATE_1);
-    memcpy(r->storage_buffers[BUFFER_VERTEX_RAM].mapped + offset, data, size);
+    StorageBuffer *vram = get_staging_buffer(r, BUFFER_VERTEX_RAM);
+    memcpy(vram->mapped + offset, data, size);
 
-    bitmap_set(r->uploaded_bitmap, start_bit, nbits);
+    FrameStagingState *fs = &r->frame_staging[r->current_frame];
+    if (offset < fs->vertex_ram_flush_min) {
+        fs->vertex_ram_flush_min = offset;
+    }
+    VkDeviceSize end = offset + size;
+    if (end > fs->vertex_ram_flush_max) {
+        fs->vertex_ram_flush_max = end;
+    }
+    if (offset < fs->vertex_ram_propagate_min) {
+        fs->vertex_ram_propagate_min = offset;
+    }
+    if (end > fs->vertex_ram_propagate_max) {
+        fs->vertex_ram_propagate_max = end;
+    }
+
+    bitmap_set(get_uploaded_bitmap(r), start_bit, nbits);
 }
 
 static void update_memory_buffer(NV2AState *d, hwaddr addr, hwaddr size)
@@ -126,6 +137,37 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
     unsigned int num_elements = max_element - min_element + 1;
 
     if (inline_data) {
+        r->cached_num_active_bindings = 0;
+    } else if (pg->vertex_attr_gen == r->last_vertex_attr_gen &&
+               r->cached_num_active_bindings > 0) {
+        OPT_STAT_INC(vtx_cache_hits);
+        pg->compressed_attrs = r->cached_compressed_attrs;
+        pg->uniform_attrs = r->cached_uniform_attrs;
+        pg->swizzle_attrs = r->cached_swizzle_attrs;
+        r->num_active_vertex_attribute_descriptions = r->cached_num_active_attrs;
+        r->num_active_vertex_binding_descriptions = r->cached_num_active_bindings;
+        memcpy(r->vertex_attribute_descriptions, r->cached_attr_descs,
+               sizeof(r->cached_attr_descs));
+        memcpy(r->vertex_binding_descriptions, r->cached_bind_descs,
+               sizeof(r->cached_bind_descs));
+        memcpy(r->vertex_attribute_to_description_location,
+               r->cached_attr_to_desc_loc,
+               sizeof(r->cached_attr_to_desc_loc));
+        memcpy(r->vertex_attribute_offsets, r->cached_attr_offsets,
+               sizeof(r->cached_attr_offsets));
+        for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
+            if (r->cached_attr_layout[i].stride) {
+                hwaddr start = r->cached_attr_layout[i].base_addr +
+                               min_element * r->cached_attr_layout[i].stride;
+                update_memory_buffer(d, start,
+                                     num_elements * r->cached_attr_layout[i].stride);
+            }
+        }
+        return;
+    }
+    OPT_STAT_INC(vtx_cache_misses);
+
+    if (inline_data) {
         NV2A_VK_DGROUP_BEGIN("%s (num_elements: %d inline stride: %d)",
                              __func__, num_elements, inline_stride);
     } else {
@@ -140,6 +182,8 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
     r->num_active_vertex_binding_descriptions = 0;
 
     for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
+        r->cached_attr_layout[i].stride = 0;
+        r->cached_attr_layout[i].base_addr = 0;
         VertexAttribute *attr = &pg->vertex_attributes[i];
         NV2A_VK_DGROUP_BEGIN("[attr %02d] format=%s, count=%d, stride=%d", i,
                              vertex_data_array_format_to_str[attr->format],
@@ -260,6 +304,11 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
 
         r->vertex_attribute_offsets[i] = attrib_data_addr;
 
+        if (!inline_data) {
+            r->cached_attr_layout[i].base_addr = attrib_data_addr;
+            r->cached_attr_layout[i].stride = stride;
+        }
+
         if (needs_conversion) {
             pg->compressed_attrs |= (1 << i);
         }
@@ -270,6 +319,24 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
         NV2A_VK_DGROUP_END();
     }
 
+    if (!inline_data) {
+        r->last_vertex_attr_gen = pg->vertex_attr_gen;
+        r->cached_num_active_bindings = r->num_active_vertex_binding_descriptions;
+        r->cached_num_active_attrs = r->num_active_vertex_attribute_descriptions;
+        memcpy(r->cached_attr_descs, r->vertex_attribute_descriptions,
+               sizeof(r->cached_attr_descs));
+        memcpy(r->cached_bind_descs, r->vertex_binding_descriptions,
+               sizeof(r->cached_bind_descs));
+        memcpy(r->cached_attr_to_desc_loc,
+               r->vertex_attribute_to_description_location,
+               sizeof(r->cached_attr_to_desc_loc));
+        memcpy(r->cached_attr_offsets, r->vertex_attribute_offsets,
+               sizeof(r->cached_attr_offsets));
+        r->cached_compressed_attrs = pg->compressed_attrs;
+        r->cached_uniform_attrs = pg->uniform_attrs;
+        r->cached_swizzle_attrs = pg->swizzle_attrs;
+    }
+
     NV2A_VK_DGROUP_END();
 }
 
@@ -277,6 +344,8 @@ void pgraph_vk_bind_vertex_attributes_inline(NV2AState *d)
 {
     PGRAPHState *pg = &d->pgraph;
     PGRAPHVkState *r = pg->vk_renderer_state;
+
+    r->cached_num_active_bindings = 0;
 
     pg->compressed_attrs = 0;
     pg->uniform_attrs = 0;

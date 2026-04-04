@@ -28,15 +28,28 @@
 #include <math.h>
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <EGL/egl.h>
+/* EGL_EGLEXT_PROTOTYPES enables KHR function declarations in eglext.h.
+ * We use KHR variants because eglCreateSync (EGL 1.5) is only in
+ * libEGL.so stubs from API 29+; the KHR equivalents exist from API 21. */
+#define EGL_EGLEXT_PROTOTYPES
+#include <EGL/eglext.h>
+#undef EGL_EGLEXT_PROTOTYPES
 #endif
 
 #ifdef __ANDROID__
+extern bool xemu_android_is_debug_logging_enabled(void);
+
 static void gl_log_errors(const char *ctx)
 {
     GLenum gl_err;
 
+    if (!xemu_android_is_debug_logging_enabled()) {
+        return;
+    }
+
     while ((gl_err = glGetError()) != GL_NO_ERROR) {
-        __android_log_print(ANDROID_LOG_WARN, "xemu-android",
+        __android_log_print(ANDROID_LOG_WARN, "hakuX",
             "GL error 0x%X at %s", gl_err, ctx);
     }
 }
@@ -397,7 +410,6 @@ static void render_display_pvideo_overlay(NV2AState *d)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     uint8_t *tex_rgba = convert_texture_data__CR8YB8CB8YA8(
         d->vram_ptr + base + offset, in_width, in_height, in_pitch);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, in_width, in_height, 0, GL_RGBA,
@@ -466,7 +478,6 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         r->gl_display_buffer_internal_format = disp_ifmt;
         r->gl_display_buffer_width = width;
         r->gl_display_buffer_height = height;
@@ -502,7 +513,6 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
         return;
     }
 
-    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
     glBindVertexArray(r->disp_rndr.vao);
     glBindBuffer(GL_ARRAY_BUFFER, r->disp_rndr.vbo);
@@ -534,8 +544,23 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
 static void gl_fence(void)
 {
 #ifdef __ANDROID__
-    /* Shared-context sync objects are still producing invalid-operation
-     * failures on Adreno. Favor correctness over throughput here. */
+    /* GL sync objects fail with GL_INVALID_OPERATION on Adreno when shared
+     * across EGL contexts. EGL_KHR_fence_sync operates at the EGL level and
+     * is not context-specific, so it is immune to this bug.
+     * We use the KHR variants because they are present in libEGL.so from
+     * API 21+; the EGL 1.5 core equivalents only appear from API 29. */
+    EGLDisplay dpy = eglGetCurrentDisplay();
+    if (dpy != EGL_NO_DISPLAY) {
+        EGLSyncKHR sync = eglCreateSyncKHR(dpy, EGL_SYNC_FENCE_KHR, NULL);
+        if (sync != EGL_NO_SYNC_KHR) {
+            eglClientWaitSyncKHR(dpy, sync,
+                                 EGL_SYNC_FLUSH_COMMANDS_BIT_KHR,
+                                 EGL_FOREVER_KHR);
+            eglDestroySyncKHR(dpy, sync);
+            return;
+        }
+    }
+    /* Fallback: EGL sync unavailable */
     glFinish();
 #else
     GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);

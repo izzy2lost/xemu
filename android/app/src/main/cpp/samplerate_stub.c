@@ -1,6 +1,6 @@
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #if defined(__aarch64__)
 #include <arm_neon.h>
@@ -140,15 +140,6 @@ long src_callback_read(SRC_STATE *state, double ratio, long frames, float *data)
     return out_frames;
 }
 
-SRC_STATE *src_delete(SRC_STATE *state)
-{
-    if (state) {
-        free(state->input_buf);
-        free(state);
-    }
-    return NULL;
-}
-
 int src_reset(SRC_STATE *state)
 {
     if (state) {
@@ -188,11 +179,8 @@ void src_float_to_short_array(const float *in, short *out, int len)
     }
     for (; i < len; i++) {
         float v = in[i];
-        if (v > 1.0f) {
-            v = 1.0f;
-        } else if (v < -1.0f) {
-            v = -1.0f;
-        }
+        if (v > 1.0f) v = 1.0f;
+        else if (v < -1.0f) v = -1.0f;
         out[i] = (short)(v * 32767.0f);
     }
 #else

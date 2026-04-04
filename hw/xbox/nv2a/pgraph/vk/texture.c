@@ -31,6 +31,9 @@
 #include "renderer.h"
 
 static void texture_cache_release_node_resources(PGRAPHVkState *r, TextureBinding *snode);
+static bool image_pool_acquire(PGRAPHVkState *r, const TextureImageConfig *config,
+                               VkImage *out_image, VmaAllocation *out_allocation);
+static void image_pool_drain(PGRAPHVkState *r);
 
 static const VkImageType dimensionality_to_vk_image_type[] = {
     0,
@@ -50,70 +53,6 @@ static VkSamplerAddressMode lookup_texture_address_mode(int idx)
     assert(0 < idx && idx < ARRAY_SIZE(pgraph_texture_addr_vk_map));
     return pgraph_texture_addr_vk_map[idx];
 }
-
-#ifdef __ANDROID__
-static uint8_t android_vk_expand_5_to_8(uint8_t value)
-{
-    return (value << 3) | (value >> 2);
-}
-
-static bool android_vk_texture_needs_rgba8_upload(TextureShape s)
-{
-    switch (s.color_format) {
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A1R5G5B5:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X1R5G5B5:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A1R5G5B5:
-    case NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X1R5G5B5:
-        return true;
-    default:
-        return false;
-    }
-}
-
-static uint8_t *android_vk_texture_convert_to_rgba8(TextureShape s,
-                                                    const uint8_t *src,
-                                                    unsigned int width,
-                                                    unsigned int height,
-                                                    unsigned int depth,
-                                                    unsigned int row_pitch,
-                                                    unsigned int slice_pitch,
-                                                    size_t *converted_size)
-{
-    size_t size = width * height * depth * 4;
-    uint8_t *converted = g_malloc(size);
-
-    for (unsigned int z = 0; z < depth; z++) {
-        const uint8_t *src_slice = src + z * slice_pitch;
-        uint8_t *dst_slice = converted + z * width * height * 4;
-
-        for (unsigned int y = 0; y < height; y++) {
-            const uint8_t *src_row = src_slice + y * row_pitch;
-            uint8_t *dst_row = dst_slice + y * width * 4;
-
-            for (unsigned int x = 0; x < width; x++) {
-                uint16_t pixel = lduw_le_p(src_row + x * 2);
-                uint8_t *out = dst_row + x * 4;
-
-                out[0] = android_vk_expand_5_to_8((pixel >> 10) & 0x1F);
-                out[1] = android_vk_expand_5_to_8((pixel >> 5) & 0x1F);
-                out[2] = android_vk_expand_5_to_8(pixel & 0x1F);
-                out[3] =
-                    (s.color_format ==
-                         NV097_SET_TEXTURE_FORMAT_COLOR_SZ_X1R5G5B5 ||
-                     s.color_format ==
-                         NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_X1R5G5B5) ?
-                        0xFF :
-                        ((pixel & 0x8000) ? 0xFF : 0x00);
-            }
-        }
-    }
-
-    if (converted_size) {
-        *converted_size = size;
-    }
-    return converted;
-}
-#endif
 
 // FIXME: Move to common
 // FIXME: We can shrink the size of this structure
@@ -262,14 +201,6 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
             s, texture_data_ptr, palette_data_ptr, adjusted_width,
             adjusted_height, 1, adjusted_pitch, 0, &converted_size);
 
-#ifdef __ANDROID__
-        if (!converted && android_vk_texture_needs_rgba8_upload(s)) {
-            converted = android_vk_texture_convert_to_rgba8(
-                s, texture_data_ptr, adjusted_width, adjusted_height, 1,
-                adjusted_pitch, 0, &converted_size);
-        }
-#endif
-
         if (!converted) {
             int dst_stride = adjusted_width * f.bytes_per_pixel;
             assert(adjusted_width <= s.width);
@@ -364,14 +295,6 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
                         s, unswizzled, palette_data_ptr, width, height, 1,
                         pitch, 0, &converted_size);
 
-#ifdef __ANDROID__
-                    if (!converted && android_vk_texture_needs_rgba8_upload(s)) {
-                        converted = android_vk_texture_convert_to_rgba8(
-                            s, unswizzled, width, height, 1, pitch, 0,
-                            &converted_size);
-                    }
-#endif
-
                     if (converted) {
                         g_free(unswizzled);
                     } else {
@@ -452,14 +375,6 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
                     s, unswizzled, palette_data_ptr, width, height, depth,
                     row_pitch, slice_pitch, &converted_size);
 
-#ifdef __ANDROID__
-                if (!converted && android_vk_texture_needs_rgba8_upload(s)) {
-                    converted = android_vk_texture_convert_to_rgba8(
-                        s, unswizzled, width, height, depth, row_pitch,
-                        slice_pitch, &converted_size);
-                }
-#endif
-
                 if (converted) {
                     g_free(unswizzled);
                 } else {
@@ -488,47 +403,39 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
     return layout;
 }
 
-struct pgraph_texture_possibly_dirty_struct {
-    hwaddr addr, end;
-};
-
-static void mark_textures_possibly_dirty_visitor(Lru *lru, LruNode *node, void *opaque)
-{
-    struct pgraph_texture_possibly_dirty_struct *test = opaque;
-
-    TextureBinding *tnode = container_of(node, TextureBinding, node);
-    if (tnode->possibly_dirty) {
-        return;
-    }
-
-    uintptr_t k_tex_addr = tnode->key.texture_vram_offset;
-    uintptr_t k_tex_end = k_tex_addr + tnode->key.texture_length - 1;
-    bool overlapping = !(test->addr > k_tex_end || k_tex_addr > test->end);
-
-    if (tnode->key.palette_length > 0) {
-        uintptr_t k_pal_addr = tnode->key.palette_vram_offset;
-        uintptr_t k_pal_end = k_pal_addr + tnode->key.palette_length - 1;
-        overlapping |= !(test->addr > k_pal_end || k_pal_addr > test->end);
-    }
-
-    tnode->possibly_dirty |= overlapping;
-}
-
 void pgraph_vk_mark_textures_possibly_dirty(NV2AState *d,
     hwaddr addr, hwaddr size)
 {
+    PGRAPHVkState *r = d->pgraph.vk_renderer_state;
     hwaddr end = TARGET_PAGE_ALIGN(addr + size) - 1;
     addr &= TARGET_PAGE_MASK;
     assert(end <= memory_region_size(d->vram));
 
-    struct pgraph_texture_possibly_dirty_struct test = {
-        .addr = addr,
-        .end = end,
-    };
+    bool any_newly_dirty = false;
+    TextureBinding *tnode;
+    QTAILQ_FOREACH(tnode, &r->texture_active_list, active_entry) {
+        if (tnode->possibly_dirty) {
+            continue;
+        }
 
-    lru_visit_active(&d->pgraph.vk_renderer_state->texture_cache,
-                     mark_textures_possibly_dirty_visitor,
-                     &test);
+        uintptr_t k_tex_addr = tnode->key.texture_vram_offset;
+        uintptr_t k_tex_end = k_tex_addr + tnode->key.texture_length - 1;
+        bool overlapping = !(addr > k_tex_end || k_tex_addr > end);
+
+        if (tnode->key.palette_length > 0) {
+            uintptr_t k_pal_addr = tnode->key.palette_vram_offset;
+            uintptr_t k_pal_end = k_pal_addr + tnode->key.palette_length - 1;
+            overlapping |= !(addr > k_pal_end || k_pal_addr > end);
+        }
+
+        if (overlapping) {
+            any_newly_dirty = true;
+        }
+        tnode->possibly_dirty |= overlapping;
+    }
+    if (any_newly_dirty) {
+        r->texture_vram_gen++;
+    }
 }
 
 static bool check_texture_dirty(NV2AState *d, hwaddr addr, hwaddr size)
@@ -540,25 +447,28 @@ static bool check_texture_dirty(NV2AState *d, hwaddr addr, hwaddr size)
                                               DIRTY_MEMORY_NV2A_TEX);
 }
 
-// Check if any of the pages spanned by the a texture are dirty.
-static bool check_texture_possibly_dirty(NV2AState *d,
-                                         hwaddr texture_vram_offset,
-                                         unsigned int length,
-                                         hwaddr palette_vram_offset,
-                                         unsigned int palette_length)
+static void resolve_possibly_dirty_textures(NV2AState *d)
 {
-    bool possibly_dirty = false;
-    if (check_texture_dirty(d, texture_vram_offset, length)) {
-        possibly_dirty = true;
-        pgraph_vk_mark_textures_possibly_dirty(d, texture_vram_offset, length);
+    PGRAPHState *pg = &d->pgraph;
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
+    for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
+        TextureBinding *b = r->texture_bindings[i];
+        if (!b || b == &r->dummy_texture || !b->possibly_dirty) continue;
+        if (b->dirty_check_frame == pg->frame_time) continue;
+
+        bool vram_dirty = check_texture_dirty(
+            d, b->key.texture_vram_offset, b->key.texture_length);
+        if (b->key.palette_length > 0) {
+            vram_dirty |= check_texture_dirty(
+                d, b->key.palette_vram_offset, b->key.palette_length);
+        }
+        b->dirty_check_frame = pg->frame_time;
+        b->dirty_check_result = vram_dirty;
+        if (!vram_dirty) {
+            b->possibly_dirty = false;
+        }
     }
-    if (palette_length && check_texture_dirty(d, palette_vram_offset,
-                                                     palette_length)) {
-        possibly_dirty = true;
-        pgraph_vk_mark_textures_possibly_dirty(d, palette_vram_offset,
-                                            palette_length);
-    }
-    return possibly_dirty;
 }
 
 // FIXME: Make sure we update sampler when data matches. Should we add filtering
@@ -566,9 +476,14 @@ static bool check_texture_possibly_dirty(NV2AState *d,
 static void upload_texture_image(PGRAPHState *pg, int texture_idx,
                                  TextureBinding *binding)
 {
+    NV2A_PHASE_TIMER_BEGIN(texture_upload);
     PGRAPHVkState *r = pg->vk_renderer_state;
     TextureShape *state = &binding->key.state;
     VkColorFormatInfo vkf = kelvin_color_format_vk_map[state->color_format];
+
+    VK_LOG("upload_texture: idx=%d fmt=%d %ux%u cubemap=%d levels=%d",
+           texture_idx, state->color_format, state->width, state->height,
+           state->cubemap, state->levels);
 
     nv2a_profile_inc_counter(NV2A_PROF_TEX_UPLOAD);
 
@@ -586,22 +501,33 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
         }
     }
 
-    assert(texture_data_size <=
-           r->storage_buffers[BUFFER_STAGING_SRC].buffer_size);
-
-    // Copy texture data to mapped device buffer
-    uint8_t *mapped_memory_ptr;
-
-    VK_CHECK(vmaMapMemory(r->allocator,
-                          r->storage_buffers[BUFFER_STAGING_SRC].allocation,
-                          (void *)&mapped_memory_ptr));
+    VkDeviceSize staging_base = pgraph_vk_staging_alloc(pg, texture_data_size);
+    if (staging_base == VK_WHOLE_SIZE) {
+        OPT_STAT_INC(buf_stg_full);
+        pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
+        staging_base = pgraph_vk_staging_alloc(pg, texture_data_size);
+        if (staging_base == VK_WHOLE_SIZE) {
+            if (pgraph_vk_staging_reclaim_any(pg)) {
+                pgraph_vk_staging_reset(pg);
+                staging_base = pgraph_vk_staging_alloc(pg, texture_data_size);
+            }
+            if (staging_base == VK_WHOLE_SIZE) {
+                pgraph_vk_flush_all_frames(pg);
+                pgraph_vk_staging_reset(pg);
+                staging_base = pgraph_vk_staging_alloc(pg, texture_data_size);
+                assert(staging_base != VK_WHOLE_SIZE);
+            }
+        }
+    }
+    StorageBuffer *staging = get_staging_buffer(r, BUFFER_STAGING_SRC);
+    uint8_t *mapped_memory_ptr = (uint8_t *)staging->mapped;
 
     int num_regions = num_layers * state->levels;
     g_autofree VkBufferImageCopy *regions =
         g_malloc0_n(num_regions, sizeof(VkBufferImageCopy));
 
     VkBufferImageCopy *region = regions;
-    VkDeviceSize buffer_offset = 0;
+    VkDeviceSize buffer_offset = staging_base;
 
     for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
         TextureLayer *layer = &layout->layers[layer_idx];
@@ -629,17 +555,12 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
             region++;
         }
     }
-    assert(buffer_offset <= r->storage_buffers[BUFFER_STAGING_SRC].buffer_size);
+    assert(buffer_offset <= staging->buffer_size);
 
-    vmaFlushAllocation(r->allocator,
-                       r->storage_buffers[BUFFER_STAGING_SRC].allocation, 0,
-                       VK_WHOLE_SIZE);
+    vmaFlushAllocation(r->allocator, staging->allocation,
+                       staging_base, buffer_offset - staging_base);
 
-    vmaUnmapMemory(r->allocator,
-                   r->storage_buffers[BUFFER_STAGING_SRC].allocation);
-
-    // FIXME: Use nondraw. Need to fill and copy tex buffer at once
-    VkCommandBuffer cmd = pgraph_vk_begin_single_time_commands(pg);
+    VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
     pgraph_vk_begin_debug_marker(r, cmd, RGBA_GREEN, __func__);
 
     VkBufferMemoryBarrier host_barrier = {
@@ -648,8 +569,9 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
         .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = r->storage_buffers[BUFFER_STAGING_SRC].buffer,
-        .size = VK_WHOLE_SIZE
+        .buffer = staging->buffer,
+        .offset = staging_base,
+        .size = buffer_offset - staging_base
     };
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
@@ -660,7 +582,7 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     binding->current_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
-    vkCmdCopyBufferToImage(cmd, r->storage_buffers[BUFFER_STAGING_SRC].buffer,
+    vkCmdCopyBufferToImage(cmd, staging->buffer,
                            binding->image, binding->current_layout,
                            num_regions, regions);
 
@@ -671,7 +593,7 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
 
     nv2a_profile_inc_counter(NV2A_PROF_QUEUE_SUBMIT_4);
     pgraph_vk_end_debug_marker(r, cmd);
-    pgraph_vk_end_single_time_commands(pg, cmd);
+    pgraph_vk_end_nondraw_commands(pg, cmd);
 
     // Release decoded texture data
     for (int layer_idx = 0; layer_idx < num_layers; layer_idx++) {
@@ -680,51 +602,68 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
             g_free(layer->levels[level_idx].decoded_data);
         }
     }
+    NV2A_PHASE_TIMER_END(texture_upload);
 }
 
+// Direct depth-stencil to texture: samples depth from the surface image
+// directly in a compute shader (eliminating the depth image→buffer copy),
+// copies only the stencil aspect to a buffer, and packs the result.
 static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surface,
                                          TextureBinding *texture)
 {
     assert(!surface->color);
+    assert(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
 
     PGRAPHVkState *r = pg->vk_renderer_state;
+
+    if (r->reorder_window.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_reorder_window(d);
+    }
+    if (r->draw_queue.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_draw_queue(d);
+    }
+
+    if (pgraph_vk_compute_needs_finish(r)) {
+        OPT_STAT_INC(buf_compute_full);
+        pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
+        pgraph_vk_flush_all_frames(pg);
+        pgraph_vk_compute_finish_complete(r);
+    }
+
     TextureShape *state = &texture->key.state;
     VkColorFormatInfo vkf = kelvin_color_format_vk_map[state->color_format];
-
-    bool use_compute_to_convert_depth_stencil =
-        surface->host_fmt.vk_format == VK_FORMAT_D24_UNORM_S8_UINT ||
-        surface->host_fmt.vk_format == VK_FORMAT_D32_SFLOAT_S8_UINT;
-
-    bool compute_needs_finish = use_compute_to_convert_depth_stencil &&
-                                pgraph_vk_compute_needs_finish(r);
-    if (compute_needs_finish) {
-        pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
-    }
 
     nv2a_profile_inc_counter(NV2A_PROF_SURF_TO_TEX);
 
     trace_nv2a_pgraph_surface_render_to_texture(
         surface->vram_addr, surface->width, surface->height);
 
+#if OPT_SURF_TO_TEX_INLINE
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
+#else
+    pgraph_vk_finish(pg, VK_FINISH_REASON_SURFACE_DOWN);
+    VkCommandBuffer cmd = pgraph_vk_begin_single_time_commands(pg);
+#endif
     pgraph_vk_begin_debug_marker(r, cmd, RGBA_GREEN, __func__);
 
     unsigned int scaled_width = surface->width,
                  scaled_height = surface->height;
     pgraph_apply_scaling_factor(pg, &scaled_width, &scaled_height);
 
-    size_t copied_image_size =
-        scaled_width * scaled_height * surface->host_fmt.host_bytes_per_pixel;
-    size_t stencil_buffer_offset = 0;
-    size_t stencil_buffer_size = 0;
+    // Step 1: Copy only the stencil aspect to buffer (1 byte/pixel)
+    StorageBuffer *stencil_buffer = &r->storage_buffers[BUFFER_COMPUTE_DST];
+    size_t stencil_buffer_offset =
+        ROUND_UP(scaled_width * scaled_height * 4,
+                 r->device_props.limits.minStorageBufferOffsetAlignment);
+    size_t stencil_size = scaled_width * scaled_height;
 
-    int num_regions = 0;
-    VkBufferImageCopy regions[2];
-    regions[num_regions++] = (VkBufferImageCopy){
-        .bufferOffset = 0,
-        .bufferRowLength = 0, // Tightly packed
-        .bufferImageHeight = 0, // Tightly packed
-        .imageSubresource.aspectMask = surface->color ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT,
+    VkBufferImageCopy stencil_region = {
+        .bufferOffset = stencil_buffer_offset,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
         .imageSubresource.mipLevel = 0,
         .imageSubresource.baseArrayLayer = 0,
         .imageSubresource.layerCount = 1,
@@ -732,125 +671,93 @@ static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surfac
         .imageExtent = (VkExtent3D){scaled_width, scaled_height, 1},
     };
 
-    if (surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) {
-        stencil_buffer_offset =
-            ROUND_UP(scaled_width * scaled_height * 4,
-                     r->device_props.limits.minStorageBufferOffsetAlignment);
-        stencil_buffer_size = scaled_width * scaled_height;
-        copied_image_size += stencil_buffer_size;
-
-        regions[num_regions++] = (VkBufferImageCopy){
-            .bufferOffset = stencil_buffer_offset,
-            .bufferRowLength = 0, // Tightly packed
-            .bufferImageHeight = 0, // Tightly packed
-            .imageSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
-            .imageSubresource.mipLevel = 0,
-            .imageSubresource.baseArrayLayer = 0,
-            .imageSubresource.layerCount = 1,
-            .imageOffset = (VkOffset3D){0, 0, 0},
-            .imageExtent = (VkExtent3D){scaled_width, scaled_height, 1},
-        };
-    }
-    StorageBuffer *dst_storage_buffer = &r->storage_buffers[BUFFER_COMPUTE_DST];
-    assert(dst_storage_buffer->buffer_size >= copied_image_size);
-
     pgraph_vk_transition_image_layout(
         pg, cmd, surface->image, surface->host_fmt.vk_format,
         surface->image_layout,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    surface->image_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
     vkCmdCopyImageToBuffer(
         cmd, surface->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        dst_storage_buffer->buffer,
-        num_regions, regions);
+        stencil_buffer->buffer, 1, &stencil_region);
 
-    VkBuffer texture_source_buffer;
+    // Step 2: Transition depth surface to read-only for compute sampling
+    pgraph_vk_transition_image_layout(
+        pg, cmd, surface->image, surface->host_fmt.vk_format,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    surface->image_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-    if (use_compute_to_convert_depth_stencil) {
-        size_t packed_image_size = scaled_width * scaled_height * 4;
+    // Create depth-only image view for compute sampling
+    VkImageViewCreateInfo depth_view_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = surface->image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = surface->host_fmt.vk_format,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    };
+    VkImageView depth_view;
+    VK_CHECK(vkCreateImageView(r->device, &depth_view_info, NULL,
+                               &depth_view));
 
-        VkBufferMemoryBarrier pre_pack_src_barrier = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = r->storage_buffers[BUFFER_COMPUTE_DST].buffer,
-            .size = VK_WHOLE_SIZE
-        };
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL,
-                             1, &pre_pack_src_barrier, 0, NULL);
+    // Step 3: Barrier for stencil buffer availability
+    VkBufferMemoryBarrier stencil_barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = stencil_buffer->buffer,
+        .offset = stencil_buffer_offset,
+        .size = stencil_size,
+    };
+    VkBufferMemoryBarrier output_pre_barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = r->storage_buffers[BUFFER_COMPUTE_SRC].buffer,
+        .size = scaled_width * scaled_height * 4,
+    };
+    VkBufferMemoryBarrier pre_barriers[] = { stencil_barrier, output_pre_barrier };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL,
+                         ARRAY_SIZE(pre_barriers), pre_barriers, 0, NULL);
 
-        VkBufferMemoryBarrier pre_pack_dst_barrier = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = r->storage_buffers[BUFFER_COMPUTE_SRC].buffer,
-            .size = VK_WHOLE_SIZE
-        };
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL,
-                             1, &pre_pack_dst_barrier, 0, NULL);
+    // Step 4: Compute shader samples depth + reads stencil → packs output
+    pgraph_vk_pack_depth_stencil_direct(
+        pg, surface, cmd, depth_view,
+        stencil_buffer->buffer, stencil_buffer_offset, stencil_size,
+        r->storage_buffers[BUFFER_COMPUTE_SRC].buffer, false);
 
-        pgraph_vk_pack_depth_stencil(
-            pg, surface, cmd,
-            r->storage_buffers[BUFFER_COMPUTE_DST].buffer,
-            r->storage_buffers[BUFFER_COMPUTE_SRC].buffer, false);
+    // Step 5: Barrier for packed output buffer → transfer read
+    size_t packed_size = scaled_width * scaled_height * 4;
+    VkBufferMemoryBarrier post_compute_barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = r->storage_buffers[BUFFER_COMPUTE_SRC].buffer,
+        .size = packed_size,
+    };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL,
+                         1, &post_compute_barrier, 0, NULL);
 
-        VkBufferMemoryBarrier post_pack_src_barrier = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = r->storage_buffers[BUFFER_COMPUTE_DST].buffer,
-            .size = VK_WHOLE_SIZE
-        };
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
-                             &post_pack_src_barrier, 0, NULL);
-
-        VkBufferMemoryBarrier post_pack_dst_barrier = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = r->storage_buffers[BUFFER_COMPUTE_SRC].buffer,
-            .size = packed_image_size
-        };
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
-                             &post_pack_dst_barrier, 0, NULL);
-
-        texture_source_buffer = r->storage_buffers[BUFFER_COMPUTE_SRC].buffer;
-    } else {
-        VkBufferMemoryBarrier barrier = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = dst_storage_buffer->buffer,
-            .size = VK_WHOLE_SIZE
-        };
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL,
-                             1, &barrier, 0, NULL);
-
-        texture_source_buffer = dst_storage_buffer->buffer;
-    }
-
+    // Step 6: Copy packed buffer → texture image
     pgraph_vk_transition_image_layout(pg, cmd, texture->image, vkf.vk_format,
                                       texture->current_layout,
                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     texture->current_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
-    regions[0] = (VkBufferImageCopy){
+    VkBufferImageCopy output_region = {
         .bufferOffset = 0,
         .bufferRowLength = 0,
         .bufferImageHeight = 0,
@@ -862,8 +769,8 @@ static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surfac
         .imageExtent = (VkExtent3D){ scaled_width, scaled_height, 1 },
     };
     vkCmdCopyBufferToImage(
-        cmd, texture_source_buffer, texture->image,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, regions);
+        cmd, r->storage_buffers[BUFFER_COMPUTE_SRC].buffer, texture->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &output_region);
 
     VkBufferMemoryBarrier post_copy_barrier = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
@@ -871,8 +778,8 @@ static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surfac
         .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = texture_source_buffer,
-        .size = VK_WHOLE_SIZE
+        .buffer = r->storage_buffers[BUFFER_COMPUTE_SRC].buffer,
+        .size = packed_size,
     };
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
@@ -883,74 +790,39 @@ static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surfac
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     texture->current_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    pgraph_vk_transition_image_layout(
-        pg, cmd, surface->image, surface->host_fmt.vk_format,
-        surface->image_layout,
-        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    surface->image_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    vkDestroyImageView(r->device, depth_view, NULL);
 
     pgraph_vk_end_debug_marker(r, cmd);
+#if OPT_SURF_TO_TEX_INLINE
     pgraph_vk_end_nondraw_commands(pg, cmd);
+#else
+    pgraph_vk_end_single_time_commands(pg, cmd);
+#endif
 
     texture->draw_time = surface->draw_time;
 }
 
-static bool color_surface_can_direct_bind(const SurfaceBinding *surface,
-                                          const TextureBinding *texture)
-{
-    VkColorFormatInfo tex_vkf =
-        kelvin_color_format_vk_map[texture->key.state.color_format];
-    return surface->color && tex_vkf.vk_format &&
-           surface->host_fmt.vk_format == tex_vkf.vk_format;
-}
-
-static VkImageView get_surface_direct_texture_view(PGRAPHVkState *r,
-                                                   SurfaceBinding *surface,
-                                                   TextureBinding *texture)
-{
-    assert(surface->color);
-    assert(color_surface_can_direct_bind(surface, texture));
-
-    if (texture->direct_surface_view != VK_NULL_HANDLE &&
-        texture->direct_surface_image == surface->image) {
-        return texture->direct_surface_view;
-    }
-
-    if (texture->direct_surface_view != VK_NULL_HANDLE) {
-        vkDestroyImageView(r->device, texture->direct_surface_view, NULL);
-        texture->direct_surface_view = VK_NULL_HANDLE;
-        texture->direct_surface_image = VK_NULL_HANDLE;
-    }
-
-    VkColorFormatInfo tex_vkf =
-        kelvin_color_format_vk_map[texture->key.state.color_format];
-    VkImageViewCreateInfo view_info = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = surface->image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = surface->host_fmt.vk_format,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-        .components = tex_vkf.component_map,
-    };
-    VK_CHECK(vkCreateImageView(r->device, &view_info, NULL,
-                               &texture->direct_surface_view));
-    texture->direct_surface_image = surface->image;
-    return texture->direct_surface_view;
-}
-
+// Direct surface sampling: end the render pass and insert a barrier so the
+// surface image (already in GENERAL layout) can be sampled as a texture
+// without copying.  The caller stores the surface image_view in
+// tex_surface_direct_views[] for the descriptor binding code.
 static void bind_surface_as_texture(PGRAPHState *pg, SurfaceBinding *surface,
                                     TextureBinding *texture)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
 
+    if (r->reorder_window.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_reorder_window(d);
+    }
+    if (r->draw_queue.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_draw_queue(d);
+    }
+
     nv2a_profile_inc_counter(NV2A_PROF_SURF_TO_TEX);
 
+    // End render pass to flush tile writes, then barrier for shader reads
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
 
     VkImageMemoryBarrier barrier = {
@@ -970,50 +842,67 @@ static void bind_surface_as_texture(PGRAPHState *pg, SurfaceBinding *surface,
         .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
         .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
     };
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
-                         NULL, 1, &barrier);
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &barrier);
 
     pgraph_vk_end_nondraw_commands(pg, cmd);
+
     texture->draw_time = surface->draw_time;
 }
 
-static void bind_zeta_surface_as_texture(PGRAPHState *pg, SurfaceBinding *surface,
+// Direct zeta surface sampling: transition the depth image to a read-only
+// layout so it can be sampled as a texture without copying. Only valid for
+// depth-only surfaces (D16) where the depth float value matches the expected
+// texture format (R16_UNORM).
+static void bind_zeta_surface_as_texture(PGRAPHState *pg,
+                                         SurfaceBinding *surface,
                                          TextureBinding *texture)
 {
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
     assert(!surface->color);
     assert(!(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT));
 
+    if (r->reorder_window.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_reorder_window(d);
+    }
+    if (r->draw_queue.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_draw_queue(d);
+    }
+
     nv2a_profile_inc_counter(NV2A_PROF_SURF_TO_TEX);
 
-    if (surface->image_layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) {
-        VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
+    VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
 
-        VkImageMemoryBarrier barrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .oldLayout = surface->image_layout,
-            .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = surface->image,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-        };
-        vkCmdPipelineBarrier(
-            cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, NULL, 0, NULL, 1, &barrier);
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = surface->image_layout,
+        .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = surface->image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+    };
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &barrier);
 
-        pgraph_vk_end_nondraw_commands(pg, cmd);
-        surface->image_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    }
+    surface->image_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+    pgraph_vk_end_nondraw_commands(pg, cmd);
 
     texture->draw_time = surface->draw_time;
 }
@@ -1027,6 +916,15 @@ static void copy_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surface,
     }
 
     PGRAPHVkState *r = pg->vk_renderer_state;
+
+    if (r->reorder_window.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_reorder_window(d);
+    }
+    if (r->draw_queue.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_draw_queue(d);
+    }
     TextureShape *state = &texture->key.state;
     VkColorFormatInfo vkf = kelvin_color_format_vk_map[state->color_format];
 
@@ -1035,14 +933,18 @@ static void copy_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surface,
     trace_nv2a_pgraph_surface_render_to_texture(
         surface->vram_addr, surface->width, surface->height);
 
+#if OPT_SURF_TO_TEX_INLINE
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
+#else
+    pgraph_vk_finish(pg, VK_FINISH_REASON_SURFACE_DOWN);
+    VkCommandBuffer cmd = pgraph_vk_begin_single_time_commands(pg);
+#endif
     pgraph_vk_begin_debug_marker(r, cmd, RGBA_GREEN, __func__);
 
     pgraph_vk_transition_image_layout(
         pg, cmd, surface->image, surface->host_fmt.vk_format,
         surface->image_layout,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    surface->image_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
     pgraph_vk_transition_image_layout(pg, cmd, texture->image, vkf.vk_format,
                                       texture->current_layout,
@@ -1067,11 +969,7 @@ static void copy_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surface,
     pgraph_vk_transition_image_layout(
         pg, cmd, surface->image, surface->host_fmt.vk_format,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        surface->color ? VK_IMAGE_LAYOUT_GENERAL :
-                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    surface->image_layout =
-        surface->color ? VK_IMAGE_LAYOUT_GENERAL :
-                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        surface->image_layout);
 
     pgraph_vk_transition_image_layout(pg, cmd, texture->image, vkf.vk_format,
                                       texture->current_layout,
@@ -1079,7 +977,11 @@ static void copy_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surface,
     texture->current_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     pgraph_vk_end_debug_marker(r, cmd);
+#if OPT_SURF_TO_TEX_INLINE
     pgraph_vk_end_nondraw_commands(pg, cmd);
+#else
+    pgraph_vk_end_single_time_commands(pg, cmd);
+#endif
 
     texture->draw_time = surface->draw_time;
 }
@@ -1094,7 +996,6 @@ static unsigned int vk_format_texel_size(VkFormat format)
     case VK_FORMAT_A4R4G4B4_UNORM_PACK16:   return 2;
     case VK_FORMAT_R16_UNORM:               return 2;
     case VK_FORMAT_R8G8B8_SNORM:            return 3;
-    case VK_FORMAT_R8G8B8A8_SNORM:          return 4;
     case VK_FORMAT_B8G8R8A8_UNORM:          return 4;
     case VK_FORMAT_R8G8B8A8_UNORM:          return 4;
     case VK_FORMAT_R32_UINT:                return 4;
@@ -1105,8 +1006,7 @@ static unsigned int vk_format_texel_size(VkFormat format)
 static bool check_surface_to_texture_compatiblity(const SurfaceBinding *surface,
                                                   const TextureShape *shape)
 {
-    if ((!surface->swizzle && surface->pitch != shape->pitch) ||
-        surface->width != shape->width ||
+    if (surface->width != shape->width ||
         surface->height != shape->height ||
         shape->cubemap ||
         shape->levels > 1) {
@@ -1197,17 +1097,12 @@ static void create_dummy_texture(PGRAPHState *pg)
     size_t texture_data_size =
         image_create_info.extent.width * image_create_info.extent.height;
 
-    VK_CHECK(vmaMapMemory(r->allocator,
-                          r->storage_buffers[BUFFER_STAGING_SRC].allocation,
-                          (void *)&mapped_memory_ptr));
+    StorageBuffer *dummy_staging = get_staging_buffer(r, BUFFER_STAGING_SRC);
+    mapped_memory_ptr = (uint8_t *)dummy_staging->mapped;
     memset(mapped_memory_ptr, 0xff, texture_data_size);
 
-    vmaFlushAllocation(r->allocator,
-                       r->storage_buffers[BUFFER_STAGING_SRC].allocation, 0,
-                       VK_WHOLE_SIZE);
-
-    vmaUnmapMemory(r->allocator,
-                   r->storage_buffers[BUFFER_STAGING_SRC].allocation);
+    vmaFlushAllocation(r->allocator, dummy_staging->allocation, 0,
+                       texture_data_size);
 
     VkCommandBuffer cmd = pgraph_vk_begin_single_time_commands(pg);
     pgraph_vk_begin_debug_marker(r, cmd, RGBA_GREEN, __func__);
@@ -1228,7 +1123,7 @@ static void create_dummy_texture(PGRAPHState *pg)
         .imageExtent = (VkExtent3D){ image_create_info.extent.width,
                                      image_create_info.extent.height, 1 },
     };
-    vkCmdCopyBufferToImage(cmd, r->storage_buffers[BUFFER_STAGING_SRC].buffer,
+    vkCmdCopyBufferToImage(cmd, dummy_staging->buffer,
                            texture_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &region);
 
@@ -1242,12 +1137,45 @@ static void create_dummy_texture(PGRAPHState *pg)
 
     r->dummy_texture = (TextureBinding){
         .key.scale = 1.0,
+        .image_config = {
+            .format = VK_FORMAT_R8_UNORM,
+            .image_type = VK_IMAGE_TYPE_2D,
+            .width = image_create_info.extent.width,
+            .height = image_create_info.extent.height,
+            .depth = 1,
+            .mip_levels = 1,
+            .array_layers = 1,
+            .flags = 0,
+        },
         .image = texture_image,
         .current_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         .allocation = texture_allocation,
         .image_view = texture_image_view,
         .sampler = texture_sampler,
+#if OPT_BINDLESS_TEXTURES
+        .bindless_slot = 0,
+#endif
     };
+
+#if OPT_BINDLESS_TEXTURES
+    if (r->bindless_textures_supported) {
+        VkDescriptorImageInfo bl_info = {
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .imageView = texture_image_view,
+            .sampler = texture_sampler,
+        };
+        VkWriteDescriptorSet bl_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = r->bindless_descriptor_set,
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &bl_info,
+        };
+        vkUpdateDescriptorSets(r->device, 1, &bl_write, 0, NULL);
+    }
+#endif
 }
 
 static void destroy_dummy_texture(PGRAPHVkState *r)
@@ -1287,11 +1215,12 @@ static bool is_linear_filter_supported_for_format(PGRAPHVkState *r,
 
 static void create_texture(PGRAPHState *pg, int texture_idx)
 {
+    VK_LOG("create_texture: idx=%d", texture_idx);
     NV2A_VK_DGROUP_BEGIN("Creating texture %d", texture_idx);
 
     NV2AState *d = container_of(pg, NV2AState, pgraph);
     PGRAPHVkState *r = pg->vk_renderer_state;
-    TextureShape state = pgraph_get_texture_shape(pg, texture_idx); // FIXME: Check for pad issues
+    TextureShape state = pgraph_get_texture_shape(pg, texture_idx);
     BasicColorFormatInfo f_basic = kelvin_color_format_info_map[state.color_format];
 
     const hwaddr texture_vram_offset = pgraph_get_texture_phys_addr(pg, texture_idx);
@@ -1300,15 +1229,15 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     size_t texture_palette_data_size = 0;
 
     uint32_t filter =
-        pgraph_reg_r(pg, NV_PGRAPH_TEXFILTER0 + texture_idx * 4);
+        pgraph_vk_reg_r(pg, NV_PGRAPH_TEXFILTER0 + texture_idx * 4);
     uint32_t address =
-        pgraph_reg_r(pg, NV_PGRAPH_TEXADDRESS0 + texture_idx * 4);
+        pgraph_vk_reg_r(pg, NV_PGRAPH_TEXADDRESS0 + texture_idx * 4);
     uint32_t border_color_pack32 =
-        pgraph_reg_r(pg, NV_PGRAPH_BORDERCOLOR0 + texture_idx * 4);
+        pgraph_vk_reg_r(pg, NV_PGRAPH_BORDERCOLOR0 + texture_idx * 4);
     bool is_indexed = (state.color_format ==
             NV097_SET_TEXTURE_FORMAT_COLOR_SZ_I8_A8R8G8B8);
     uint32_t max_anisotropy =
-        1 << (GET_MASK(pgraph_reg_r(pg, NV_PGRAPH_TEXCTL0_0 + texture_idx*4),
+        1 << (GET_MASK(pgraph_vk_reg_r(pg, NV_PGRAPH_TEXCTL0_0 + texture_idx*4),
                        NV_PGRAPH_TEXCTL0_0_MAX_ANISOTROPY));
 
     TextureKey key;
@@ -1325,7 +1254,6 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     }
     key.scale = 1;
 
-    // FIXME: Separate sampler from texture
     key.filter = filter;
     key.address = address;
     key.border_color = border_color_pack32;
@@ -1335,11 +1263,7 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     bool possibly_dirty_checked = false;
     bool surface_to_texture = false;
     r->tex_surface_direct[texture_idx] = false;
-    r->tex_surface_direct_views[texture_idx] = VK_NULL_HANDLE;
-    r->tex_surface_direct_layout[texture_idx] =
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Check active surfaces to see if this texture was a render target
     SurfaceBinding *surface = pgraph_vk_surface_get(d, texture_vram_offset);
     if (surface && state.levels == 1) {
         surface_to_texture =
@@ -1351,22 +1275,17 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
                 state.color_format);
         }
 
-        /*
-         * When a surface has a pending VRAM upload (upload_pending=true),
-         * VRAM may contain CPU-written content that is newer than the
-         * VkImage. Skip s2t and let the texture read from VRAM instead.
-         * This handles cases where the CPU writes UI/text content to VRAM
-         * at a framebuffer address while the VkImage still has old GPU content.
-         */
-        if (surface_to_texture && surface->upload_pending) {
-            surface_to_texture = false;
-        }
-
         if (surface_to_texture && surface->upload_pending) {
             pgraph_vk_upload_surface_data(d, surface, false);
         }
     }
 
+    /*
+     * If no active surface matched, check the shelf for a compatible
+     * draw-dirty surface at the same address.  This allows textures to
+     * read directly from a shelved surface's VkImage instead of from
+     * stale VRAM data.
+     */
     if (!surface_to_texture && state.levels == 1) {
         SurfaceBinding *shelved;
         QTAILQ_FOREACH(shelved, &r->shelved_surfaces, entry) {
@@ -1382,23 +1301,29 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
         }
     }
 
-    /*
-     * If a surface exists at the texture address but is not compatible for
-     * direct surface-to-texture binding (e.g. dimension mismatch or
-     * upload_pending), ensure the surface's GPU-rendered content is
-     * downloaded to VRAM so the texture upload reads fresh data.
-     */
-    if (!surface_to_texture && surface && surface->draw_dirty) {
-        pgraph_vk_surface_download_if_dirty(d, surface);
-        possibly_dirty = true;
-    }
-
     if (!surface_to_texture) {
-        // FIXME: Restructure to support rendering surfaces to cubemap faces
+        bool skip_surf_scan = false;
+        if (r->tex_surf_range_cache[texture_idx].vram_addr == texture_vram_offset &&
+            r->tex_surf_range_cache[texture_idx].length == texture_length &&
+            r->tex_surf_range_cache[texture_idx].surface_list_gen == r->surface_list_gen &&
+            (/* No overlap last time — nothing to download */
+             !r->tex_surf_range_cache[texture_idx].had_overlap ||
+             /* Had overlap but no surface has been drawn to since last
+              * download — overlapping surfaces are still clean. */
+             r->tex_surf_range_cache[texture_idx].surface_draw_gen ==
+                 r->surface_draw_gen)) {
+            skip_surf_scan = true;
+        }
 
-        // Writeback any surfaces which this texture may index
-        pgraph_vk_download_surfaces_in_range_if_dirty(
-            pg, texture_vram_offset, texture_length);
+        if (!skip_surf_scan) {
+            bool had_overlap = pgraph_vk_download_surfaces_in_range_if_dirty(
+                pg, texture_vram_offset, texture_length);
+            r->tex_surf_range_cache[texture_idx].vram_addr = texture_vram_offset;
+            r->tex_surf_range_cache[texture_idx].length = texture_length;
+            r->tex_surf_range_cache[texture_idx].had_overlap = had_overlap;
+            r->tex_surf_range_cache[texture_idx].surface_list_gen = r->surface_list_gen;
+            r->tex_surf_range_cache[texture_idx].surface_draw_gen = r->surface_draw_gen;
+        }
     }
 
     if (surface_to_texture && pg->surface_scale_factor > 1) {
@@ -1406,9 +1331,26 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     }
 
     uint64_t key_hash = fast_hash((void*)&key, sizeof(key));
-    LruNode *node = lru_lookup(&r->texture_cache, key_hash, &key);
-    TextureBinding *snode = container_of(node, TextureBinding, node);
-    bool binding_found = snode->image != VK_NULL_HANDLE;
+    TextureBinding *snode;
+    bool binding_found;
+
+    if (r->tex_binding_cache[texture_idx].key_hash == key_hash &&
+        r->tex_binding_cache[texture_idx].binding &&
+        r->tex_binding_cache[texture_idx].binding->image != VK_NULL_HANDLE) {
+        snode = r->tex_binding_cache[texture_idx].binding;
+        binding_found = true;
+    } else {
+        LruNode *node = lru_lookup(&r->texture_cache, key_hash, &key);
+        if (!node) {
+            /* LRU exhausted — all texture slots in-flight. Skip this
+             * texture bind and use whatever was previously bound. */
+            return;
+        }
+        snode = container_of(node, TextureBinding, node);
+        binding_found = snode->image != VK_NULL_HANDLE;
+        r->tex_binding_cache[texture_idx].key_hash = key_hash;
+        r->tex_binding_cache[texture_idx].binding = binding_found ? snode : NULL;
+    }
 
     if (binding_found) {
         NV2A_VK_DPRINTF("Cache hit");
@@ -1419,12 +1361,36 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     }
 
     if (!surface_to_texture && !possibly_dirty_checked) {
-        possibly_dirty |= check_texture_possibly_dirty(
-            d, texture_vram_offset, texture_length, texture_palette_vram_offset,
-            texture_palette_data_size);
+        bool skip_dirty_check = binding_found &&
+            snode->dirty_check_frame == pg->frame_time &&
+            !snode->dirty_check_result;
+        if (!skip_dirty_check) {
+            bool vram_dirty = check_texture_dirty(
+                d, texture_vram_offset, texture_length);
+            if (texture_palette_data_size) {
+                vram_dirty |= check_texture_dirty(
+                    d, texture_palette_vram_offset, texture_palette_data_size);
+            }
+            if (vram_dirty) {
+                possibly_dirty = true;
+            }
+            if (binding_found) {
+                snode->dirty_check_frame = pg->frame_time;
+                snode->dirty_check_result = vram_dirty;
+            }
+        }
     }
 
-    // Calculate hash of texture data, if necessary
+    if (binding_found && possibly_dirty && !surface_to_texture) {
+        bool vram_confirmed_clean =
+            snode->dirty_check_frame == pg->frame_time &&
+            !snode->dirty_check_result;
+        if (vram_confirmed_clean) {
+            snode->possibly_dirty = false;
+            possibly_dirty = false;
+        }
+    }
+
     void *texture_data = (char*)d->vram_ptr + texture_vram_offset;
     void *palette_data = (char*)d->vram_ptr + texture_palette_vram_offset;
 
@@ -1437,44 +1403,75 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     }
 
     if (binding_found) {
+        bool did_s2t_copy = false;
+        bool did_upload = false;
         if (surface_to_texture) {
-            if (surface->color) {
-                if (surface->draw_time != snode->draw_time) {
-                    bind_surface_as_texture(pg, surface, snode);
+            if (surface->draw_time != snode->draw_time) {
+                if (snode->submit_time + r->num_active_frames > r->submit_count) {
+                    pgraph_vk_flush_all_frames(pg);
                 }
-                if (color_surface_can_direct_bind(surface, snode)) {
-                    r->tex_surface_direct[texture_idx] = true;
-                    r->tex_surface_direct_views[texture_idx] =
-                        get_surface_direct_texture_view(r, surface, snode);
-                    r->tex_surface_direct_layout[texture_idx] = VK_IMAGE_LAYOUT_GENERAL;
-                } else {
-                    r->tex_surface_direct[texture_idx] = false;
-                    r->tex_surface_direct_views[texture_idx] = VK_NULL_HANDLE;
-                    r->tex_surface_direct_layout[texture_idx] =
-                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                }
-            } else {
                 bool can_direct_bind =
+                    surface->color ||
                     !(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
+
                 if (can_direct_bind) {
-                    if (surface->draw_time != snode->draw_time ||
-                        surface->image_layout !=
-                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) {
+                    VkImageLayout direct_layout;
+                    if (surface->color) {
+                        bind_surface_as_texture(pg, surface, snode);
+                        direct_layout = VK_IMAGE_LAYOUT_GENERAL;
+                    } else {
                         bind_zeta_surface_as_texture(pg, surface, snode);
+                        direct_layout =
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
                     }
                     r->tex_surface_direct[texture_idx] = true;
-                    r->tex_surface_direct_views[texture_idx] = surface->image_view;
-                    r->tex_surface_direct_layout[texture_idx] =
-                        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-                } else if (surface->draw_time != snode->draw_time) {
+                    r->tex_surface_direct_views[texture_idx] =
+                        surface->image_view;
+                    r->tex_surface_direct_layout[texture_idx] = direct_layout;
+                    r->texture_bindings_changed = true;
+#if OPT_BINDLESS_TEXTURES
+                    if (r->bindless_textures_supported) {
+                        VkDescriptorImageInfo bl_info = {
+                            .imageLayout = direct_layout,
+                            .imageView = surface->image_view,
+                            .sampler = snode->sampler,
+                        };
+                        VkWriteDescriptorSet bl_write = {
+                            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .dstSet = r->bindless_descriptor_set,
+                            .dstBinding = snode->bindless_binding,
+                            .dstArrayElement = snode->bindless_slot,
+                            .descriptorType =
+                                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .descriptorCount = 1,
+                            .pImageInfo = &bl_info,
+                        };
+                        vkUpdateDescriptorSets(r->device, 1, &bl_write, 0,
+                                               NULL);
+                    }
+#endif
+                } else {
                     copy_surface_to_texture(pg, surface, snode);
                 }
+                did_s2t_copy = true;
+            } else if (surface->color ||
+                       !(surface->host_fmt.aspect &
+                         VK_IMAGE_ASPECT_STENCIL_BIT)) {
+                // Same draw_time: surface hasn't changed, reuse direct view
+                r->tex_surface_direct[texture_idx] = true;
+                r->tex_surface_direct_views[texture_idx] =
+                    surface->image_view;
             }
         } else {
             if (possibly_dirty && content_hash != snode->hash) {
+                if (snode->submit_time + r->num_active_frames > r->submit_count) {
+                    pgraph_vk_flush_all_frames(pg);
+                }
                 upload_texture_image(pg, texture_idx, snode);
                 snode->hash = content_hash;
+                did_upload = true;
             }
+            snode->possibly_dirty = false;
         }
 
         NV2A_VK_DGROUP_END();
@@ -1485,8 +1482,6 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
 
     memcpy(&snode->key, &key, sizeof(key));
     snode->current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    snode->direct_surface_view = VK_NULL_HANDLE;
-    snode->direct_surface_image = VK_NULL_HANDLE;
     snode->possibly_dirty = false;
     snode->hash = content_hash;
 
@@ -1519,13 +1514,84 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
                                         &image_create_info.extent.height);
     }
 
+    TextureImageConfig pool_cfg = {
+        .format = image_create_info.format,
+        .image_type = image_create_info.imageType,
+        .width = image_create_info.extent.width,
+        .height = image_create_info.extent.height,
+        .depth = image_create_info.extent.depth,
+        .mip_levels = image_create_info.mipLevels,
+        .array_layers = image_create_info.arrayLayers,
+        .flags = image_create_info.flags,
+    };
+    snode->image_config = pool_cfg;
+
     VmaAllocationCreateInfo alloc_create_info = {
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
     };
 
-    VK_CHECK(vmaCreateImage(r->allocator, &image_create_info,
-                            &alloc_create_info, &snode->image,
-                            &snode->allocation, NULL));
+    VkResult create_result = VK_SUCCESS;
+    if (image_pool_acquire(r, &pool_cfg, &snode->image, &snode->allocation)) {
+        snode->current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        OPT_STAT_INC(tex_pool_hits);
+    } else {
+        create_result = vmaCreateImage(r->allocator, &image_create_info,
+                                       &alloc_create_info, &snode->image,
+                                       &snode->allocation, NULL);
+        OPT_STAT_INC(tex_pool_misses);
+    }
+    if (create_result == VK_ERROR_OUT_OF_DEVICE_MEMORY ||
+        create_result == VK_ERROR_OUT_OF_HOST_MEMORY) {
+        const VkPhysicalDeviceMemoryProperties *props;
+        vmaGetMemoryProperties(r->allocator, &props);
+        VmaBudget budgets[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(r->allocator, budgets);
+        for (uint32_t i = 0; i < props->memoryHeapCount; i++) {
+            VmaBudget *b = &budgets[i];
+            VK_LOG_ERROR("OOM DIAG heap[%u]: alloc=%uMB usage=%uMB budget=%uMB "
+                         "blockBytes=%uMB flags=0x%x",
+                         i,
+                         (unsigned)(b->statistics.allocationBytes >> 20),
+                         (unsigned)(b->usage >> 20),
+                         (unsigned)(b->budget >> 20),
+                         (unsigned)(b->statistics.blockBytes >> 20),
+                         props->memoryHeaps[i].flags);
+        }
+        VK_LOG_ERROR("OOM creating texture: %ux%ux%u fmt=%d mips=%u layers=%u "
+                     "(result=%d)",
+                     image_create_info.extent.width,
+                     image_create_info.extent.height,
+                     image_create_info.extent.depth,
+                     image_create_info.format,
+                     image_create_info.mipLevels,
+                     image_create_info.arrayLayers,
+                     create_result);
+
+        image_pool_drain(r);
+        pgraph_vk_flush_all_frames(pg);
+
+        for (int evict_pass = 0; evict_pass < 64; evict_pass++) {
+            if (!lru_try_evict_one(&r->texture_cache)) break;
+        }
+        image_pool_drain(r);
+
+        create_result = vmaCreateImage(r->allocator, &image_create_info,
+                                       &alloc_create_info, &snode->image,
+                                       &snode->allocation, NULL);
+        if (create_result != VK_SUCCESS) {
+            VK_LOG_ERROR("OOM retry FAILED (result=%d), flushing all textures",
+                         create_result);
+            lru_flush(&r->texture_cache);
+            image_pool_drain(r);
+            create_result = vmaCreateImage(r->allocator, &image_create_info,
+                                           &alloc_create_info, &snode->image,
+                                           &snode->allocation, NULL);
+        }
+    }
+    if (create_result != VK_SUCCESS) {
+        VK_LOG_ERROR("vmaCreateImage FATAL: result=%d", create_result);
+    }
+    assert(create_result == VK_SUCCESS && "vmaCreateImage failed");
 
     VkImageViewCreateInfo image_view_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1589,6 +1655,15 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
         }
     }
 
+    if (filter & NV_PGRAPH_TEXFILTER0_ASIGNED)
+        NV2A_UNIMPLEMENTED("NV_PGRAPH_TEXFILTER0_ASIGNED");
+    if (filter & NV_PGRAPH_TEXFILTER0_RSIGNED)
+        NV2A_UNIMPLEMENTED("NV_PGRAPH_TEXFILTER0_RSIGNED");
+    if (filter & NV_PGRAPH_TEXFILTER0_GSIGNED)
+        NV2A_UNIMPLEMENTED("NV_PGRAPH_TEXFILTER0_GSIGNED");
+    if (filter & NV_PGRAPH_TEXFILTER0_BSIGNED)
+        NV2A_UNIMPLEMENTED("NV_PGRAPH_TEXFILTER0_BSIGNED");
+
     VkFilter vk_min_filter, vk_mag_filter;
     unsigned int mag_filter = GET_MASK(filter, NV_PGRAPH_TEXFILTER0_MAG);
     assert(mag_filter < ARRAY_SIZE(pgraph_texture_mag_filter_vk_map));
@@ -1624,36 +1699,16 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     uint32_t sampler_max_anisotropy =
         MIN(r->device_props.limits.maxSamplerAnisotropy, max_anisotropy);
 
-    VkSamplerAddressMode wrap_u = lookup_texture_address_mode(
-        GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRU));
-    VkSamplerAddressMode wrap_v = lookup_texture_address_mode(
-        GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRV));
-    VkSamplerAddressMode wrap_w = (state.dimensionality > 2) ?
-        lookup_texture_address_mode(
-            GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRP)) :
-        0;
-
-#ifdef __ANDROID__
-    if (!r->custom_border_color_extension_enabled) {
-        if (wrap_u == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER) {
-            wrap_u = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        }
-        if (wrap_v == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER) {
-            wrap_v = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        }
-        if (wrap_w == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER) {
-            wrap_w = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        }
-    }
-#endif
-
     VkSamplerCreateInfo sampler_create_info = {
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .magFilter = vk_mag_filter,
         .minFilter = vk_min_filter,
-        .addressModeU = wrap_u,
-        .addressModeV = wrap_v,
-        .addressModeW = wrap_w,
+        .addressModeU = lookup_texture_address_mode(
+            GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRU)),
+        .addressModeV = lookup_texture_address_mode(
+            GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRV)),
+        .addressModeW = (state.dimensionality > 2) ? lookup_texture_address_mode(
+            GET_MASK(address, NV_PGRAPH_TEXADDRESS0_ADDRP)) : 0,
         .anisotropyEnable =
             r->enabled_physical_device_features.samplerAnisotropy &&
             sampler_max_anisotropy > 1,
@@ -1674,34 +1729,78 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
 
     set_texture_label(pg, snode);
 
+#if OPT_BINDLESS_TEXTURES
+    if (r->bindless_textures_supported) {
+        uint32_t bl_binding;
+        if (state.cubemap) {
+            bl_binding = 2;
+        } else if (state.dimensionality == 3) {
+            bl_binding = 1;
+        } else {
+            bl_binding = 0;
+        }
+        snode->bindless_binding = bl_binding;
+
+        VkDescriptorImageInfo bl_info = {
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .imageView = snode->image_view,
+            .sampler = snode->sampler,
+        };
+        VkWriteDescriptorSet bl_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = r->bindless_descriptor_set,
+            .dstBinding = bl_binding,
+            .dstArrayElement = snode->bindless_slot,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &bl_info,
+        };
+        vkUpdateDescriptorSets(r->device, 1, &bl_write, 0, NULL);
+    }
+#endif
+
     r->texture_bindings[texture_idx] = snode;
 
     if (surface_to_texture) {
-        if (surface->color) {
-            bind_surface_as_texture(pg, surface, snode);
-            if (color_surface_can_direct_bind(surface, snode)) {
-                r->tex_surface_direct[texture_idx] = true;
-                r->tex_surface_direct_views[texture_idx] =
-                    get_surface_direct_texture_view(r, surface, snode);
-                r->tex_surface_direct_layout[texture_idx] = VK_IMAGE_LAYOUT_GENERAL;
+        bool can_direct_bind =
+            surface->color ||
+            !(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
+
+        if (can_direct_bind) {
+            VkImageLayout direct_layout;
+            if (surface->color) {
+                bind_surface_as_texture(pg, surface, snode);
+                direct_layout = VK_IMAGE_LAYOUT_GENERAL;
             } else {
-                r->tex_surface_direct[texture_idx] = false;
-                r->tex_surface_direct_views[texture_idx] = VK_NULL_HANDLE;
-                r->tex_surface_direct_layout[texture_idx] =
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            }
-        } else {
-            bool can_direct_bind =
-                !(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
-            if (can_direct_bind) {
                 bind_zeta_surface_as_texture(pg, surface, snode);
-                r->tex_surface_direct[texture_idx] = true;
-                r->tex_surface_direct_views[texture_idx] = surface->image_view;
-                r->tex_surface_direct_layout[texture_idx] =
+                direct_layout =
                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-            } else {
-                copy_surface_to_texture(pg, surface, snode);
             }
+            r->tex_surface_direct[texture_idx] = true;
+            r->tex_surface_direct_views[texture_idx] = surface->image_view;
+            r->tex_surface_direct_layout[texture_idx] = direct_layout;
+#if OPT_BINDLESS_TEXTURES
+            if (r->bindless_textures_supported) {
+                VkDescriptorImageInfo bl_info = {
+                    .imageLayout = direct_layout,
+                    .imageView = surface->image_view,
+                    .sampler = snode->sampler,
+                };
+                VkWriteDescriptorSet bl_write = {
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = r->bindless_descriptor_set,
+                    .dstBinding = snode->bindless_binding,
+                    .dstArrayElement = snode->bindless_slot,
+                    .descriptorType =
+                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .descriptorCount = 1,
+                    .pImageInfo = &bl_info,
+                };
+                vkUpdateDescriptorSets(r->device, 1, &bl_write, 0, NULL);
+            }
+#endif
+        } else {
+            copy_surface_to_texture(pg, surface, snode);
         }
     } else {
         upload_texture_image(pg, texture_idx, snode);
@@ -1716,12 +1815,7 @@ static bool check_textures_dirty(PGRAPHState *pg)
     PGRAPHVkState *r = pg->vk_renderer_state;
 
     for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
-        if (!r->texture_bindings[i] || pg->texture_dirty[i] ||
-            r->tex_surface_direct[i]) {
-            return true;
-        }
-        if (r->texture_bindings[i] != &r->dummy_texture &&
-            r->texture_bindings[i]->possibly_dirty) {
+        if (!r->texture_bindings[i] || pg->texture_dirty[i]) {
             return true;
         }
     }
@@ -1737,15 +1831,26 @@ static void update_timestamps(PGRAPHVkState *r)
     }
 }
 
+bool pgraph_vk_check_textures_fast_skip(PGRAPHState *pg)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
+    for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
+        if (!r->texture_bindings[i] || pg->texture_dirty[i] ||
+            (r->texture_bindings[i] != &r->dummy_texture &&
+             r->texture_bindings[i]->possibly_dirty)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void pgraph_vk_bind_textures(NV2AState *d)
 {
     NV2A_VK_DGROUP_BEGIN("%s", __func__);
 
     PGRAPHState *pg = &d->pgraph;
     PGRAPHVkState *r = pg->vk_renderer_state;
-
-    // FIXME: Check for modifications on bind fastpath (CPU hook)
-    // FIXME: Mark textures that are sourced from surfaces so we can track them
 
     r->texture_bindings_changed = false;
 
@@ -1756,56 +1861,189 @@ void pgraph_vk_bind_textures(NV2AState *d)
         return;
     }
 
+    resolve_possibly_dirty_textures(d);
+
     for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
         if (!pgraph_is_texture_enabled(pg, i)) {
             if (r->texture_bindings[i] != &r->dummy_texture) {
                 r->texture_bindings[i] = &r->dummy_texture;
                 r->texture_bindings_changed = true;
             }
-            r->tex_surface_direct[i] = false;
-            r->tex_surface_direct_views[i] = VK_NULL_HANDLE;
-            r->tex_surface_direct_layout[i] =
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             pg->texture_dirty[i] = false;
             continue;
         }
 
         if (!pg->texture_dirty[i] && r->texture_bindings[i] &&
             r->texture_bindings[i] != &r->dummy_texture &&
-            !r->texture_bindings[i]->possibly_dirty &&
-            !r->tex_surface_direct[i]) {
+            !r->texture_bindings[i]->possibly_dirty) {
             continue;
         }
 
+        if (!pg->texture_dirty[i] && r->texture_bindings[i] &&
+            r->texture_bindings[i] != &r->dummy_texture &&
+            r->texture_bindings[i]->possibly_dirty) {
+            if (r->texture_bindings[i]->dirty_check_frame == pg->frame_time &&
+                !r->texture_bindings[i]->dirty_check_result) {
+                r->texture_bindings[i]->possibly_dirty = false;
+                continue;
+            }
+        }
+
+        if (pg->texture_dirty[i] && r->tex_reg_cache[i].valid &&
+            r->texture_bindings[i] &&
+            r->texture_bindings[i] != &r->dummy_texture &&
+            r->texture_bindings[i]->dirty_check_frame == pg->frame_time &&
+            !r->texture_bindings[i]->dirty_check_result &&
+            !r->texture_bindings[i]->possibly_dirty) {
+            uint32_t cur[8] = {
+                pgraph_vk_reg_r(pg, NV_PGRAPH_TEXOFFSET0 + i * 4),
+                pgraph_vk_reg_r(pg, NV_PGRAPH_TEXFMT0 + i * 4),
+                pgraph_vk_reg_r(pg, NV_PGRAPH_TEXCTL0_0 + i * 4),
+                pgraph_vk_reg_r(pg, NV_PGRAPH_TEXCTL1_0 + i * 4),
+                pgraph_vk_reg_r(pg, NV_PGRAPH_TEXFILTER0 + i * 4),
+                pgraph_vk_reg_r(pg, NV_PGRAPH_TEXADDRESS0 + i * 4),
+                pgraph_vk_reg_r(pg, NV_PGRAPH_BORDERCOLOR0 + i * 4),
+                pgraph_vk_reg_r(pg, NV_PGRAPH_TEXIMAGERECT0 + i * 4),
+            };
+            uint32_t sp = (pgraph_vk_reg_r(pg, NV_PGRAPH_SHADERPROG) >> (i * 5)) & 0x1F;
+            if (memcmp(cur, r->tex_reg_cache[i].regs, sizeof(cur)) == 0 &&
+                sp == r->tex_reg_cache[i].shaderprog_bits) {
+                pg->texture_dirty[i] = false;
+                continue;
+            }
+        }
+
         TextureBinding *prev_binding = r->texture_bindings[i];
-        bool prev_direct = r->tex_surface_direct[i];
-        VkImageView prev_direct_view = r->tex_surface_direct_views[i];
-        VkImageLayout prev_direct_layout = r->tex_surface_direct_layout[i];
         create_texture(pg, i);
 
-        pg->texture_dirty[i] = false; // FIXME: Move to renderer?
-        if (r->texture_bindings[i] != prev_binding ||
-            r->tex_surface_direct[i] != prev_direct ||
-            r->tex_surface_direct_views[i] != prev_direct_view ||
-            r->tex_surface_direct_layout[i] != prev_direct_layout) {
+        r->tex_reg_cache[i].regs[0] = pgraph_vk_reg_r(pg, NV_PGRAPH_TEXOFFSET0 + i * 4);
+        r->tex_reg_cache[i].regs[1] = pgraph_vk_reg_r(pg, NV_PGRAPH_TEXFMT0 + i * 4);
+        r->tex_reg_cache[i].regs[2] = pgraph_vk_reg_r(pg, NV_PGRAPH_TEXCTL0_0 + i * 4);
+        r->tex_reg_cache[i].regs[3] = pgraph_vk_reg_r(pg, NV_PGRAPH_TEXCTL1_0 + i * 4);
+        r->tex_reg_cache[i].regs[4] = pgraph_vk_reg_r(pg, NV_PGRAPH_TEXFILTER0 + i * 4);
+        r->tex_reg_cache[i].regs[5] = pgraph_vk_reg_r(pg, NV_PGRAPH_TEXADDRESS0 + i * 4);
+        r->tex_reg_cache[i].regs[6] = pgraph_vk_reg_r(pg, NV_PGRAPH_BORDERCOLOR0 + i * 4);
+        r->tex_reg_cache[i].regs[7] = pgraph_vk_reg_r(pg, NV_PGRAPH_TEXIMAGERECT0 + i * 4);
+        r->tex_reg_cache[i].shaderprog_bits =
+            (pgraph_vk_reg_r(pg, NV_PGRAPH_SHADERPROG) >> (i * 5)) & 0x1F;
+        r->tex_reg_cache[i].valid = true;
+
+        if (r->texture_bindings[i] != prev_binding) {
             r->texture_bindings_changed = true;
         }
+
+        pg->texture_dirty[i] = false;
     }
 
+    if (r->texture_bindings_changed) {
+        r->pipeline_state_dirty = true;
+    }
     update_timestamps(r);
     NV2A_VK_DGROUP_END();
 }
 
 static void texture_cache_entry_init(Lru *lru, LruNode *node, const void *state)
 {
+    PGRAPHVkState *r = container_of(lru, PGRAPHVkState, texture_cache);
     TextureBinding *snode = container_of(node, TextureBinding, node);
 
     snode->image = VK_NULL_HANDLE;
     snode->allocation = VK_NULL_HANDLE;
     snode->image_view = VK_NULL_HANDLE;
-    snode->direct_surface_view = VK_NULL_HANDLE;
-    snode->direct_surface_image = VK_NULL_HANDLE;
     snode->sampler = VK_NULL_HANDLE;
+    snode->submit_time = 0;
+    snode->dirty_check_frame = 0;
+    snode->dirty_check_result = false;
+
+#if OPT_BINDLESS_TEXTURES
+    if (r->bindless_textures_supported) {
+        snode->bindless_slot = 0;
+        for (int w = 0; w < MAX_BINDLESS_TEXTURES / 64; w++) {
+            if (r->bindless_slot_bitmap[w] != UINT64_MAX) {
+                int bit = __builtin_ctzll(~r->bindless_slot_bitmap[w]);
+                snode->bindless_slot = w * 64 + bit;
+                r->bindless_slot_bitmap[w] |= (1ULL << bit);
+                break;
+            }
+        }
+    }
+#endif
+
+    if (!snode->in_active_list) {
+        QTAILQ_INSERT_HEAD(&r->texture_active_list, snode, active_entry);
+        snode->in_active_list = true;
+    }
+}
+
+static void image_pool_init(PGRAPHVkState *r)
+{
+    QTAILQ_INIT(&r->image_pool);
+    r->image_pool_count = 0;
+}
+
+static bool image_pool_config_match(const TextureImageConfig *a,
+                                    const TextureImageConfig *b)
+{
+    return a->format == b->format &&
+           a->image_type == b->image_type &&
+           a->width == b->width &&
+           a->height == b->height &&
+           a->depth == b->depth &&
+           a->mip_levels == b->mip_levels &&
+           a->array_layers == b->array_layers &&
+           a->flags == b->flags;
+}
+
+static bool image_pool_acquire(PGRAPHVkState *r,
+                               const TextureImageConfig *config,
+                               VkImage *out_image,
+                               VmaAllocation *out_allocation)
+{
+    PooledImage *entry;
+    QTAILQ_FOREACH(entry, &r->image_pool, entry) {
+        if (image_pool_config_match(&entry->config, config)) {
+            *out_image = entry->image;
+            *out_allocation = entry->allocation;
+            QTAILQ_REMOVE(&r->image_pool, entry, entry);
+            g_free(entry);
+            r->image_pool_count--;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void image_pool_release(PGRAPHVkState *r,
+                               const TextureImageConfig *config,
+                               VkImage image, VmaAllocation allocation)
+{
+    int pool_max = r->image_pool_max ? r->image_pool_max : IMAGE_POOL_MAX_SIZE;
+    if (r->image_pool_count >= pool_max) {
+        PooledImage *oldest = QTAILQ_FIRST(&r->image_pool);
+        assert(oldest != NULL);
+        QTAILQ_REMOVE(&r->image_pool, oldest, entry);
+        vmaDestroyImage(r->allocator, oldest->image, oldest->allocation);
+        g_free(oldest);
+        r->image_pool_count--;
+    }
+
+    PooledImage *pe = g_malloc(sizeof(PooledImage));
+    pe->config = *config;
+    pe->image = image;
+    pe->allocation = allocation;
+    QTAILQ_INSERT_TAIL(&r->image_pool, pe, entry);
+    r->image_pool_count++;
+}
+
+static void image_pool_drain(PGRAPHVkState *r)
+{
+    PooledImage *entry, *next;
+    QTAILQ_FOREACH_SAFE(entry, &r->image_pool, entry, next) {
+        QTAILQ_REMOVE(&r->image_pool, entry, entry);
+        vmaDestroyImage(r->allocator, entry->image, entry->allocation);
+        g_free(entry);
+    }
+    r->image_pool_count = 0;
 }
 
 static void texture_cache_release_node_resources(PGRAPHVkState *r, TextureBinding *snode)
@@ -1816,11 +2054,10 @@ static void texture_cache_release_node_resources(PGRAPHVkState *r, TextureBindin
     vkDestroyImageView(r->device, snode->image_view, NULL);
     snode->image_view = VK_NULL_HANDLE;
 
-    vkDestroyImageView(r->device, snode->direct_surface_view, NULL);
-    snode->direct_surface_view = VK_NULL_HANDLE;
-    snode->direct_surface_image = VK_NULL_HANDLE;
-
-    vmaDestroyImage(r->allocator, snode->image, snode->allocation);
+    if (snode->image != VK_NULL_HANDLE) {
+        image_pool_release(r, &snode->image_config, snode->image,
+                           snode->allocation);
+    }
     snode->image = VK_NULL_HANDLE;
     snode->allocation = VK_NULL_HANDLE;
 }
@@ -1830,18 +2067,13 @@ static bool texture_cache_entry_pre_evict(Lru *lru, LruNode *node)
     PGRAPHVkState *r = container_of(lru, PGRAPHVkState, texture_cache);
     TextureBinding *snode = container_of(node, TextureBinding, node);
 
-    // FIXME: Simplify. We don't really need to check bindings
-
-
-    // Currently bound
     for (int i = 0; i < ARRAY_SIZE(r->texture_bindings); i++) {
         if (r->texture_bindings[i] == snode) {
             return false;
         }
     }
 
-    // Used in command buffer
-    if (r->in_command_buffer && snode->submit_time == r->submit_count) {
+    if (snode->submit_time + r->num_active_frames > r->submit_count) {
         return false;
     }
 
@@ -1852,6 +2084,28 @@ static void texture_cache_entry_post_evict(Lru *lru, LruNode *node)
 {
     PGRAPHVkState *r = container_of(lru, PGRAPHVkState, texture_cache);
     TextureBinding *snode = container_of(node, TextureBinding, node);
+    if (snode->submit_time + r->num_active_frames > r->submit_count) {
+        VK_LOG_ERROR("DIAG: texture EVICTED while in-flight! "
+                     "image=%p st=%u sc=%u",
+                     (void *)snode->image,
+                     snode->submit_time, r->submit_count);
+    }
+    if (snode->in_active_list) {
+        QTAILQ_REMOVE(&r->texture_active_list, snode, active_entry);
+        snode->in_active_list = false;
+    }
+    for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
+        if (r->tex_binding_cache[i].binding == snode) {
+            r->tex_binding_cache[i].binding = NULL;
+        }
+    }
+#if OPT_BINDLESS_TEXTURES
+    if (r->bindless_textures_supported && snode->bindless_slot > 0) {
+        int w = snode->bindless_slot / 64;
+        int bit = snode->bindless_slot % 64;
+        r->bindless_slot_bitmap[w] &= ~(1ULL << bit);
+    }
+#endif
     texture_cache_release_node_resources(r, snode);
 }
 
@@ -1864,11 +2118,16 @@ static bool texture_cache_entry_compare(Lru *lru, LruNode *node,
 
 static void texture_cache_init(PGRAPHVkState *r)
 {
-    const size_t texture_cache_size = 1024;
-    lru_init(&r->texture_cache, 1u << 16);
+    const size_t texture_cache_size =
+        r->texture_cache_target ? r->texture_cache_target : 1024;
+    size_t texture_hash_buckets = texture_cache_size * 2;
+    lru_init(&r->texture_cache, texture_hash_buckets);
+    QTAILQ_INIT(&r->texture_active_list);
+    image_pool_init(r);
     r->texture_cache_entries = g_malloc_n(texture_cache_size, sizeof(TextureBinding));
     assert(r->texture_cache_entries != NULL);
     for (int i = 0; i < texture_cache_size; i++) {
+        r->texture_cache_entries[i].in_active_list = false;
         lru_add_free(&r->texture_cache, &r->texture_cache_entries[i].node);
     }
     r->texture_cache.init_node = texture_cache_entry_init;
@@ -1880,6 +2139,8 @@ static void texture_cache_init(PGRAPHVkState *r)
 static void texture_cache_finalize(PGRAPHVkState *r)
 {
     lru_flush(&r->texture_cache);
+    image_pool_drain(r);
+    lru_destroy(&r->texture_cache);
     g_free(r->texture_cache_entries);
     r->texture_cache_entries = NULL;
 }
@@ -1924,10 +2185,6 @@ void pgraph_vk_finalize_textures(PGRAPHState *pg)
 
     for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
         r->texture_bindings[i] = NULL;
-        r->tex_surface_direct[i] = false;
-        r->tex_surface_direct_views[i] = VK_NULL_HANDLE;
-        r->tex_surface_direct_layout[i] =
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
     destroy_dummy_texture(r);
