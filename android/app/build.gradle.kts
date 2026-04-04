@@ -101,6 +101,7 @@ android {
       "META-INF/LICENSE*",
       "META-INF/NOTICE*"
     )
+    /* Extract .so to disk (nativeLibraryDir); required for adrenotools hooks / custom GPU drivers. */
     jniLibs.useLegacyPackaging = true
     jniLibs.keepDebugSymbols += setOf("**/*.so")
   }

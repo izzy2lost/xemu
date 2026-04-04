@@ -9,7 +9,7 @@
 #include <unwind.h>
 
 namespace {
-constexpr const char* kCrashTag = "hakuX";
+constexpr const char* kCrashTag = "xemu-android";
 constexpr size_t kPathMax = 512;
 
 static char g_inline_aio_flag_path[kPathMax];

@@ -482,9 +482,28 @@ static void add_optional_device_extension_names(
     }
 
 #if OPT_DYNAMIC_BLEND
-    r->eds3_blend_supported = add_extension_if_available(
-        available_extensions, enabled_extension_names,
-        VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+    /*
+     * Stock Qualcomm drivers often advertise EXT_extended_dynamic_state3 but
+     * crash or fault inside vkCmdSetColorBlend* / related dynamic state during
+     * real draws. Turnip and other updaters are fine; skip EDS3 on Adreno-only
+     * Android so we use static pipeline blend state instead.
+     */
+# ifdef __ANDROID__
+    extern bool xemu_android_vulkan_custom_driver_zip_loaded(void);
+    if (r->device_props.vendorID == 0x5143u &&
+        !xemu_android_vulkan_custom_driver_zip_loaded()) {
+        r->eds3_blend_supported = false;
+        fprintf(stderr, "Qualcomm GPU: omitting %s (use static blend for stock-driver compatibility)\n",
+                VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+        __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                              "Qualcomm stock driver: dynamic blend (EDS3) disabled");
+    } else
+# endif
+    {
+        r->eds3_blend_supported = add_extension_if_available(
+            available_extensions, enabled_extension_names,
+            VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+    }
 #endif
 
 #if OPT_BINDLESS_TEXTURES

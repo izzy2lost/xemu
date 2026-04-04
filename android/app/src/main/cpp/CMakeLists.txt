@@ -497,7 +497,6 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]gtk.*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]sdl2.*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]console-gl\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]console-vc\\.c$")
-list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]shader\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]vnc.*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]xemu-snapshots\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]xemu-thumbnail\\.cc$")
@@ -670,6 +669,30 @@ endif()
 
 file(GLOB_RECURSE QAPI_GEN_SOURCES "${QAPI_GEN_DIR}/*.c")
 list(APPEND XEMU_CORE_SOURCES ${QAPI_GEN_SOURCES})
+
+# Generate GL shader headers used by ui/shader.c.
+set(XEMU_SHADER_GEN_DIR "${CMAKE_BINARY_DIR}/ui/shader")
+set(XEMU_SHADER_INPUTS
+  "${REPO_ROOT}/ui/shader/texture-blit.frag"
+  "${REPO_ROOT}/ui/shader/texture-blit.vert"
+  "${REPO_ROOT}/ui/shader/texture-blit-flip.vert"
+)
+file(MAKE_DIRECTORY "${XEMU_SHADER_GEN_DIR}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${XEMU_SHADER_INPUTS})
+foreach(SHADER_INPUT ${XEMU_SHADER_INPUTS})
+  get_filename_component(SHADER_NAME "${SHADER_INPUT}" NAME)
+  string(REPLACE "." "-" SHADER_OUTPUT_BASENAME "${SHADER_NAME}")
+  set(SHADER_OUTPUT "${XEMU_SHADER_GEN_DIR}/${SHADER_OUTPUT_BASENAME}.h")
+  execute_process(
+    COMMAND "${PYTHON_EXECUTABLE}" "${REPO_ROOT}/scripts/shaderinclude.py" "${SHADER_INPUT}"
+    OUTPUT_FILE "${SHADER_OUTPUT}"
+    WORKING_DIRECTORY "${REPO_ROOT}"
+    RESULT_VARIABLE SHADER_GEN_RESULT
+  )
+  if(NOT SHADER_GEN_RESULT EQUAL 0)
+    message(FATAL_ERROR "Shader header generation failed for ${SHADER_INPUT}")
+  endif()
+endforeach()
 
 # Generate block coroutine wrapper sources (block-gen.c).
 set(BLOCK_GEN_C "${CMAKE_BINARY_DIR}/block-gen.c")
@@ -922,6 +945,8 @@ add_library(xemu SHARED
   xemu_android.cpp
   android_crash_handler.cpp
   vmstate_if_android.c
+  xemu_fatx_import.c
+  xemu_hdd_tools_jni.c
 )
 
 target_compile_definitions(xemu PRIVATE ANDROID __ANDROID__ XBOX CONFIG_SDL CONFIG_OPENGL

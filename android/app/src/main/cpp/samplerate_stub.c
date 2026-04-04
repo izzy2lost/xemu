@@ -152,6 +152,15 @@ int src_reset(SRC_STATE *state)
     return 0;
 }
 
+SRC_STATE *src_delete(SRC_STATE *state)
+{
+    if (state) {
+        free(state->input_buf);
+        free(state);
+    }
+    return NULL;
+}
+
 const char *src_strerror(int error)
 {
     (void)error;

@@ -169,7 +169,7 @@ const char *xemu_settings_get_base_path(void)
     }
     base_path = base ? strdup(base) : strdup("");
     SDL_free(base);
-    __android_log_print(ANDROID_LOG_INFO, "hakuX-config",
+    __android_log_print(ANDROID_LOG_INFO, "xemu-config",
                         "xemu_settings_get_base_path: %s", base_path);
     return base_path;
 }
@@ -245,7 +245,7 @@ bool xemu_settings_load(void)
                     parsed == CONFIG_DISPLAY_RENDERER_OPENGL) {
                     g_config.display.renderer = parsed;
                 }
-                __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                     "Config display.renderer=%s (using %s)",
                                     renderer->c_str(),
                                     g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN
@@ -346,7 +346,7 @@ bool xemu_settings_load(void)
             if (*tcg_thread == "single" || *tcg_thread == "multi") {
                 setenv("XEMU_ANDROID_TCG_THREAD", tcg_thread->c_str(), 1);
             } else {
-                __android_log_print(ANDROID_LOG_WARN, "hakuX",
+                __android_log_print(ANDROID_LOG_WARN, "xemu-android",
                                     "Ignoring android.tcg_thread=%s (expected single|multi)",
                                     tcg_thread->c_str());
             }
@@ -508,7 +508,7 @@ bool xemu_settings_load_gamepad_mapping(const char *guid,
     GamepadMappings *new_mappings = static_cast<GamepadMappings *>(realloc(
         g_config.input.gamepad_mappings, sizeof(GamepadMappings) * new_count));
     if (!new_mappings) {
-        __android_log_print(ANDROID_LOG_ERROR, "hakuX",
+        __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
                             "Failed to allocate gamepad mapping for %s", guid);
         return false;
     }
