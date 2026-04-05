@@ -212,6 +212,17 @@ static bool create_instance(PGRAPHState *pg, Error **errp)
         return false;
     }
 
+    /* Query the highest instance version the loader supports, then clamp to
+     * our maximum (1.3). This lets us run on Vulkan 1.1+ devices without
+     * hard-coding a version that the loader would use to cap device features. */
+    uint32_t instance_version = VK_API_VERSION_1_1;
+    if (vkEnumerateInstanceVersion) {
+        vkEnumerateInstanceVersion(&instance_version);
+    }
+    if (instance_version > VK_API_VERSION_1_3) {
+        instance_version = VK_API_VERSION_1_3;
+    }
+
     VkApplicationInfo app_info = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = "xemu",
@@ -219,7 +230,7 @@ static bool create_instance(PGRAPHState *pg, Error **errp)
             xemu_version_major, xemu_version_minor, xemu_version_patch),
         .pEngineName = "No Engine",
         .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-        .apiVersion = VK_API_VERSION_1_3,
+        .apiVersion = instance_version,
     };
 
     g_autoptr(VkExtensionPropertiesArray) available_extensions =
