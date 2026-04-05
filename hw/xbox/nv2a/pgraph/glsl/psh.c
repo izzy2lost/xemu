@@ -1774,7 +1774,7 @@ void pgraph_glsl_set_psh_uniform_values(PGRAPHState *pg,
             }
         }
         if (locs[PshUniform_texScale] != -1) {
-            values->texScale[0] = 1.0; /* Renderer will override this */
+            values->texScale[i] = 1.0; /* Renderer will override this */
         }
     }
 

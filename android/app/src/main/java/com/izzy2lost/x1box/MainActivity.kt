@@ -101,6 +101,9 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     DebugLog.initialize(this)
+    val rendererPref = getSharedPreferences("x1box_prefs", Context.MODE_PRIVATE)
+      .getString("setting_renderer", "vulkan") ?: "vulkan"
+    nativeSetenv("XEMU_RENDERER", rendererPref)
     OrientationLocker(this, landscapeOnly = true).enable()
     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     val requestedSlot = intent?.getIntExtra(EXTRA_AUTO_LOAD_SNAPSHOT_SLOT, 0) ?: 0

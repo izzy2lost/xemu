@@ -440,9 +440,23 @@ void pgraph_vk_mark_textures_possibly_dirty(NV2AState *d,
 
 static bool check_texture_dirty(NV2AState *d, hwaddr addr, hwaddr size)
 {
+    hwaddr vram_size = memory_region_size(d->vram);
+
+    if (size == 0 || addr >= vram_size) {
+        return false;
+    }
+    if (size > vram_size - addr) {
+        size = vram_size - addr;
+    }
+
     hwaddr end = TARGET_PAGE_ALIGN(addr + size);
     addr &= TARGET_PAGE_MASK;
-    assert(end < memory_region_size(d->vram));
+    if (end > vram_size) {
+        end = vram_size;
+    }
+    if (end <= addr) {
+        return false;
+    }
     return memory_region_test_and_clear_dirty(d->vram, addr, end - addr,
                                               DIRTY_MEMORY_NV2A_TEX);
 }

@@ -76,6 +76,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
+# --- nv2a_vsh_cpu ---
+set(NV2A_VSH_CPU_GIT_REV "1115255708c10c4841b65dcd2223262e7a316598")
+set(nv2a_vsh_cpu_UNIT_TEST OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  nv2a_vsh_cpu
+  GIT_REPOSITORY "https://github.com/xemu-project/nv2a_vsh_cpu.git"
+  GIT_TAG "${NV2A_VSH_CPU_GIT_REV}"
+  GIT_SHALLOW FALSE
+)
+FetchContent_MakeAvailable(nv2a_vsh_cpu)
+
 if(XEMU_ENABLE_VULKAN)
   # --- adrenotools (custom GPU driver loading on Adreno) ---
   FetchContent_Declare(
@@ -630,7 +641,6 @@ list(APPEND XEMU_CORE_SOURCES
   "${REPO_ROOT}/ui/vnc-stubs.c"
   "${REPO_ROOT}/target/i386/kvm/hyperv-stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/kvmclock_stub.c"
-  "${CMAKE_CURRENT_LIST_DIR}/nv2a_vsh_emulator_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/samplerate_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/fast_hash_stub.c"
   "${CMAKE_CURRENT_LIST_DIR}/libintl_stub.c"
@@ -888,6 +898,7 @@ target_compile_options(xemu_core PRIVATE -g1
 )
 
 target_include_directories(xemu_core PRIVATE
+  "${nv2a_vsh_cpu_SOURCE_DIR}/src"
   "${REPO_ROOT}"
   "${REPO_ROOT}/include"
   "${REPO_ROOT}/ui"
@@ -911,6 +922,12 @@ target_include_directories(xemu_core PRIVATE
 )
 
 add_dependencies(xemu_core glib_ep)
+
+target_link_libraries(xemu_core PRIVATE
+  nv2a_vsh_emulator
+  nv2a_vsh_cpu
+  nv2a_vsh_disassembler
+)
 
 if(TARGET SDL2::SDL2)
   target_link_libraries(xemu_core PRIVATE SDL2::SDL2)
