@@ -52,6 +52,7 @@ extern "C" bool runstate_is_running(void);
 extern "C" void xemu_android_pause_emulation(void);
 extern "C" void xemu_android_resume_emulation(void);
 extern "C" void xemu_android_request_exit(void);
+extern "C" void xemu_android_set_display_mode_setting(int mode);
 
 extern "C" bool xemu_android_is_debug_logging_enabled(void)
 {
@@ -872,10 +873,13 @@ static SetupFiles SyncSetupFiles() {
   int displayMode = GetPrefInt(env, activity, "setting_display_mode", -1);
   if (displayMode == 1) {
     ds.aspect_ratio = "4:3";
+    xemu_android_set_display_mode_setting(1);
   } else if (displayMode == 2) {
     ds.aspect_ratio = "16:9";
+    xemu_android_set_display_mode_setting(2);
   } else if (displayMode == 0) {
     ds.aspect_ratio = "fit";
+    xemu_android_set_display_mode_setting(0);
   } else {
     std::string arPref = GetPrefString(env, activity, "aspect_ratio");
     if (!arPref.empty()) ds.aspect_ratio = arPref;
