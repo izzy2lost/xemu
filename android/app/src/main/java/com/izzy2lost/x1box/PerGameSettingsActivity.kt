@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputLayout
+import java.io.File
 
 class PerGameSettingsActivity : AppCompatActivity() {
   companion object {
@@ -17,7 +18,8 @@ class PerGameSettingsActivity : AppCompatActivity() {
 
   private data class SettingOption(
     val value: String?,
-    val labelRes: Int,
+    val labelRes: Int = 0,
+    val label: String? = null,
   )
 
   private data class SettingField(
@@ -27,10 +29,26 @@ class PerGameSettingsActivity : AppCompatActivity() {
     val options: List<SettingOption>,
   )
 
+  private fun optionLabel(option: SettingOption): String =
+    option.label ?: getString(option.labelRes)
+
   private val fieldSelections = linkedMapOf<String, String?>()
 
   private val fields by lazy {
     listOf(
+      SettingField(
+        key = "setting_gpu_driver",
+        inputLayoutId = R.id.input_per_game_gpu_driver,
+        dropdownId = R.id.dropdown_per_game_gpu_driver,
+        options = buildList {
+          add(SettingOption(null, R.string.per_game_settings_use_global))
+          add(SettingOption("system", R.string.settings_gpu_driver_option_system))
+          for (driver in GpuDriverHelper.getAvailableDrivers()) {
+            val zipName = File(driver.path ?: continue).name
+            add(SettingOption(zipName, label = driver.name ?: zipName))
+          }
+        },
+      ),
       SettingField(
         key = "setting_renderer",
         inputLayoutId = R.id.input_per_game_renderer,
@@ -192,6 +210,7 @@ class PerGameSettingsActivity : AppCompatActivity() {
       gameTitle.ifEmpty { relativePath.substringAfterLast('/') }
     findViewById<TextView>(R.id.tv_per_game_settings_game_path).text = relativePath
 
+    GpuDriverHelper.init(this)
     val savedOverrides = PerGameSettingsManager.loadOverrides(this, relativePath)
     bindFields(savedOverrides)
 
@@ -212,7 +231,7 @@ class PerGameSettingsActivity : AppCompatActivity() {
     for (field in fields) {
       val inputLayout = findViewById<TextInputLayout>(field.inputLayoutId)
       val dropdown = findViewById<AutoCompleteTextView>(field.dropdownId)
-      val labels = field.options.map { option -> getString(option.labelRes) }
+      val labels = field.options.map { option -> optionLabel(option) }
 
       dropdown.setAdapter(ArrayAdapter(this, android.R.layout.simple_list_item_1, labels))
       dropdown.setOnItemClickListener { _, _, position, _ ->
@@ -235,14 +254,14 @@ class PerGameSettingsActivity : AppCompatActivity() {
     value: String?,
   ) {
     val option = field.options.firstOrNull { it.value == value } ?: field.options.first()
-    dropdown.setText(getString(option.labelRes), false)
+    dropdown.setText(optionLabel(option), false)
   }
 
   private fun describeGlobalValue(field: SettingField): String {
     val globalValue = readGlobalValue(field.key)
     val matchingOption = field.options.firstOrNull { option -> option.value == globalValue }
       ?: field.options.first()
-    return getString(matchingOption.labelRes)
+    return optionLabel(matchingOption)
   }
 
   private fun readGlobalValue(key: String): String {
@@ -267,6 +286,21 @@ class PerGameSettingsActivity : AppCompatActivity() {
       "setting_skip_boot_anim" -> prefs.getBoolean(key, false).toString()
       "setting_audio_driver" -> prefs.getString(key, "openslES") ?: "openslES"
       "setting_network_enable" -> prefs.getBoolean(key, false).toString()
+      "setting_gpu_driver" -> {
+        if (!GpuDriverHelper.supportsCustomDriverLoading()) {
+          "system"
+        } else {
+          val installedName = GpuDriverHelper.getInstalledDriverName()
+          if (installedName == null) {
+            "system"
+          } else {
+            GpuDriverHelper.getAvailableDrivers()
+              .firstOrNull { it.name == installedName }
+              ?.path?.let { File(it).name }
+              ?: "system"
+          }
+        }
+      }
       else -> ""
     }
   }

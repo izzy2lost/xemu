@@ -70,6 +70,22 @@
             android:textAppearance="@style/TextAppearance.Material3.BodySmall"
             android:textColor="@color/xemu_text_muted" />
 
+          <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/input_per_game_gpu_driver"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="20dp"
+            android:hint="@string/settings_gpu_driver_title">
+
+            <AutoCompleteTextView
+              android:id="@+id/dropdown_per_game_gpu_driver"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:inputType="none" />
+
+          </com.google.android.material.textfield.TextInputLayout>
+
           <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

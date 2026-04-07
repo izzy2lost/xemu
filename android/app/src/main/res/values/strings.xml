@@ -128,6 +128,8 @@
   <string name="settings_gpu_driver_installed">Driver installed successfully. Restart the app to apply.</string>
   <string name="settings_gpu_driver_install_failed">Failed to install driver. The ZIP may be invalid or incompatible.</string>
   <string name="settings_gpu_driver_none_available">No driver ZIPs found. Use \"Install Driver from ZIP\" to add one first.</string>
+  <string name="settings_gpu_driver_option_system">System Driver</string>
+  <string name="settings_gpu_driver_option_custom">Custom Driver</string>
   <string name="settings_display_mode">Aspect Ratio</string>
   <string name="settings_display_mode_stretch">Stretch</string>
   <string name="settings_display_mode_4_3">4:3</string>

@@ -74,17 +74,39 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   private fun initializeGpuDriver() {
     GpuDriverHelper.init(this)
-    if (GpuDriverHelper.supportsCustomDriverLoading()) {
-      val driverLib = GpuDriverHelper.getInstalledDriverLibrary()
-      if (driverLib != null) {
-        android.util.Log.i(TAG, "GPU driver: loading custom driver=$driverLib")
-        GpuDriverHelper.initializeDriver(driverLib)
-      } else {
-        android.util.Log.i(TAG, "GPU driver: no custom driver installed, initializing system driver via adrenotools")
+    if (!GpuDriverHelper.supportsCustomDriverLoading()) {
+      android.util.Log.i(TAG, "GPU driver: custom loading not supported on this device")
+      return
+    }
+    val override = PerGameSettingsManager.getRuntimeOverride(this, "setting_gpu_driver")
+    when {
+      override == null -> {
+        // No per-game override — global behavior
+        val driverLib = GpuDriverHelper.getInstalledDriverLibrary()
+        if (driverLib != null) {
+          android.util.Log.i(TAG, "GPU driver: loading custom driver=$driverLib")
+          GpuDriverHelper.initializeDriver(driverLib)
+        } else {
+          android.util.Log.i(TAG, "GPU driver: no custom driver installed, initializing system driver via adrenotools")
+          GpuDriverHelper.initializeDriver()
+        }
+      }
+      override == "system" -> {
+        android.util.Log.i(TAG, "GPU driver: per-game override → system driver")
         GpuDriverHelper.initializeDriver()
       }
-    } else {
-      android.util.Log.i(TAG, "GPU driver: custom loading not supported on this device")
+      else -> {
+        // ZIP basename of a specific driver in storage dir
+        val zipFile = java.io.File(GpuDriverHelper.driverStorageDir, override)
+        if (zipFile.exists() && GpuDriverHelper.installDriver(zipFile)) {
+          val libName = GpuDriverHelper.getInstalledDriverLibrary()
+          android.util.Log.i(TAG, "GPU driver: per-game override → $override (lib=$libName)")
+          GpuDriverHelper.initializeDriver(libName)
+        } else {
+          android.util.Log.w(TAG, "GPU driver: per-game $override not found or install failed, falling back to system")
+          GpuDriverHelper.initializeDriver()
+        }
+      }
     }
   }
 
