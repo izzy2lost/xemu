@@ -192,7 +192,6 @@ typedef struct PGRAPHState {
     uint32_t vsh_program_data_gen;
     bool vsh_program_cache_valid[NV2A_MAX_TRANSFORM_PROGRAM_LENGTH];
     Nv2aVshProgram vsh_program_cache[NV2A_MAX_TRANSFORM_PROGRAM_LENGTH];
-    uint32_t vsh_last_v0_hash[NV2A_MAX_TRANSFORM_PROGRAM_LENGTH];
 
     uint32_t vsh_constants[NV2A_VERTEXSHADER_CONSTANTS][4];
     bool vsh_constants_dirty[NV2A_VERTEXSHADER_CONSTANTS];

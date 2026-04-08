@@ -4033,17 +4033,7 @@ DEF_METHOD(NV097, LAUNCH_TRANSFORM_PROGRAM)
                 NV2A_MAX_TRANSFORM_PROGRAM_LENGTH - program_start);
         assert(result == NV2AVPR_SUCCESS);
         pg->vsh_program_cache_valid[program_start] = true;
-        pg->vsh_last_v0_hash[program_start] = 0;
     }
-
-    /* Skip execution if v0 (input register) hasn't changed — output is deterministic */
-    const uint32_t *v0 = pg->vertex_state_shader_v0;
-    uint32_t v0_hash = v0[0] ^ v0[1] ^ v0[2] ^ v0[3];
-    if (v0_hash == 0) v0_hash = 1; /* distinguish from uninitialised zero */
-    if (v0_hash == pg->vsh_last_v0_hash[program_start]) {
-        return;
-    }
-    pg->vsh_last_v0_hash[program_start] = v0_hash;
 
     Nv2aVshCPUXVSSExecutionState state_linkage;
     Nv2aVshExecutionState state = nv2a_vsh_emu_initialize_xss_execution_state(
