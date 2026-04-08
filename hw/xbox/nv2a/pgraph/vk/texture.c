@@ -72,6 +72,57 @@ typedef struct TextureLayout {
     TextureLayer layers[6];
 } TextureLayout;
 
+static bool pgraph_vk_texture_range_valid(NV2AState *d,
+                                          hwaddr vram_offset,
+                                          size_t length)
+{
+    hwaddr vram_size = memory_region_size(d->vram);
+
+    if (length == 0 || vram_offset >= vram_size) {
+        return false;
+    }
+
+    return length <= (vram_size - vram_offset);
+}
+
+static void pgraph_vk_log_invalid_texture_range(NV2AState *d,
+                                                int unit,
+                                                const char *range_name,
+                                                const TextureShape *shape,
+                                                hwaddr vram_offset,
+                                                size_t length)
+{
+    hwaddr vram_size = memory_region_size(d->vram);
+
+    NV2A_XPRINTF(true,
+                 "Skipping %s for stage %d: offset=0x%" HWADDR_PRIx
+                 " length=0x%zx vram=0x%" HWADDR_PRIx
+                 " dim=%u fmt=0x%X levels=%u border=%d cubemap=%d\n",
+                 range_name, unit, vram_offset, length, vram_size,
+                 shape->dimensionality, shape->color_format, shape->levels,
+                 shape->border, shape->cubemap);
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_WARN, "hakuX",
+                        "Skipping %s for stage %d: offset=0x%" HWADDR_PRIx
+                        " length=0x%zx vram=0x%" HWADDR_PRIx
+                        " dim=%u fmt=0x%X levels=%u border=%d cubemap=%d",
+                        range_name, unit, vram_offset, length, vram_size,
+                        shape->dimensionality, shape->color_format,
+                        shape->levels, shape->border, shape->cubemap);
+#endif
+}
+
+static void pgraph_vk_bind_invalid_texture(PGRAPHVkState *r, int texture_idx)
+{
+    r->tex_binding_cache[texture_idx].key_hash = 0;
+    r->tex_binding_cache[texture_idx].binding = NULL;
+    r->texture_bindings[texture_idx] = &r->dummy_texture;
+    r->tex_surface_direct[texture_idx] = false;
+    r->tex_surface_direct_views[texture_idx] = VK_NULL_HANDLE;
+    r->tex_surface_direct_layout[texture_idx] =
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
 // FIXME: Move to common
 static enum S3TC_DECOMPRESS_FORMAT kelvin_format_to_s3tc_format(int color_format)
 {
@@ -1277,6 +1328,28 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     bool possibly_dirty_checked = false;
     bool surface_to_texture = false;
     r->tex_surface_direct[texture_idx] = false;
+
+    if (!pgraph_vk_texture_range_valid(d, texture_vram_offset,
+                                       texture_length)) {
+        pgraph_vk_log_invalid_texture_range(d, texture_idx, "texture",
+                                            &state, texture_vram_offset,
+                                            texture_length);
+        pgraph_vk_bind_invalid_texture(r, texture_idx);
+        NV2A_VK_DGROUP_END();
+        return;
+    }
+
+    if (is_indexed &&
+        !pgraph_vk_texture_range_valid(d, texture_palette_vram_offset,
+                                       texture_palette_data_size)) {
+        pgraph_vk_log_invalid_texture_range(d, texture_idx, "palette",
+                                            &state,
+                                            texture_palette_vram_offset,
+                                            texture_palette_data_size);
+        pgraph_vk_bind_invalid_texture(r, texture_idx);
+        NV2A_VK_DGROUP_END();
+        return;
+    }
 
     SurfaceBinding *surface = pgraph_vk_surface_get(d, texture_vram_offset);
     if (surface && state.levels == 1) {
