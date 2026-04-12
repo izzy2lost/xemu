@@ -370,6 +370,19 @@ static std::string GetPrefString(JNIEnv* env, jobject activity, const char* key)
       prefsClass, "getString", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
   if (!getString) return {};
 
+  std::string runtimeKeyStr = std::string("runtime_override_") + key;
+  jstring jRuntimeKey = env->NewStringUTF(runtimeKeyStr.c_str());
+  jstring runtimeValue = static_cast<jstring>(
+      env->CallObjectMethod(prefs, getString, jRuntimeKey, nullptr));
+  env->DeleteLocalRef(jRuntimeKey);
+  if (!HasException(env, "SharedPreferences.getString") && runtimeValue) {
+    std::string override = JStringToString(env, runtimeValue);
+    env->DeleteLocalRef(runtimeValue);
+    if (!override.empty()) {
+      return override;
+    }
+  }
+
   jstring jkey = env->NewStringUTF(key);
   jstring jdefault = nullptr;
   jstring value = static_cast<jstring>(env->CallObjectMethod(prefs, getString, jkey, jdefault));
@@ -392,6 +405,27 @@ static int GetPrefInt(JNIEnv* env, jobject activity, const char* key, int defaul
   if (HasException(env, "getSharedPreferences") || !prefs) return defaultValue;
 
   jclass prefsClass = env->GetObjectClass(prefs);
+  jmethodID getString = env->GetMethodID(
+      prefsClass, "getString", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+  if (getString) {
+    std::string runtimeKeyStr = std::string("runtime_override_") + key;
+    jstring jRuntimeKey = env->NewStringUTF(runtimeKeyStr.c_str());
+    jstring runtimeValue = static_cast<jstring>(
+        env->CallObjectMethod(prefs, getString, jRuntimeKey, nullptr));
+    env->DeleteLocalRef(jRuntimeKey);
+    if (!HasException(env, "SharedPreferences.getString") && runtimeValue) {
+      std::string override = JStringToString(env, runtimeValue);
+      env->DeleteLocalRef(runtimeValue);
+      if (!override.empty()) {
+        char* end = nullptr;
+        long parsed = strtol(override.c_str(), &end, 10);
+        if (end && *end == '\0') {
+          return static_cast<int>(parsed);
+        }
+      }
+    }
+  }
+
   jmethodID getInt = env->GetMethodID(prefsClass, "getInt", "(Ljava/lang/String;I)I");
   if (!getInt) return defaultValue;
 
@@ -670,9 +704,10 @@ static bool WriteConfigToml(const std::string& config_path,
   toml::table* net = EnsureTable(tbl, "net");
   if (net) {
     net->insert_or_assign("enable", ds.net_enable);
+    net->insert_or_assign("backend", "nat");
   }
 
-  sys->insert_or_assign("mem_limit", ds.mem_limit_mib);
+  sys->insert_or_assign("mem_limit", ds.mem_limit_mib == 128 ? "128" : "64");
 
   files->insert_or_assign("bootrom_path", mcpx);
   files->insert_or_assign("flashrom_path", flash);

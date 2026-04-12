@@ -9,13 +9,19 @@
 #include <toml++/toml.h>
 #include <android/log.h>
 
+#include <cctype>
 #include <sstream>
 #include <string>
+#include <type_traits>
+#include <vector>
 
 #include "xemu-settings.h"
 
 struct config g_config;
+using NetNatForwardPort =
+    std::remove_pointer_t<decltype(g_config.net.nat.forward_ports)>;
 
+static std::string settings_path_storage;
 static const char *settings_path;
 static const char *filename = "xemu.toml";
 static std::string error_msg;
@@ -143,6 +149,83 @@ static bool parse_filtering(const std::string &value, CONFIG_DISPLAY_FILTERING *
     return false;
 }
 
+static std::string to_lower_ascii(std::string value)
+{
+    for (char &c : value) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return value;
+}
+
+static bool parse_network_backend(toml::node_view<toml::node> node,
+                                  CONFIG_NET_BACKEND *out)
+{
+    if (!out) {
+        return false;
+    }
+
+    if (auto backend = node.value<std::string>()) {
+        std::string normalized = to_lower_ascii(*backend);
+        if (normalized == "nat" || normalized == "user") {
+            *out = CONFIG_NET_BACKEND_NAT;
+            return true;
+        }
+        if (normalized == "udp" || normalized == "udp_tunnel" ||
+            normalized == "udp tunnel") {
+            *out = CONFIG_NET_BACKEND_UDP;
+            return true;
+        }
+        if (normalized == "pcap" || normalized == "bridge" ||
+            normalized == "bridged adapter") {
+            *out = CONFIG_NET_BACKEND_PCAP;
+            return true;
+        }
+        return false;
+    }
+
+    if (auto backend = node.value<int64_t>()) {
+        if (*backend < 0 || *backend >= CONFIG_NET_BACKEND__COUNT) {
+            return false;
+        }
+        *out = static_cast<CONFIG_NET_BACKEND>(*backend);
+        return true;
+    }
+
+    return false;
+}
+
+static bool parse_nat_forward_protocol(
+    toml::node_view<const toml::node> node,
+    CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL *out)
+{
+    if (!out) {
+        return false;
+    }
+
+    if (auto protocol = node.value<std::string>()) {
+        std::string normalized = to_lower_ascii(*protocol);
+        if (normalized == "tcp") {
+            *out = CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL_TCP;
+            return true;
+        }
+        if (normalized == "udp") {
+            *out = CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL_UDP;
+            return true;
+        }
+        return false;
+    }
+
+    if (auto protocol = node.value<int64_t>()) {
+        if (*protocol < 0 || *protocol >= CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL__COUNT) {
+            return false;
+        }
+        *out = static_cast<CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL>(*protocol);
+        return true;
+    }
+
+    return false;
+}
+
 const char *xemu_settings_get_error_message(void)
 {
     return error_msg.empty() ? NULL : error_msg.c_str();
@@ -150,10 +233,13 @@ const char *xemu_settings_get_error_message(void)
 
 void xemu_settings_set_path(const char *path)
 {
-    if (settings_path) {
-        return;
+    if (path && *path) {
+        settings_path_storage = path;
+        settings_path = settings_path_storage.c_str();
+    } else {
+        settings_path_storage.clear();
+        settings_path = NULL;
     }
-    settings_path = path;
 }
 
 const char *xemu_settings_get_base_path(void)
@@ -181,7 +267,8 @@ const char *xemu_settings_get_path(void)
     }
 
     const char *base = xemu_settings_get_base_path();
-    settings_path = g_strdup_printf("%s%s", base, filename);
+    settings_path_storage = std::string(base ? base : "") + filename;
+    settings_path = settings_path_storage.c_str();
     return settings_path;
 }
 
@@ -228,12 +315,19 @@ bool xemu_settings_load(void)
         auto audio_vp = audio["vp"];
         auto perf = tbl["perf"];
         auto android_cfg = tbl["android"];
+        auto net = tbl["net"];
+        auto net_udp = net["udp"];
+        auto net_pcap = net["pcap"];
+        auto net_nat = net["nat"];
         auto sys = tbl["sys"];
         auto sys_files = sys["files"];
 
         // General settings
         if (auto show_welcome = general["show_welcome"].value<bool>()) {
             g_config.general.show_welcome = *show_welcome;
+        }
+        if (auto skip_boot_anim = general["skip_boot_anim"].value<bool>()) {
+            g_config.general.skip_boot_anim = *skip_boot_anim;
         }
 
         // Display settings - default to Vulkan, allow OpenGL via config
@@ -330,6 +424,69 @@ bool xemu_settings_load(void)
             g_config.audio.volume_limit = volume;
         }
 
+        if (auto net_enable = net["enable"].value<bool>()) {
+            g_config.net.enable = *net_enable;
+        }
+        {
+            CONFIG_NET_BACKEND parsed_backend;
+            if (parse_network_backend(net["backend"], &parsed_backend)) {
+                g_config.net.backend = parsed_backend;
+            }
+        }
+        if (auto bind_addr = net_udp["bind_addr"].value<std::string>()) {
+            xemu_settings_set_string(&g_config.net.udp.bind_addr, bind_addr->c_str());
+        }
+        if (auto remote_addr = net_udp["remote_addr"].value<std::string>()) {
+            xemu_settings_set_string(&g_config.net.udp.remote_addr, remote_addr->c_str());
+        }
+        if (auto netif = net_pcap["netif"].value<std::string>()) {
+            xemu_settings_set_string(&g_config.net.pcap.netif, netif->c_str());
+        }
+        if (auto forward_ports = net_nat["forward_ports"].as_array()) {
+            std::vector<NetNatForwardPort> parsed_ports;
+            parsed_ports.reserve(forward_ports->size());
+
+            for (const auto &entry : *forward_ports) {
+                const toml::table *table = entry.as_table();
+                if (!table) {
+                    continue;
+                }
+
+                auto host = (*table)["host"].value<int64_t>();
+                auto guest = (*table)["guest"].value<int64_t>();
+                if (!host || !guest || *host < 1 || *host > 65535 ||
+                    *guest < 1 || *guest > 65535) {
+                    continue;
+                }
+
+                CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL protocol =
+                    CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL_TCP;
+                parse_nat_forward_protocol((*table)["protocol"], &protocol);
+
+                NetNatForwardPort port = {};
+                port.host = static_cast<int>(*host);
+                port.guest = static_cast<int>(*guest);
+                port.protocol = protocol;
+                parsed_ports.push_back(port);
+            }
+
+            free(g_config.net.nat.forward_ports);
+            g_config.net.nat.forward_ports = NULL;
+            g_config.net.nat.forward_ports_count = 0;
+
+            if (!parsed_ports.empty()) {
+                auto *ports = static_cast<NetNatForwardPort *>(calloc(
+                    parsed_ports.size(), sizeof(NetNatForwardPort)));
+                if (ports) {
+                    memcpy(ports, parsed_ports.data(),
+                           parsed_ports.size() * sizeof(NetNatForwardPort));
+                    g_config.net.nat.forward_ports = ports;
+                    g_config.net.nat.forward_ports_count =
+                        static_cast<unsigned int>(parsed_ports.size());
+                }
+            }
+        }
+
         // Android-specific settings
         if (auto force_cpu_blit = android_cfg["force_cpu_blit"].value<bool>()) {
             setenv("XEMU_ANDROID_FORCE_CPU_BLIT", *force_cpu_blit ? "1" : "0", 1);
@@ -399,6 +556,35 @@ bool xemu_settings_load(void)
             snprintf(fifo_str, sizeof(fifo_str), "%d", fifo_frames);
             setenv("XEMU_ANDROID_AUDIO_FIFO_FRAMES", fifo_str, 1);
         }
+        if (auto audio_driver = android_cfg["audio_driver"].value<std::string>()) {
+            std::string driver = *audio_driver;
+            std::string normalized = to_lower_ascii(driver);
+            if (normalized == "audiotrack" || normalized == "android") {
+                setenv("XEMU_ANDROID_AUDIO_DRIVER", "opensles", 1);
+            } else if (normalized == "opensl" || normalized == "opensles") {
+                setenv("XEMU_ANDROID_AUDIO_DRIVER", "opensles", 1);
+            } else if (normalized == "aaudio") {
+                setenv("XEMU_ANDROID_AUDIO_DRIVER", "aaudio", 1);
+            } else if (normalized == "dummy" || normalized == "disabled") {
+                setenv("XEMU_ANDROID_AUDIO_DRIVER", "dummy", 1);
+            } else if (!driver.empty()) {
+                setenv("XEMU_ANDROID_AUDIO_DRIVER", driver.c_str(), 1);
+            }
+        }
+
+        if (auto mem_limit = sys["mem_limit"].value<std::string>()) {
+            if (*mem_limit == "128") {
+                g_config.sys.mem_limit = CONFIG_SYS_MEM_LIMIT_128;
+            } else {
+                g_config.sys.mem_limit = CONFIG_SYS_MEM_LIMIT_64;
+            }
+        } else if (auto mem_limit = sys["mem_limit"].value<int64_t>()) {
+            if ((int)*mem_limit == 128) {
+                g_config.sys.mem_limit = CONFIG_SYS_MEM_LIMIT_128;
+            } else {
+                g_config.sys.mem_limit = CONFIG_SYS_MEM_LIMIT_64;
+            }
+        }
 
         // System file paths
         if (auto bootrom = sys_files["bootrom_path"].value<std::string>()) {
@@ -433,14 +619,58 @@ void xemu_settings_save(void)
 void add_net_nat_forward_ports(int host, int guest,
                                CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL protocol)
 {
-    (void)host;
-    (void)guest;
-    (void)protocol;
+    if (host < 1 || host > 65535 || guest < 1 || guest > 65535 ||
+        protocol < 0 || protocol >= CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL__COUNT) {
+        return;
+    }
+
+    unsigned int old_count = g_config.net.nat.forward_ports_count;
+    unsigned int new_count = old_count + 1;
+    auto *ports = static_cast<NetNatForwardPort *>(realloc(
+        g_config.net.nat.forward_ports, sizeof(NetNatForwardPort) * new_count));
+    if (!ports) {
+        return;
+    }
+
+    ports[old_count].host = host;
+    ports[old_count].guest = guest;
+    ports[old_count].protocol = protocol;
+    g_config.net.nat.forward_ports = ports;
+    g_config.net.nat.forward_ports_count = new_count;
 }
 
 void remove_net_nat_forward_ports(unsigned int index)
 {
-    (void)index;
+    if (index >= g_config.net.nat.forward_ports_count) {
+        return;
+    }
+
+    unsigned int old_count = g_config.net.nat.forward_ports_count;
+    unsigned int new_count = old_count - 1;
+    auto *ports =
+        static_cast<NetNatForwardPort *>(g_config.net.nat.forward_ports);
+
+    if (index + 1 < old_count) {
+        memmove(&ports[index], &ports[index + 1],
+                (old_count - index - 1) * sizeof(NetNatForwardPort));
+    }
+
+    if (new_count == 0) {
+        free(ports);
+        g_config.net.nat.forward_ports = NULL;
+        g_config.net.nat.forward_ports_count = 0;
+        return;
+    }
+
+    auto *resized = static_cast<NetNatForwardPort *>(realloc(
+        ports, sizeof(NetNatForwardPort) * new_count));
+    if (!resized) {
+        g_config.net.nat.forward_ports_count = new_count;
+        return;
+    }
+
+    g_config.net.nat.forward_ports = resized;
+    g_config.net.nat.forward_ports_count = new_count;
 }
 
 bool xemu_settings_load_gamepad_mapping(const char *guid,

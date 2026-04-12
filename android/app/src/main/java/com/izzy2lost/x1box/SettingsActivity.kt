@@ -617,27 +617,28 @@ class SettingsActivity : AppCompatActivity() {
       return
     }
 
-    prefs.edit()
-      .putBoolean("setting_skip_boot_anim", true)
-      .putBoolean("draw_reorder", true)
-      .putBoolean("draw_merge", true)
-      .putBoolean("async_compile", false)
-      .putBoolean("setting_cache_shaders", true)
-      .putBoolean("setting_hard_fpu", true)
-      .putBoolean("setting_vsync", false)
-      .putBoolean("setting_use_dsp", false)
-      .putBoolean("setting_hrtf", false)
-      .putBoolean("setting_network_enable", false)
-      .putString("setting_renderer", "vulkan")
-      .putString("setting_filtering", "nearest")
-      .putString("setting_tcg_thread", "multi")
-      .putString("setting_audio_driver", "openslES")
-      .putInt("setting_surface_scale", 1)
-      .putInt("setting_display_mode", 0)
-      .putInt("setting_system_memory_mib", 64)
-      .putInt("tcg_tb_size", 256)
-      .putBoolean(PREF_SETTINGS_MIGRATED_V2, true)
-      .apply()
+    val editor = prefs.edit()
+
+    if (!prefs.contains("setting_skip_boot_anim")) editor.putBoolean("setting_skip_boot_anim", true)
+    if (!prefs.contains("draw_reorder")) editor.putBoolean("draw_reorder", true)
+    if (!prefs.contains("draw_merge")) editor.putBoolean("draw_merge", true)
+    if (!prefs.contains("async_compile")) editor.putBoolean("async_compile", false)
+    if (!prefs.contains("setting_cache_shaders")) editor.putBoolean("setting_cache_shaders", true)
+    if (!prefs.contains("setting_hard_fpu")) editor.putBoolean("setting_hard_fpu", true)
+    if (!prefs.contains("setting_vsync")) editor.putBoolean("setting_vsync", false)
+    if (!prefs.contains("setting_use_dsp")) editor.putBoolean("setting_use_dsp", false)
+    if (!prefs.contains("setting_hrtf")) editor.putBoolean("setting_hrtf", false)
+    if (!prefs.contains("setting_network_enable")) editor.putBoolean("setting_network_enable", false)
+    if (!prefs.contains("setting_renderer")) editor.putString("setting_renderer", "vulkan")
+    if (!prefs.contains("setting_filtering")) editor.putString("setting_filtering", "nearest")
+    if (!prefs.contains("setting_tcg_thread")) editor.putString("setting_tcg_thread", "multi")
+    if (!prefs.contains("setting_audio_driver")) editor.putString("setting_audio_driver", "openslES")
+    if (!prefs.contains("setting_surface_scale")) editor.putInt("setting_surface_scale", 1)
+    if (!prefs.contains("setting_display_mode")) editor.putInt("setting_display_mode", 0)
+    if (!prefs.contains("setting_system_memory_mib")) editor.putInt("setting_system_memory_mib", 64)
+    if (!prefs.contains("tcg_tb_size")) editor.putInt("tcg_tb_size", 256)
+
+    editor.putBoolean(PREF_SETTINGS_MIGRATED_V2, true).apply()
   }
 
   private fun installDriverFromUri(uri: Uri) {
@@ -936,7 +937,6 @@ class SettingsActivity : AppCompatActivity() {
             if (normalizedName != null && importedNames.add(normalizedName)) {
               val target = resolveManagedImportTarget(normalizedName)
               copyZipEntryToFile(zip, target)
-              applyImportedManagedFile(normalizedName, target, editor)
             }
           }
           zip.closeEntry()
@@ -948,6 +948,9 @@ class SettingsActivity : AppCompatActivity() {
       throw IOException(getString(R.string.settings_import_emulator_files_zip_empty))
     }
 
+    for (fileName in sortManagedFileNames(importedNames)) {
+      applyImportedManagedFile(fileName, resolveManagedImportTarget(fileName), editor)
+    }
     editor.apply()
     return sortManagedFileNames(importedNames)
   }
@@ -973,7 +976,9 @@ class SettingsActivity : AppCompatActivity() {
     for ((fileName, uri) in selectedFiles) {
       val target = resolveManagedImportTarget(fileName)
       copyUriToFile(uri, target)
-      applyImportedManagedFile(fileName, target, editor)
+    }
+    for (fileName in sortManagedFileNames(selectedFiles.keys)) {
+      applyImportedManagedFile(fileName, resolveManagedImportTarget(fileName), editor)
     }
     editor.apply()
 
@@ -1071,6 +1076,25 @@ class SettingsActivity : AppCompatActivity() {
     editor: android.content.SharedPreferences.Editor,
   ) {
     val sections = parseSimpleTomlSections(file)
+
+    resolveImportedConfigFileReference(
+      rawPath = parseTomlString(sections, "sys.files", "bootrom_path"),
+      managedFileName = "mcpx.bin",
+    )?.let { resolved ->
+      editor.putString("mcpxPath", resolved.absolutePath).remove("mcpxUri")
+    }
+    resolveImportedConfigFileReference(
+      rawPath = parseTomlString(sections, "sys.files", "flashrom_path"),
+      managedFileName = "flash.bin",
+    )?.let { resolved ->
+      editor.putString("flashPath", resolved.absolutePath).remove("flashUri")
+    }
+    resolveImportedConfigFileReference(
+      rawPath = parseTomlString(sections, "sys.files", "hdd_path"),
+      managedFileName = "hdd.img",
+    )?.let { resolved ->
+      editor.putString("hddPath", resolved.absolutePath).remove("hddUri")
+    }
 
     parseTomlBoolean(sections, "general", "skip_boot_anim")
       ?.let { editor.putBoolean("setting_skip_boot_anim", it) }
@@ -1215,6 +1239,27 @@ class SettingsActivity : AppCompatActivity() {
       "aaudio" -> "aaudio"
       "dummy", "disabled" -> "dummy"
       else -> null
+    }
+  }
+
+  private fun resolveImportedConfigFileReference(
+    rawPath: String?,
+    managedFileName: String,
+  ): File? {
+    val trimmed = rawPath?.trim().orEmpty()
+    if (trimmed.isEmpty()) {
+      return null
+    }
+
+    val directFile = File(trimmed)
+    if (directFile.isFile) {
+      return directFile
+    }
+
+    return if (directFile.name.lowercase(Locale.US) == managedFileName.lowercase(Locale.US)) {
+      resolveManagedImportTarget(managedFileName).takeIf { it.isFile }
+    } else {
+      null
     }
   }
 
