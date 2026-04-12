@@ -25,7 +25,10 @@
 
 #define CONFIG_TCG 1
 #define CONFIG_SOFTMMU 1
-#define CONFIG_MEMBARRIER 1
+/*
+ * Android app seccomp policy blocks the membarrier syscall on arm64, so keep
+ * the QEMU fallback path enabled here instead of compiling in global barriers.
+ */
 
 #define CONFIG_IOVEC 1
 
