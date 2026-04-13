@@ -52,6 +52,12 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     private const val TAG = "MainActivity"
   }
 
+  private enum class PendingCloseAction {
+    NONE,
+    RETURN_TO_LIBRARY,
+    QUIT_APP,
+  }
+
   private data class SnapshotSlotPreview(
     val slot: Int,
     val slotLabel: String,
@@ -72,6 +78,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var resumeEmulationOnMenuDismiss = false
   private var startupSnapshotSlot: Int? = null
   private var startupSnapshotLoadScheduled = false
+  private var pendingCloseAction = PendingCloseAction.NONE
   private lateinit var swipeUpGestureRecognizer: SwipeUpGestureRecognizer
   private var fpsTextView: TextView? = null
   private val fpsHandler = Handler(Looper.getMainLooper())
@@ -476,6 +483,9 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   override fun onDestroy() {
     DebugLog.i(TAG) { "onDestroy()" }
+    val shouldReturnToLibrary =
+      pendingCloseAction == PendingCloseAction.RETURN_TO_LIBRARY && !isChangingConfigurations
+    pendingCloseAction = PendingCloseAction.NONE
     fpsHandler.removeCallbacks(fpsRunnable)
     swipeUpGestureRecognizer.reset()
     resumeEmulationOnMenuDismiss = false
@@ -491,6 +501,12 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     
     inputManager?.unregisterInputDeviceListener(this)
     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    if (shouldReturnToLibrary) {
+      val intent = Intent(this, GameLibraryActivity::class.java).apply {
+        addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+      }
+      startActivity(intent)
+    }
     super.onDestroy()
   }
 
@@ -1049,17 +1065,22 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   private fun exitToGameLibrary() {
-    nativeExitEmulation()
-    val intent = Intent(this, GameLibraryActivity::class.java).apply {
-      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-    }
-    startActivity(intent)
-    finish()
+    requestClose(PendingCloseAction.RETURN_TO_LIBRARY)
   }
 
   private fun quitApp() {
+    requestClose(PendingCloseAction.QUIT_APP)
+  }
+
+  private fun requestClose(action: PendingCloseAction) {
+    if (pendingCloseAction != PendingCloseAction.NONE) {
+      return
+    }
+    pendingCloseAction = action
     nativeExitEmulation()
-    finishAffinity()
+    if (action == PendingCloseAction.QUIT_APP) {
+      moveTaskToBack(true)
+    }
   }
 
   override fun getLibraries(): Array<String> = arrayOf(

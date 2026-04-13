@@ -1165,6 +1165,7 @@ typedef struct PGRAPHVkState {
     QTAILQ_HEAD(, SurfaceBinding) invalid_surfaces;
     QTAILQ_HEAD(, SurfaceBinding) shelved_surfaces;
     GHashTable *surface_addr_map;
+    bool surfaces_finalizing;
     uint32_t surface_list_gen;
     uint32_t surface_draw_gen; /* Incremented when any surface becomes draw_dirty */
     SurfaceBinding *color_binding, *zeta_binding;

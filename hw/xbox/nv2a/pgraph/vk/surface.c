@@ -36,6 +36,29 @@ static void destroy_surface_image(PGRAPHVkState *r, SurfaceBinding *surface);
 static void download_surface_deferred(NV2AState *d, SurfaceBinding *surface);
 /* Forward declaration — defined below, also called from texture.c */
 
+static bool g_surface_addr_map_missing_logged;
+
+static GHashTable *surface_addr_map_get(PGRAPHVkState *r, const char *op,
+                                        bool allow_recreate)
+{
+    if (r->surface_addr_map) {
+        return r->surface_addr_map;
+    }
+
+    if (!g_surface_addr_map_missing_logged) {
+        VK_LOG_ERROR("surface_addr_map missing during %s%s",
+                     op, r->surfaces_finalizing ? " (finalizing)" : "");
+        g_surface_addr_map_missing_logged = true;
+    }
+
+    if (!allow_recreate || r->surfaces_finalizing) {
+        return NULL;
+    }
+
+    r->surface_addr_map = g_hash_table_new(g_direct_hash, g_direct_equal);
+    return r->surface_addr_map;
+}
+
 void pgraph_vk_set_surface_scale_factor(NV2AState *d, unsigned int scale)
 {
     g_config.display.quality.surface_scale = scale < 1 ? 1 : scale;
@@ -1493,6 +1516,7 @@ static void unbind_surface(NV2AState *d, bool color)
 static void invalidate_surface(NV2AState *d, SurfaceBinding *surface)
 {
     PGRAPHVkState *r = d->pgraph.vk_renderer_state;
+    GHashTable *surface_addr_map;
 
     trace_nv2a_pgraph_surface_invalidated(surface->vram_addr);
 
@@ -1514,8 +1538,11 @@ static void invalidate_surface(NV2AState *d, SurfaceBinding *surface)
 
     unregister_cpu_access_callback(d, surface);
 
-    g_hash_table_remove(r->surface_addr_map,
-                        (gpointer)(uintptr_t)surface->vram_addr);
+    surface_addr_map = surface_addr_map_get(r, "invalidate_surface", false);
+    if (surface_addr_map) {
+        g_hash_table_remove(surface_addr_map,
+                            (gpointer)(uintptr_t)surface->vram_addr);
+    }
     QTAILQ_REMOVE(&r->surfaces, surface, entry);
     QTAILQ_INSERT_HEAD(&r->invalid_surfaces, surface, entry);
     r->surface_list_gen++;
@@ -1533,6 +1560,7 @@ static void invalidate_surface(NV2AState *d, SurfaceBinding *surface)
 static void shelve_surface(NV2AState *d, SurfaceBinding *surface)
 {
     PGRAPHVkState *r = d->pgraph.vk_renderer_state;
+    GHashTable *surface_addr_map;
 
     if (surface == r->color_binding) {
         unbind_surface(d, true);
@@ -1543,8 +1571,11 @@ static void shelve_surface(NV2AState *d, SurfaceBinding *surface)
 
     unregister_cpu_access_callback(d, surface);
 
-    g_hash_table_remove(r->surface_addr_map,
-                        (gpointer)(uintptr_t)surface->vram_addr);
+    surface_addr_map = surface_addr_map_get(r, "shelve_surface", false);
+    if (surface_addr_map) {
+        g_hash_table_remove(surface_addr_map,
+                            (gpointer)(uintptr_t)surface->vram_addr);
+    }
     QTAILQ_REMOVE(&r->surfaces, surface, entry);
     QTAILQ_INSERT_HEAD(&r->shelved_surfaces, surface, entry);
     r->surface_list_gen++;
@@ -1618,14 +1649,18 @@ static void invalidate_overlapping_surfaces(NV2AState *d,
 static void surface_put(NV2AState *d, SurfaceBinding *surface)
 {
     PGRAPHVkState *r = d->pgraph.vk_renderer_state;
+    GHashTable *surface_addr_map;
 
     assert(pgraph_vk_surface_get(d, surface->vram_addr) == NULL);
 
     invalidate_overlapping_surfaces(d, surface);
     register_cpu_access_callback(d, surface);
 
-    g_hash_table_insert(r->surface_addr_map,
-                        (gpointer)(uintptr_t)surface->vram_addr, surface);
+    surface_addr_map = surface_addr_map_get(r, "surface_put", true);
+    if (surface_addr_map) {
+        g_hash_table_insert(surface_addr_map,
+                            (gpointer)(uintptr_t)surface->vram_addr, surface);
+    }
     QTAILQ_INSERT_HEAD(&r->surfaces, surface, entry);
     r->surface_list_gen++;
 }
@@ -1633,7 +1668,13 @@ static void surface_put(NV2AState *d, SurfaceBinding *surface)
 SurfaceBinding *pgraph_vk_surface_get(NV2AState *d, hwaddr addr)
 {
     PGRAPHVkState *r = d->pgraph.vk_renderer_state;
-    return g_hash_table_lookup(r->surface_addr_map, (gpointer)(uintptr_t)addr);
+    GHashTable *surface_addr_map = surface_addr_map_get(r, "surface_get", false);
+
+    if (!surface_addr_map) {
+        return NULL;
+    }
+
+    return g_hash_table_lookup(surface_addr_map, (gpointer)(uintptr_t)addr);
 }
 
 SurfaceBinding *pgraph_vk_surface_get_within(NV2AState *d, hwaddr addr)
@@ -3036,6 +3077,7 @@ void pgraph_vk_init_surfaces(PGRAPHState *pg)
     QTAILQ_INIT(&r->invalid_surfaces);
     QTAILQ_INIT(&r->shelved_surfaces);
     r->surface_addr_map = g_hash_table_new(g_direct_hash, g_direct_equal);
+    r->surfaces_finalizing = false;
     r->surface_list_gen = 0;
 
     r->downloads_pending = false;
@@ -3053,6 +3095,7 @@ void pgraph_vk_finalize_surfaces(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
     pgraph_vk_surface_flush(container_of(pg, NV2AState, pgraph));
+    r->surfaces_finalizing = true;
     if (r->surface_addr_map) {
         g_hash_table_destroy(r->surface_addr_map);
         r->surface_addr_map = NULL;
