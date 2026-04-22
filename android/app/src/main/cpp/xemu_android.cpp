@@ -606,6 +606,7 @@ struct DisplaySettings {
   bool skip_boot_anim = true;
   bool fp_jit = true;
   bool use_dsp = false;
+  bool use_dsp_jit = true;
   bool hrtf = false;
   bool cache_shaders = true;
   bool net_enable = false;
@@ -683,6 +684,7 @@ static bool WriteConfigToml(const std::string& config_path,
   }
   audio->insert_or_assign("hrtf", ds.hrtf);
   audio->insert_or_assign("use_dsp", ds.use_dsp);
+  audio->insert_or_assign("use_dsp_jit", ds.use_dsp_jit);
   if (!audio->contains("volume_limit")) {
     audio->insert_or_assign("volume_limit", 1.0);
   }
@@ -881,6 +883,7 @@ static SetupFiles SyncSetupFiles() {
   ds.validation_layers = GetPrefBool(env, activity, "validation_layers", false);
   ds.skip_boot_anim = GetPrefBool(env, activity, "setting_skip_boot_anim", true);
   ds.use_dsp = GetPrefBool(env, activity, "setting_use_dsp", false);
+  ds.use_dsp_jit = GetPrefBool(env, activity, "setting_use_dsp_jit", true);
   ds.hrtf = GetPrefBool(env, activity, "setting_hrtf",
                          GetPrefBool(env, activity, "hrtf", false));
   ds.cache_shaders = GetPrefBool(env, activity, "setting_cache_shaders", true);

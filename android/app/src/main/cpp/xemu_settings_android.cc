@@ -94,6 +94,7 @@ static void xemu_settings_apply_defaults(void)
 
     g_config.audio.vp.num_workers = 0;
     g_config.audio.use_dsp = false;
+    g_config.audio.use_dsp_jit = true;
     g_config.audio.hrtf = true;
     g_config.audio.volume_limit = 1.0;
 
@@ -410,6 +411,9 @@ bool xemu_settings_load(void)
         }
         if (auto use_dsp = audio["use_dsp"].value<bool>()) {
             g_config.audio.use_dsp = *use_dsp;
+        }
+        if (auto use_dsp_jit = audio["use_dsp_jit"].value<bool>()) {
+            g_config.audio.use_dsp_jit = *use_dsp_jit;
         }
         if (auto hrtf = audio["hrtf"].value<bool>()) {
             g_config.audio.hrtf = *hrtf;

@@ -10,14 +10,18 @@ runs an event loop. The xemu core is not yet wired.
 - Build Tools 36.1.0
 - NDK r29+ (configured to 29.0.14206865 in Gradle)
 - CMake 3.30.3
+- Meson
+- Ninja
 - JDK 21
-- Rust toolchain (`cargo`) for ISO->XISO converter
+- Rust toolchain (`cargo`) for the ISO->XISO converter and DSP JIT backend
   - On Windows, this project uses `stable-x86_64-pc-windows-gnu` (to avoid MSVC `link.exe`)
   - Install once:
     - `rustup toolchain install stable-x86_64-pc-windows-gnu`
     - `rustup target add aarch64-linux-android --toolchain stable-x86_64-pc-windows-gnu`
 
-If Rust is not available, configure CMake with `-DXEMU_ENABLE_XISO_CONVERTER=OFF`.
+Rust is now required for Android builds because the DSP JIT backend is built
+from source. `-DXEMU_ENABLE_XISO_CONVERTER=OFF` only disables the ISO->XISO
+converter; it does not remove the DSP JIT Rust dependency.
 
 ## Build
 From this directory:

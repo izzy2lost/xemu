@@ -249,6 +249,7 @@ struct config {
             int num_workers;
         } vp;
         bool use_dsp;
+        bool use_dsp_jit;
         bool hrtf;
         double volume_limit;
     } audio;

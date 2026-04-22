@@ -40,6 +40,7 @@ class SettingsActivity : AppCompatActivity() {
     private const val PREF_HRTF = "setting_hrtf"
     private const val PREF_HRTF_DEFAULT_OFF_MIGRATED = "setting_hrtf_default_off_migrated_v1"
     private const val PREF_SETTINGS_MIGRATED_V2 = "settings_migrated_v2"
+    private const val PREF_SETTINGS_MIGRATED_V3 = "settings_migrated_v3"
     private const val PREF_INSIGNIA_SETUP_URI = "setting_insignia_setup_assistant_uri"
     private const val PREF_INSIGNIA_SETUP_NAME = "setting_insignia_setup_assistant_name"
     private const val INSIGNIA_SIGN_UP_URL = "https://insignia.live/"
@@ -291,6 +292,7 @@ class SettingsActivity : AppCompatActivity() {
     DebugLog.initialize(this)
     applyHrtfDefaultOffMigration()
     applySettingsMigrationV2()
+    applySettingsMigrationV3()
     setContentView(R.layout.activity_settings)
     EdgeToEdgeHelper.enable(this)
     EdgeToEdgeHelper.applySystemBarPadding(findViewById(R.id.settings_scroll))
@@ -307,6 +309,7 @@ class SettingsActivity : AppCompatActivity() {
     val btnMulti          = findViewById<MaterialButton>(R.id.btn_thread_multi)
     val btnSingle         = findViewById<MaterialButton>(R.id.btn_thread_single)
     val switchDsp         = findViewById<MaterialSwitch>(R.id.switch_use_dsp)
+    val switchDspJit      = findViewById<MaterialSwitch>(R.id.switch_use_dsp_jit)
     val switchHrtf        = findViewById<MaterialSwitch>(R.id.switch_hrtf)
     val switchShaders     = findViewById<MaterialSwitch>(R.id.switch_cache_shaders)
     val switchFpu         = findViewById<MaterialSwitch>(R.id.switch_hard_fpu)
@@ -425,6 +428,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     switchDsp.isChecked     = prefs.getBoolean("setting_use_dsp", false)
+    switchDspJit.isChecked  = prefs.getBoolean("setting_use_dsp_jit", true)
     switchHrtf.isChecked    = prefs.getBoolean(PREF_HRTF, false)
     switchShaders.isChecked = prefs.getBoolean("setting_cache_shaders", true)
     switchFpu.isChecked     = prefs.getBoolean("setting_hard_fpu", true)
@@ -522,6 +526,7 @@ class SettingsActivity : AppCompatActivity() {
         .putString(OrientationPreferences.PREF_GAME_ORIENTATION, selectedGameOrientation.prefValue)
         .putString("setting_tcg_thread", selectedThread)
         .putBoolean("setting_use_dsp", switchDsp.isChecked)
+        .putBoolean("setting_use_dsp_jit", switchDspJit.isChecked)
         .putBoolean(PREF_HRTF, switchHrtf.isChecked)
         .putBoolean("setting_cache_shaders", switchShaders.isChecked)
         .putBoolean("setting_hard_fpu", switchFpu.isChecked)
@@ -639,6 +644,17 @@ class SettingsActivity : AppCompatActivity() {
     if (!prefs.contains("tcg_tb_size")) editor.putInt("tcg_tb_size", 256)
 
     editor.putBoolean(PREF_SETTINGS_MIGRATED_V2, true).apply()
+  }
+
+  private fun applySettingsMigrationV3() {
+    if (prefs.getBoolean(PREF_SETTINGS_MIGRATED_V3, false)) {
+      return
+    }
+
+    prefs.edit()
+      .putBoolean("setting_use_dsp_jit", prefs.getBoolean("setting_use_dsp_jit", true))
+      .putBoolean(PREF_SETTINGS_MIGRATED_V3, true)
+      .apply()
   }
 
   private fun installDriverFromUri(uri: Uri) {
@@ -1113,6 +1129,8 @@ class SettingsActivity : AppCompatActivity() {
       ?.let { editor.putInt("setting_surface_scale", it) }
     parseTomlBoolean(sections, "audio", "use_dsp")
       ?.let { editor.putBoolean("setting_use_dsp", it) }
+    parseTomlBoolean(sections, "audio", "use_dsp_jit")
+      ?.let { editor.putBoolean("setting_use_dsp_jit", it) }
     parseTomlBoolean(sections, "audio", "hrtf")
       ?.let { editor.putBoolean(PREF_HRTF, it) }
     parseTomlBoolean(sections, "perf", "cache_shaders")

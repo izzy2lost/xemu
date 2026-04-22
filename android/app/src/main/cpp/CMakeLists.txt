@@ -343,6 +343,109 @@ if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
   add_dependencies(xiso_converter_rs xiso_converter_rs_build)
 endif()
 
+if(NOT CARGO_EXECUTABLE)
+  message(FATAL_ERROR "cargo not found in PATH; required to build DSP56300 JIT backend for Android")
+endif()
+
+set(DSP56300_GIT_REV "v0.1.1")
+FetchContent_Declare(
+  dsp56300_src
+  GIT_REPOSITORY "https://github.com/mborgerson/dsp56300.git"
+  GIT_TAG "${DSP56300_GIT_REV}"
+  GIT_SHALLOW TRUE
+)
+FetchContent_GetProperties(dsp56300_src)
+if(NOT dsp56300_src_POPULATED)
+  if(POLICY CMP0169)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0169 OLD)
+  endif()
+  FetchContent_Populate(dsp56300_src)
+  if(POLICY CMP0169)
+    cmake_policy(POP)
+  endif()
+endif()
+
+if(CMAKE_HOST_WIN32)
+  if(NOT DEFINED DSP56300_RUSTUP_TOOLCHAIN OR
+     DSP56300_RUSTUP_TOOLCHAIN STREQUAL "")
+    set(DSP56300_RUSTUP_TOOLCHAIN
+      "stable-x86_64-unknown-linux-gnu"
+      CACHE STRING "Rustup host toolchain for DSP56300 Android build"
+      FORCE
+    )
+  else()
+    set(DSP56300_RUSTUP_TOOLCHAIN
+      "${DSP56300_RUSTUP_TOOLCHAIN}"
+      CACHE STRING "Rustup host toolchain for DSP56300 Android build"
+    )
+  endif()
+else()
+  set(DSP56300_RUSTUP_TOOLCHAIN
+    ""
+    CACHE STRING "Rustup host toolchain for DSP56300 Android build"
+  )
+endif()
+
+set(DSP56300_CARGO_ENV_VARS "")
+if(DEFINED DSP56300_RUSTUP_TOOLCHAIN AND
+   NOT DSP56300_RUSTUP_TOOLCHAIN STREQUAL "")
+  list(APPEND DSP56300_CARGO_ENV_VARS
+    "RUSTUP_TOOLCHAIN=${DSP56300_RUSTUP_TOOLCHAIN}"
+  )
+endif()
+
+set(DSP56300_RS_DIR "${dsp56300_src_SOURCE_DIR}/crates/emu-ffi")
+set(DSP56300_RS_TARGET "aarch64-linux-android")
+set(DSP56300_RS_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-target-dsp56300")
+set(DSP56300_RS_LIB
+  "${DSP56300_RS_TARGET_DIR}/${DSP56300_RS_TARGET}/release/libdsp56300_emu_ffi.a"
+)
+set(DSP56300_RS_INCLUDE_DIR "${DSP56300_RS_DIR}/include")
+set(DSP56300_RS_LINKER
+  "${NDK_TOOLCHAIN}/aarch64-linux-android${ANDROID_API}-clang"
+)
+set(DSP56300_RS_AR "${NDK_TOOLCHAIN}/llvm-ar")
+
+file(GLOB_RECURSE DSP56300_RS_SOURCES CONFIGURE_DEPENDS
+  "${dsp56300_src_SOURCE_DIR}/Cargo.toml"
+  "${dsp56300_src_SOURCE_DIR}/Cargo.lock"
+  "${dsp56300_src_SOURCE_DIR}/crates/*/Cargo.toml"
+  "${dsp56300_src_SOURCE_DIR}/crates/*/build.rs"
+  "${dsp56300_src_SOURCE_DIR}/crates/*/cbindgen.toml"
+  "${dsp56300_src_SOURCE_DIR}/crates/*/include/*.h"
+  "${dsp56300_src_SOURCE_DIR}/crates/*/src/*.rs"
+)
+
+add_custom_command(
+  OUTPUT "${DSP56300_RS_LIB}"
+  COMMAND "${CMAKE_COMMAND}" -E env
+    "CARGO_TARGET_DIR=${DSP56300_RS_TARGET_DIR}"
+    "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${DSP56300_RS_LINKER}"
+    "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=${DSP56300_RS_AR}"
+    "CC_aarch64_linux_android=${DSP56300_RS_LINKER}"
+    "AR_aarch64_linux_android=${DSP56300_RS_AR}"
+    ${DSP56300_CARGO_ENV_VARS}
+    "${CARGO_EXECUTABLE}" build
+    --manifest-path "${DSP56300_RS_DIR}/Cargo.toml"
+    --release
+    --target "${DSP56300_RS_TARGET}"
+  DEPENDS ${DSP56300_RS_SOURCES}
+  WORKING_DIRECTORY "${DSP56300_RS_DIR}"
+  COMMENT "Building Rust DSP56300 JIT backend"
+  VERBATIM
+)
+
+add_custom_target(dsp56300_emu_ffi_build ALL
+  DEPENDS "${DSP56300_RS_LIB}"
+)
+
+add_library(dsp56300_emu_ffi STATIC IMPORTED GLOBAL)
+set_target_properties(dsp56300_emu_ffi PROPERTIES
+  IMPORTED_LOCATION "${DSP56300_RS_LIB}"
+)
+add_dependencies(dsp56300_emu_ffi dsp56300_emu_ffi_build)
+
 set(GLIB_VERSION "2.66.8")
 set(GLIB_SOURCE_DIR "${CMAKE_BINARY_DIR}/glib-src")
 set(GLIB_BUILD_DIR "${CMAKE_BINARY_DIR}/glib-build-android")
@@ -980,6 +1083,7 @@ target_include_directories(xemu_core PRIVATE
   "${REPO_ROOT}/ui"
   "${REPO_ROOT}/ui/thirdparty/stb_image"
   "${REPO_ROOT}/linux-headers"
+  "${REPO_ROOT}/hw/xbox/mcpx/apu/dsp"
   "${REPO_ROOT}/hw/xbox/nv2a/pgraph/thirdparty/gloffscreen"
   "${REPO_ROOT}/target/i386"
   "${REPO_ROOT}/hw/xbox/nv2a/pgraph/thirdparty/gloffscreen"
@@ -991,6 +1095,7 @@ target_include_directories(xemu_core PRIVATE
   "${GLIB_INSTALL_DIR}/include/glib-2.0"
   "${GLIB_INSTALL_DIR}/lib/glib-2.0/include"
   "${tomlplusplus_SOURCE_DIR}/include"
+  "${DSP56300_RS_INCLUDE_DIR}"
   "${libslirp_SOURCE_DIR}/src"
   "${LIBSLIRP_GENERATED_DIR}"
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:${glslang_SOURCE_DIR}>
@@ -1002,6 +1107,7 @@ target_include_directories(xemu_core PRIVATE
 add_dependencies(xemu_core glib_ep)
 
 target_link_libraries(xemu_core PRIVATE
+  dsp56300_emu_ffi
   nv2a_vsh_emulator
   nv2a_vsh_cpu
   nv2a_vsh_disassembler
@@ -1096,6 +1202,7 @@ target_include_directories(xemu PRIVATE
   "${GLIB_INSTALL_DIR}/include/glib-2.0"
   "${GLIB_INSTALL_DIR}/lib/glib-2.0/include"
   "${tomlplusplus_SOURCE_DIR}/include"
+  "${DSP56300_RS_INCLUDE_DIR}"
   $<$<BOOL:${XEMU_ENABLE_VULKAN}>:${volk_SOURCE_DIR}>
 )
 
@@ -1128,6 +1235,7 @@ endif()
 
 target_link_libraries(xemu PRIVATE
   xemu_core
+  dsp56300_emu_ffi
   slirp_static
   iconv_stub
   glib-2.0

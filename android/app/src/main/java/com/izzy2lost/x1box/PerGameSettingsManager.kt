@@ -22,6 +22,7 @@ object PerGameSettingsManager {
     "setting_system_memory_mib",
     "setting_tcg_thread",
     "setting_use_dsp",
+    "setting_use_dsp_jit",
     "setting_hrtf",
     "setting_cache_shaders",
     "setting_hard_fpu",

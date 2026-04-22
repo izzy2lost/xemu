@@ -503,6 +503,14 @@
             android:textColor="@color/xemu_text_muted" />
 
           <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switch_use_dsp_jit"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_use_dsp_jit"
+            android:textColor="@color/xemu_text_muted" />
+
+          <com.google.android.material.materialswitch.MaterialSwitch
             android:id="@+id/switch_hrtf"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

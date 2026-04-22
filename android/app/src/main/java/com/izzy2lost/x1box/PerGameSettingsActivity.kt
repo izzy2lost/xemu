@@ -180,6 +180,12 @@ class PerGameSettingsActivity : AppCompatActivity() {
         options = booleanOptions(),
       ),
       SettingField(
+        key = "setting_use_dsp_jit",
+        inputLayoutId = R.id.input_per_game_use_dsp_jit,
+        dropdownId = R.id.dropdown_per_game_use_dsp_jit,
+        options = booleanOptions(),
+      ),
+      SettingField(
         key = "setting_hrtf",
         inputLayoutId = R.id.input_per_game_hrtf,
         dropdownId = R.id.dropdown_per_game_hrtf,
@@ -298,6 +304,7 @@ class PerGameSettingsActivity : AppCompatActivity() {
       "setting_system_memory_mib" -> prefs.getInt(key, 64).toString()
       "setting_tcg_thread" -> prefs.getString(key, "multi") ?: "multi"
       "setting_use_dsp" -> prefs.getBoolean(key, false).toString()
+      "setting_use_dsp_jit" -> prefs.getBoolean(key, true).toString()
       "setting_hrtf" -> prefs.getBoolean(key, false).toString()
       "setting_cache_shaders" -> prefs.getBoolean(key, true).toString()
       "setting_hard_fpu" -> prefs.getBoolean(key, true).toString()

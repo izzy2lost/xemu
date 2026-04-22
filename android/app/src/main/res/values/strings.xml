@@ -164,6 +164,7 @@
 
   <string name="settings_section_audio">Audio</string>
   <string name="settings_use_dsp">Real-time DSP Processing</string>
+  <string name="settings_use_dsp_jit">DSP JIT Engine</string>
   <string name="settings_hrtf">HRTF (3D Audio)</string>
   <string name="settings_audio_driver">Audio Backend</string>
   <string name="settings_audio_driver_opensles">OpenSL ES</string>
