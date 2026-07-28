@@ -136,7 +136,7 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
         output,
         "void emit_vertex(int index, mat4 pz) {\n"
         "  gl_Position = gl_in[index].gl_Position;\n");
-    if (!opts.gles) {
+    if (!opts.gles && (!opts.vulkan || opts.geom_point_size)) {
         mstring_append(output,
             "  gl_PointSize = gl_in[index].gl_PointSize;\n");
     }

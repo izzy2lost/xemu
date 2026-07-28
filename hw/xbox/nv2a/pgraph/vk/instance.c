@@ -24,6 +24,7 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <sys/system_properties.h>
 #include <vulkan/vulkan_android.h>
 #endif
 #include <volk.h>
@@ -42,11 +43,46 @@ static char const *const validation_layers[] = {
     "VK_LAYER_KHRONOS_validation",
 };
 
+#ifdef __ANDROID__
+static bool android_debug_property_enabled(const char *name)
+{
+    char value[PROP_VALUE_MAX] = {};
+    if (__system_property_get(name, value) <= 0) {
+        return false;
+    }
+    return !strcmp(value, "1") || !g_ascii_strcasecmp(value, "true") ||
+           !g_ascii_strcasecmp(value, "yes") ||
+           !g_ascii_strcasecmp(value, "on");
+}
+#endif
+
+static bool validation_requested(void)
+{
+    bool requested = g_config.display.vulkan.validation_layers;
+
+#ifdef __ANDROID__
+    requested |=
+        android_debug_property_enabled("debug.xemu.vk.validation");
+#endif
+
+    return requested;
+}
+
+static bool gpu_validation_requested(void)
+{
+#ifdef __ANDROID__
+    return android_debug_property_enabled("debug.xemu.vk.gpu_validation");
+#else
+    return false;
+#endif
+}
+
 static char const *const required_device_extensions[] = {
 #ifdef WIN32
     VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
     VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
 #elif defined(__ANDROID__)
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME,
     VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
     VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
@@ -166,6 +202,18 @@ add_optional_instance_extension_names(PGRAPHState *pg,
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
 
+#ifdef __ANDROID__
+    extern bool xemu_android_vulkan_direct_present_enabled(void);
+    if (xemu_android_vulkan_direct_present_enabled()) {
+        add_extension_if_available(available_extensions,
+                                   enabled_extension_names,
+                                   VK_KHR_SURFACE_EXTENSION_NAME);
+        add_extension_if_available(available_extensions,
+                                   enabled_extension_names,
+                                   VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
+    }
+#endif
+
     r->debug_utils_extension_enabled =
         g_config.display.vulkan.validation_layers &&
         add_extension_if_available(available_extensions, enabled_extension_names,
@@ -239,6 +287,7 @@ static bool create_instance(PGRAPHState *pg, Error **errp)
     g_autoptr(StringArray) enabled_extension_names =
         g_array_new(FALSE, FALSE, sizeof(char *));
 
+    enable_validation = validation_requested();
     add_optional_instance_extension_names(pg, available_extensions,
                                           enabled_extension_names);
 
@@ -261,11 +310,9 @@ static bool create_instance(PGRAPHState *pg, Error **errp)
         .ppEnabledExtensionNames = enabled_instance_extension_names,
     };
 
-    enable_validation = g_config.display.vulkan.validation_layers;
-
 #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "xemu-vk-validation",
-                        "validation_layers config = %d", enable_validation ? 1 : 0);
+                        "validation requested = %d", enable_validation ? 1 : 0);
     {
         uint32_t n = 0;
         vkEnumerateInstanceLayerProperties(&n, NULL);
@@ -289,14 +336,24 @@ static bool create_instance(PGRAPHState *pg, Error **errp)
     }
 #endif
 
-    VkValidationFeatureEnableEXT enables[] = {
+    VkValidationFeatureEnableEXT enables[3] = {
         VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT,
-        // VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT,
     };
+    uint32_t enable_count = 1;
+    if (gpu_validation_requested()) {
+        enables[enable_count++] =
+            VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT;
+        enables[enable_count++] =
+            VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_RESERVE_BINDING_SLOT_EXT;
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_WARN, "xemu-vk-validation",
+                            "GPU-assisted validation requested");
+#endif
+    }
 
     VkValidationFeaturesEXT validationFeatures = {
         .sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-        .enabledValidationFeatureCount = ARRAY_SIZE(enables),
+        .enabledValidationFeatureCount = enable_count,
         .pEnabledValidationFeatures = enables,
     };
 
@@ -786,6 +843,9 @@ static bool create_logical_device(PGRAPHState *pg, Error **errp)
         F(fillModeNonSolid, false),
         F(geometryShader, true),
         F(occlusionQueryPrecise, false),
+#ifdef __ANDROID__
+        F(robustBufferAccess, false),
+#endif
         F(samplerAnisotropy, false),
         F(shaderClipDistance, false),
         F(shaderTessellationAndGeometryPointSize, false),
@@ -984,11 +1044,6 @@ static bool create_logical_device(PGRAPHState *pg, Error **errp)
         .pNext = next_struct,
     };
 
-    if (enable_validation) {
-        device_create_info.enabledLayerCount = ARRAY_SIZE(validation_layers);
-        device_create_info.ppEnabledLayerNames = validation_layers;
-    }
-
 #ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "hakuX",
                         "vk init stage: vkCreateDevice");
@@ -1148,6 +1203,18 @@ void pgraph_vk_init_instance(PGRAPHState *pg, Error **errp)
         goto done;
     }
 #ifdef __ANDROID__
+    if (pg->vk_renderer_state->display.direct_present) {
+        extern bool xemu_android_vulkan_create_surface(
+            VkInstance instance, VkSurfaceKHR *surface);
+        if (!xemu_android_vulkan_create_surface(
+                pg->vk_renderer_state->instance,
+                &pg->vk_renderer_state->present_surface)) {
+            error_setg(errp, "Failed to create Android Vulkan surface");
+            goto done;
+        }
+    }
+#endif
+#ifdef __ANDROID__
     __android_log_print(ANDROID_LOG_INFO, "hakuX",
                         "vk init stage: select_physical_device");
 #endif
@@ -1211,6 +1278,12 @@ void pgraph_vk_finalize_instance(PGRAPHState *pg)
     if (r->debug_messenger != VK_NULL_HANDLE) {
         vkDestroyDebugUtilsMessengerEXT(r->instance, r->debug_messenger, NULL);
         r->debug_messenger = VK_NULL_HANDLE;
+    }
+
+    if (r->present_surface != VK_NULL_HANDLE &&
+        r->instance != VK_NULL_HANDLE) {
+        vkDestroySurfaceKHR(r->instance, r->present_surface, NULL);
+        r->present_surface = VK_NULL_HANDLE;
     }
 
     if (r->instance != VK_NULL_HANDLE) {

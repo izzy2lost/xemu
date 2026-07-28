@@ -19,11 +19,38 @@ val hasReleaseKeystore = hasKeystoreProperties &&
     !keystoreProperties.getProperty(it).isNullOrBlank()
   }
 
+val localPropertiesFile = rootProject.file("local.properties")
+val localProperties = Properties()
+if (localPropertiesFile.exists()) {
+  localPropertiesFile.inputStream().use { localProperties.load(it) }
+}
+
+val localCmakeArguments = listOf(
+  "xemu.cargoExecutable" to "CARGO_EXECUTABLE",
+  "xemu.mesonExecutable" to "MESON_EXECUTABLE",
+  "xemu.cargoHome" to "XEMU_CARGO_HOME",
+  "xemu.rustupHome" to "XEMU_RUSTUP_HOME",
+  "xemu.hostRustLinker" to "XEMU_HOST_RUST_LINKER",
+).mapNotNull { (propertyName, cmakeName) ->
+  localProperties.getProperty(propertyName)
+    ?.trim()
+    ?.takeIf(String::isNotEmpty)
+    ?.let { "-D$cmakeName=$it" }
+}
+
+/*
+ * Diagnostic profile builds may package Khronos' validation layer without
+ * checking the large binary into the source tree. The directory must contain
+ * ABI subdirectories, for example arm64-v8a/libVkLayer_khronos_validation.so.
+ */
+val vulkanValidationJniLibs =
+  providers.environmentVariable("XEMU_VVL_JNILIBS").orNull
+
 android {
   namespace = "com.izzy2lost.x1box"
   compileSdk = 36
   buildToolsVersion = "36.1.0"
-  ndkVersion = "29.0.14206865"
+  ndkVersion = "30.0.15729638"
 
   defaultConfig {
     applicationId = "com.izzy2lost.x1box"
@@ -48,7 +75,7 @@ android {
           "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -g0 -fvisibility=hidden",
           "-DCMAKE_C_FLAGS_RELEASE=-O2 -g0 -fvisibility=hidden",
           "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -g0 -fvisibility=hidden",
-        )
+        ) + localCmakeArguments
         cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
       }
     }
@@ -77,7 +104,8 @@ android {
           arguments += listOf("-DXEMU_ENABLE_LTO=ON")
         }
       }
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(
         getDefaultProguardFile("proguard-android-optimize.txt"),
         "proguard-rules.pro"
@@ -86,12 +114,26 @@ android {
         signingConfig = signingConfigs.getByName("release")
       }
     }
+    create("profile") {
+      initWith(getByName("release"))
+      isDebuggable = false
+      isProfileable = true
+      signingConfig = signingConfigs.getByName("debug")
+      matchingFallbacks += listOf("release")
+      ndk {
+        debugSymbolLevel = "FULL"
+      }
+    }
+  }
+
+  if (!vulkanValidationJniLibs.isNullOrBlank()) {
+    sourceSets.getByName("profile").jniLibs.srcDir(vulkanValidationJniLibs)
   }
 
   externalNativeBuild {
     cmake {
       path = file("src/main/cpp/CMakeLists.txt")
-      version = "3.30.3"
+      version = "3.22.1"
     }
   }
 

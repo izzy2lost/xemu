@@ -143,6 +143,10 @@ static void early_context_init(void)
 {
 #if HAVE_EXTERNAL_MEMORY
 #ifdef __ANDROID__
+    extern bool xemu_android_vulkan_direct_present_enabled(void);
+    if (xemu_android_vulkan_direct_present_enabled()) {
+        return;
+    }
     /*
      * On Android, only cache EGL share/config on the SDL thread here.
      * Create/bind the offscreen context later on the renderer thread.
@@ -164,11 +168,22 @@ static void pgraph_vk_init(NV2AState *d, Error **errp)
     pg->vk_renderer_state->deferred_downloads_frame = -1;
 
 #if HAVE_EXTERNAL_MEMORY
+#ifdef __ANDROID__
+    extern bool xemu_android_vulkan_direct_present_enabled(void);
+    bool direct_present = xemu_android_vulkan_direct_present_enabled();
+    pg->vk_renderer_state->display.direct_present = direct_present;
+    bool use_external_memory =
+        !direct_present && pgraph_vk_gl_external_memory_available();
+#else
     bool use_external_memory = pgraph_vk_gl_external_memory_available();
+#endif
     if (!use_external_memory) {
 #ifdef __ANDROID__
-        __android_log_print(ANDROID_LOG_WARN, "hakuX",
-                            "pgraph_vk_init: external memory interop unavailable, using download fallback");
+        __android_log_print(
+            direct_present ? ANDROID_LOG_INFO : ANDROID_LOG_WARN, "hakuX",
+            direct_present
+                ? "pgraph_vk_init: all-Vulkan native presentation enabled"
+                : "pgraph_vk_init: external memory interop unavailable, using download fallback");
 #endif
     }
 #ifdef __ANDROID__
@@ -1500,6 +1515,16 @@ static int pgraph_vk_get_framebuffer_surface(NV2AState *d)
         }
         return ready->valid ? ready->gl_texture_id : 0;
     }
+#ifdef __ANDROID__
+    if (r->display.direct_present) {
+        qemu_event_reset(&d->pgraph.sync_complete);
+        qatomic_set(&pg->sync_pending, true);
+        pfifo_kick(d);
+        qemu_mutex_unlock(&d->pfifo.lock);
+        qemu_event_wait(&d->pgraph.sync_complete);
+        return 0;
+    }
+#endif
     qemu_mutex_unlock(&d->pfifo.lock);
     pgraph_vk_wait_for_surface_download(surface);
     return 0;
@@ -1564,7 +1589,12 @@ void pgraph_vk_check_memory_budget(PGRAPHState *pg)
     vmaGetHeapBudgets(r->allocator, budgets);
 
 #ifdef __ANDROID__
-    const float budget_threshold = 0.6;
+    /*
+     * Unified-memory Android drivers can report nearly all system RAM as the
+     * Vulkan heap budget, even though the process can lose the device much
+     * earlier under system pressure.
+     */
+    const float budget_threshold = 0.3;
 #else
     const float budget_threshold = 0.8;
 #endif
@@ -1582,5 +1612,6 @@ void pgraph_vk_check_memory_budget(PGRAPHState *pg)
 
     if (near_budget) {
         pgraph_vk_trim_texture_cache(pg);
+        pgraph_vk_surface_image_pool_drain(r);
     }
 }

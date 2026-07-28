@@ -44,7 +44,11 @@
 
 #define HAVE_EXTERNAL_MEMORY 1
 
+#ifdef __ANDROID__
+#define NUM_DISPLAY_IMAGES 8
+#else
 #define NUM_DISPLAY_IMAGES 2
+#endif
 
 #define OPT_DYNAMIC_STATES      1
 #define OPT_DYNAMIC_BLEND       1
@@ -603,6 +607,7 @@ typedef struct RenderCommand {
             VkCommandBuffer aux_command_buffer;
             VkCommandBuffer command_buffer;
             VkFence fence;
+            VkSemaphore aux_draw_semaphore;
             int frame_index;
             bool deferred;
             VkSemaphore chain_semaphore;
@@ -783,8 +788,18 @@ typedef struct PGRAPHVkDisplayState {
     VkSampler sampler;
 
     DisplayImage images[NUM_DISPLAY_IMAGES];
+    uint32_t image_count;
     int render_idx;
     int display_idx;
+    bool direct_present;
+    VkSwapchainKHR swapchain;
+    VkFormat swapchain_format;
+    VkExtent2D swapchain_extent;
+    VkRect2D present_viewport;
+    VkSemaphore image_available[NUM_DISPLAY_IMAGES];
+    VkSemaphore render_finished[NUM_DISPLAY_IMAGES];
+    VkFence present_fences[NUM_DISPLAY_IMAGES];
+    uint32_t present_frame;
 
     struct {
         PvideoState state;
@@ -967,6 +982,7 @@ typedef struct PGRAPHVkState {
     bool is_render_thread_context;
 
     VkInstance instance;
+    VkSurfaceKHR present_surface;
     VkDebugUtilsMessengerEXT debug_messenger;
     int debug_depth;
 
@@ -1008,6 +1024,7 @@ typedef struct PGRAPHVkState {
     VkFence frame_fences[NUM_SUBMIT_FRAMES];
     bool frame_submitted[NUM_SUBMIT_FRAMES];
     bool frame_enqueued[NUM_SUBMIT_FRAMES];
+    VkSemaphore aux_draw_semaphores[NUM_SUBMIT_FRAMES];
     VkSemaphore stall_chain_semaphore;
     bool stall_chain_pending;
     int current_frame;

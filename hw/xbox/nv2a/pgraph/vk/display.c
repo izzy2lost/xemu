@@ -179,6 +179,9 @@ static void destroy_pvideo_image(PGRAPHState *pg)
         d->pvideo.image = VK_NULL_HANDLE;
         d->pvideo.allocation = VK_NULL_HANDLE;
     }
+
+    d->pvideo.width = 0;
+    d->pvideo.height = 0;
 }
 
 static void create_pvideo_image(PGRAPHState *pg, int width, int height)
@@ -186,8 +189,17 @@ static void create_pvideo_image(PGRAPHState *pg, int width, int height)
     PGRAPHVkState *r = pg->vk_renderer_state;
     PGRAPHVkDisplayState *d = &r->display;
 
-    if (d->pvideo.image == VK_NULL_HANDLE || d->pvideo.width != width ||
-        d->pvideo.height != height) {
+    if (d->pvideo.image != VK_NULL_HANDLE && d->pvideo.width == width &&
+        d->pvideo.height == height) {
+        return;
+    }
+
+    if (d->pvideo.image != VK_NULL_HANDLE) {
+        /*
+         * Display command buffers can still sample the old PVIDEO image.
+         * Resolution changes are rare, so wait before replacing its resources.
+         */
+        VK_CHECK(vkQueueWaitIdle(r->queue));
         destroy_pvideo_image(pg);
     }
 
@@ -240,6 +252,9 @@ static void create_pvideo_image(PGRAPHState *pg, int width, int height)
     };
     VK_CHECK(vkCreateSampler(r->device, &sampler_create_info, NULL,
                              &d->pvideo.sampler));
+
+    d->pvideo.width = width;
+    d->pvideo.height = height;
 }
 
 static void upload_pvideo_image(PGRAPHState *pg, PvideoState state)
@@ -296,7 +311,7 @@ static void upload_pvideo_image(PGRAPHState *pg, PvideoState state)
                          &host_barrier, 0, NULL);
 
     pgraph_vk_transition_image_layout(
-        pg, cmd, disp->pvideo.image, VK_FORMAT_R8_UNORM,
+        pg, cmd, disp->pvideo.image, VK_FORMAT_R8G8B8A8_UNORM,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     VkBufferImageCopy region = {
@@ -329,6 +344,9 @@ static const char *display_frag_glsl =
     "layout(push_constant, std430) uniform PushConstants {\n"
     "    float line_offset;\n"
     "    vec2 display_size;\n"
+    "    vec2 output_offset;\n"
+    "    vec2 output_size;\n"
+    "    bool flip_y;\n"
     "    bool pvideo_enable;\n"
     "    vec2 pvideo_in_pos;\n"
     "    vec4 pvideo_pos;\n"
@@ -340,13 +358,16 @@ static const char *display_frag_glsl =
     "layout(location = 0) out vec4 out_Color;\n"
     "void main()\n"
     "{\n"
-    "    vec2 tex_coord = gl_FragCoord.xy/display_size;\n"
+    "    vec2 display_coord = (gl_FragCoord.xy - output_offset) / output_size * display_size;\n"
+    "    vec2 tex_coord = display_coord/display_size;\n"
     "    float rel = display_size.y/textureSize(tex, 0).y/line_offset;\n"
     "    tex_coord.y = 1 + rel*(tex_coord.y - 1);\n"
-    "    tex_coord.y = 1 - tex_coord.y;\n"
+    "    if (flip_y) {\n"
+    "        tex_coord.y = 1 - tex_coord.y;\n"
+    "    }\n"
     "    out_Color.rgba = texture(tex, tex_coord);\n"
     "    if (pvideo_enable) {\n"
-    "        vec2 screen_coord = vec2(gl_FragCoord.x, display_size.y - gl_FragCoord.y) * pvideo_scale.z;\n"
+    "        vec2 screen_coord = vec2(display_coord.x, display_size.y - display_coord.y) * pvideo_scale.z;\n"
     "        vec4 output_region = vec4(pvideo_pos.xy, pvideo_pos.xy + pvideo_pos.zw);\n"
     "        bvec4 clip = bvec4(lessThan(screen_coord, output_region.xy),\n"
     "                           greaterThan(screen_coord, output_region.zw));\n"
@@ -357,7 +378,7 @@ static const char *display_frag_glsl =
     "        }\n"
     "    }\n"
     "    if (blend_factor > 0.0) {\n"
-    "        vec2 prev_coord = gl_FragCoord.xy / display_size;\n"
+    "        vec2 prev_coord = display_coord / display_size;\n"
     "        vec4 prev = texture(prev_tex, prev_coord);\n"
     "        out_Color.rgba = mix(out_Color.rgba, prev, blend_factor);\n"
     "    }\n"
@@ -452,7 +473,7 @@ static void create_render_pass(PGRAPHState *pg)
     attachment = (VkAttachmentDescription){
         .format = VK_FORMAT_R8G8B8A8_UNORM,
         .samples = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -728,14 +749,53 @@ static void destroy_current_display_image(PGRAPHState *pg)
     PGRAPHVkState *r = pg->vk_renderer_state;
     PGRAPHVkDisplayState *d = &r->display;
 
+#ifdef __ANDROID__
+    if (d->direct_present && d->swapchain != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(r->device);
+        for (uint32_t i = 0; i < d->image_count; i++) {
+            DisplayImage *img = &d->images[i];
+            if (img->framebuffer != VK_NULL_HANDLE) {
+                vkDestroyFramebuffer(r->device, img->framebuffer, NULL);
+            }
+            if (img->cmd_buffer != VK_NULL_HANDLE) {
+                vkFreeCommandBuffers(r->device, r->command_pool, 1,
+                                     &img->cmd_buffer);
+            }
+            if (img->image_view != VK_NULL_HANDLE) {
+                vkDestroyImageView(r->device, img->image_view, NULL);
+            }
+            memset(img, 0, sizeof(*img));
+        }
+        for (uint32_t i = 0; i < NUM_DISPLAY_IMAGES; i++) {
+            if (d->image_available[i] != VK_NULL_HANDLE) {
+                vkDestroySemaphore(r->device, d->image_available[i], NULL);
+                d->image_available[i] = VK_NULL_HANDLE;
+            }
+            if (d->render_finished[i] != VK_NULL_HANDLE) {
+                vkDestroySemaphore(r->device, d->render_finished[i], NULL);
+                d->render_finished[i] = VK_NULL_HANDLE;
+            }
+            if (d->present_fences[i] != VK_NULL_HANDLE) {
+                vkDestroyFence(r->device, d->present_fences[i], NULL);
+                d->present_fences[i] = VK_NULL_HANDLE;
+            }
+        }
+        vkDestroySwapchainKHR(r->device, d->swapchain, NULL);
+        d->swapchain = VK_NULL_HANDLE;
+        d->image_count = 0;
+        d->present_frame = 0;
+    } else
+#endif
+    {
 #if HAVE_EXTERNAL_MEMORY
-    if (d->use_external_memory) {
-        pgraph_vk_gl_make_context_current();
-    }
+        if (d->use_external_memory) {
+            pgraph_vk_gl_make_context_current();
+        }
 #endif
 
-    for (int i = 0; i < NUM_DISPLAY_IMAGES; i++) {
-        destroy_single_display_image(pg, &d->images[i]);
+        for (int i = 0; i < NUM_DISPLAY_IMAGES; i++) {
+            destroy_single_display_image(pg, &d->images[i]);
+        }
     }
 
     if (d->blend_prev_view) {
@@ -752,6 +812,7 @@ static void destroy_current_display_image(PGRAPHState *pg)
 
     d->render_idx = 0;
     d->display_idx = 0;
+    d->image_count = 0;
     d->draw_time = 0;
 }
 
@@ -1151,6 +1212,252 @@ static bool create_single_display_image_resources(PGRAPHState *pg,
     return true;
 }
 
+#ifdef __ANDROID__
+static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+    PGRAPHVkDisplayState *d = &r->display;
+    VkSurfaceCapabilitiesKHR caps;
+    VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+        r->physical_device, r->present_surface, &caps);
+    if (result != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX-vk",
+                            "present: surface capabilities failed (%d)",
+                            result);
+        return false;
+    }
+
+    uint32_t format_count = 0;
+    VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
+        r->physical_device, r->present_surface, &format_count, NULL));
+    if (format_count == 0) {
+        return false;
+    }
+    g_autofree VkSurfaceFormatKHR *formats =
+        g_new(VkSurfaceFormatKHR, format_count);
+    VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
+        r->physical_device, r->present_surface, &format_count, formats));
+
+    VkSurfaceFormatKHR selected = formats[0];
+    bool found_rgba = false;
+    for (uint32_t i = 0; i < format_count; i++) {
+        if (formats[i].format == VK_FORMAT_R8G8B8A8_UNORM) {
+            selected = formats[i];
+            found_rgba = true;
+            break;
+        }
+    }
+    if (!found_rgba && selected.format != VK_FORMAT_UNDEFINED) {
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX-vk",
+                            "present: RGBA8 swapchain format unavailable");
+        return false;
+    }
+    if (selected.format == VK_FORMAT_UNDEFINED) {
+        selected.format = VK_FORMAT_R8G8B8A8_UNORM;
+        selected.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    }
+
+    VkExtent2D extent = caps.currentExtent;
+    if (extent.width == UINT32_MAX || extent.height == UINT32_MAX) {
+        int drawable_width = 0;
+        int drawable_height = 0;
+        extern void xemu_android_vulkan_get_drawable_size(
+            int *width, int *height);
+        xemu_android_vulkan_get_drawable_size(&drawable_width,
+                                               &drawable_height);
+        extent.width = CLAMP(drawable_width, (int)caps.minImageExtent.width,
+                             (int)caps.maxImageExtent.width);
+        extent.height = CLAMP(drawable_height, (int)caps.minImageExtent.height,
+                              (int)caps.maxImageExtent.height);
+    }
+    if (extent.width == 0 || extent.height == 0) {
+        return false;
+    }
+
+    uint32_t image_count = MAX(caps.minImageCount, 2u);
+    if (caps.maxImageCount && image_count > caps.maxImageCount) {
+        image_count = caps.maxImageCount;
+    }
+    if (image_count > NUM_DISPLAY_IMAGES) {
+        __android_log_print(
+            ANDROID_LOG_ERROR, "hakuX-vk",
+            "present: swapchain requires %u images (capacity %u)",
+            image_count, NUM_DISPLAY_IMAGES);
+        return false;
+    }
+
+    QueueFamilyIndices queue_indices =
+        pgraph_vk_find_queue_families(r->physical_device);
+    VkBool32 present_supported = VK_FALSE;
+    VK_CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(
+        r->physical_device, queue_indices.queue_family, r->present_surface,
+        &present_supported));
+    if (!present_supported) {
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX-vk",
+                            "present: graphics queue cannot present");
+        return false;
+    }
+
+    VkCompositeAlphaFlagBitsKHR composite_alpha =
+        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    if (!(caps.supportedCompositeAlpha & composite_alpha)) {
+        static const VkCompositeAlphaFlagBitsKHR choices[] = {
+            VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+            VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+            VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+        };
+        for (int i = 0; i < ARRAY_SIZE(choices); i++) {
+            if (caps.supportedCompositeAlpha & choices[i]) {
+                composite_alpha = choices[i];
+                break;
+            }
+        }
+    }
+
+    /*
+     * Android's currentTransform describes the device-panel rotation, not
+     * the already-landscape SDL window coordinates. Prefer identity so the
+     * compositor does not rotate the Vulkan game surface underneath the
+     * correctly oriented Java controller overlay.
+     */
+    VkSurfaceTransformFlagBitsKHR pre_transform = caps.currentTransform;
+    if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+        pre_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    }
+
+    VkSwapchainCreateInfoKHR create_info = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = r->present_surface,
+        .minImageCount = image_count,
+        .imageFormat = selected.format,
+        .imageColorSpace = selected.colorSpace,
+        .imageExtent = extent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .preTransform = pre_transform,
+        .compositeAlpha = composite_alpha,
+        .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        .clipped = VK_TRUE,
+    };
+    result =
+        vkCreateSwapchainKHR(r->device, &create_info, NULL, &d->swapchain);
+    if (result != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_ERROR, "hakuX-vk",
+                            "present: vkCreateSwapchainKHR failed (%d)",
+                            result);
+        return false;
+    }
+
+    VK_CHECK(vkGetSwapchainImagesKHR(r->device, d->swapchain,
+                                     &image_count, NULL));
+    if (image_count > NUM_DISPLAY_IMAGES) {
+        destroy_current_display_image(pg);
+        return false;
+    }
+    VkImage swapchain_images[NUM_DISPLAY_IMAGES];
+    VK_CHECK(vkGetSwapchainImagesKHR(r->device, d->swapchain,
+                                     &image_count, swapchain_images));
+
+    d->swapchain_format = selected.format;
+    d->swapchain_extent = extent;
+    extern int xemu_android_get_display_mode_setting(void);
+    int display_mode = xemu_android_get_display_mode_setting();
+    if (display_mode == 0) {
+        d->present_viewport.extent = extent;
+    } else {
+        double target_aspect =
+            display_mode == 1 ? (4.0 / 3.0) : (16.0 / 9.0);
+        double surface_aspect = (double)extent.width / extent.height;
+        if (surface_aspect > target_aspect) {
+            d->present_viewport.extent.height = extent.height;
+            d->present_viewport.extent.width =
+                MAX(1u, (uint32_t)lround(extent.height * target_aspect));
+        } else {
+            d->present_viewport.extent.width = extent.width;
+            d->present_viewport.extent.height =
+                MAX(1u, (uint32_t)lround(extent.width / target_aspect));
+        }
+    }
+    d->present_viewport.offset.x =
+        (int32_t)(extent.width - d->present_viewport.extent.width) / 2;
+    d->present_viewport.offset.y =
+        (int32_t)(extent.height - d->present_viewport.extent.height) / 2;
+    d->image_count = image_count;
+    d->width = width;
+    d->height = height;
+    d->render_idx = 0;
+    d->display_idx = 0;
+    d->present_frame = 0;
+
+    for (uint32_t i = 0; i < image_count; i++) {
+        DisplayImage *img = &d->images[i];
+        memset(img, 0, sizeof(*img));
+        img->image = swapchain_images[i];
+        VkImageViewCreateInfo view_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = img->image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = selected.format,
+            .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .subresourceRange.levelCount = 1,
+            .subresourceRange.layerCount = 1,
+        };
+        VK_CHECK(vkCreateImageView(r->device, &view_info, NULL,
+                                   &img->image_view));
+
+        VkFramebufferCreateInfo framebuffer_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = d->render_pass,
+            .attachmentCount = 1,
+            .pAttachments = &img->image_view,
+            .width = extent.width,
+            .height = extent.height,
+            .layers = 1,
+        };
+        VK_CHECK(vkCreateFramebuffer(r->device, &framebuffer_info, NULL,
+                                     &img->framebuffer));
+
+        VkCommandBufferAllocateInfo command_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = r->command_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        VK_CHECK(vkAllocateCommandBuffers(r->device, &command_info,
+                                          &img->cmd_buffer));
+    }
+
+    VkSemaphoreCreateInfo semaphore_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+    VkFenceCreateInfo fence_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+    for (uint32_t i = 0; i < image_count; i++) {
+        VK_CHECK(vkCreateSemaphore(r->device, &semaphore_info, NULL,
+                                   &d->image_available[i]));
+        VK_CHECK(vkCreateSemaphore(r->device, &semaphore_info, NULL,
+                                   &d->render_finished[i]));
+        VK_CHECK(vkCreateFence(r->device, &fence_info, NULL,
+                               &d->present_fences[i]));
+    }
+
+    __android_log_print(
+        ANDROID_LOG_INFO, "hakuX-vk",
+        "present: all-Vulkan swapchain %ux%u images=%u format=%d "
+        "transform current=0x%x supported=0x%x chosen=0x%x mode=%d "
+        "viewport=%d,%d %ux%u source=%dx%d",
+        extent.width, extent.height, image_count, selected.format,
+        caps.currentTransform, caps.supportedTransforms, pre_transform,
+        display_mode, d->present_viewport.offset.x,
+        d->present_viewport.offset.y, d->present_viewport.extent.width,
+        d->present_viewport.extent.height, width, height);
+    return true;
+}
+#endif
+
 static bool create_display_image(PGRAPHState *pg, int width, int height)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -1159,6 +1466,12 @@ static bool create_display_image(PGRAPHState *pg, int width, int height)
     if (d->images[0].image != VK_NULL_HANDLE) {
         destroy_current_display_image(pg);
     }
+
+#ifdef __ANDROID__
+    if (d->direct_present) {
+        return create_android_swapchain(pg, width, height);
+    }
+#endif
 
     bool use_optimal_tiling = true;
 #if HAVE_EXTERNAL_MEMORY
@@ -1212,6 +1525,7 @@ static bool create_display_image(PGRAPHState *pg, int width, int height)
 
     d->width = width;
     d->height = height;
+    d->image_count = NUM_DISPLAY_IMAGES;
     d->render_idx = 0;
     d->display_idx = 0;
 
@@ -1337,7 +1651,7 @@ static void update_descriptor_set(PGRAPHState *pg, SurfaceBinding *surface)
 static PvideoState get_pvideo_state(PGRAPHState *pg)
 {
     NV2AState *d = container_of(pg, NV2AState, pgraph);
-    PvideoState state;
+    PvideoState state = { 0 };
 
     // FIXME: This check against PVIDEO_SIZE_IN does not match HW behavior.
     // Many games seem to pass this value when initializing or tearing down
@@ -1364,7 +1678,12 @@ static PvideoState get_pvideo_state(PGRAPHState *pg)
         GET_MASK(d->pvideo.regs[NV_PVIDEO_FORMAT], NV_PVIDEO_FORMAT_COLOR);
 
     /* TODO: support other color formats */
-    assert(state.format == NV_PVIDEO_FORMAT_COLOR_LE_CR8YB8CB8YA8);
+    if (state.format != NV_PVIDEO_FORMAT_COLOR_LE_CR8YB8CB8YA8) {
+        warn_report_once("PVIDEO disabled: unsupported color format 0x%x",
+                         state.format);
+        state.enabled = false;
+        return state;
+    }
 
     state.in_width =
         GET_MASK(d->pvideo.regs[NV_PVIDEO_SIZE_IN], NV_PVIDEO_SIZE_IN_WIDTH);
@@ -1376,10 +1695,20 @@ static PvideoState get_pvideo_state(PGRAPHState *pg)
     state.out_height =
         GET_MASK(d->pvideo.regs[NV_PVIDEO_SIZE_OUT], NV_PVIDEO_SIZE_OUT_HEIGHT);
 
-    state.in_s = GET_MASK(d->pvideo.regs[NV_PVIDEO_POINT_IN],
-                        NV_PVIDEO_POINT_IN_S);
-    state.in_t = GET_MASK(d->pvideo.regs[NV_PVIDEO_POINT_IN],
-                        NV_PVIDEO_POINT_IN_T);
+    if (state.in_width <= 0 || state.in_height <= 0 || state.out_width <= 0 ||
+        state.out_height <= 0 || state.pitch <= 0) {
+        warn_report_once("PVIDEO disabled: invalid dimensions or pitch "
+                         "(pitch=%d, input=%dx%d, output=%dx%d)",
+                         state.pitch, state.in_width, state.in_height,
+                         state.out_width, state.out_height);
+        state.enabled = false;
+        return state;
+    }
+
+    state.in_s =
+        GET_MASK(d->pvideo.regs[NV_PVIDEO_POINT_IN], NV_PVIDEO_POINT_IN_S);
+    state.in_t =
+        GET_MASK(d->pvideo.regs[NV_PVIDEO_POINT_IN], NV_PVIDEO_POINT_IN_T);
 
     uint32_t ds_dx = d->pvideo.regs[NV_PVIDEO_DS_DX];
     uint32_t dt_dy = d->pvideo.regs[NV_PVIDEO_DT_DY];
@@ -1398,7 +1727,56 @@ static PvideoState get_pvideo_state(PGRAPHState *pg)
         state.in_width = floorf((float)state.out_width * state.scale_x + 0.5f);
     }
     if (state.in_height > state.out_height) {
-        state.in_height = floorf((float)state.out_height * state.scale_y + 0.5f);
+        state.in_height =
+            floorf((float)state.out_height * state.scale_y + 0.5f);
+    }
+
+    if (state.in_width <= 0 || state.in_height <= 0) {
+        warn_report_once("PVIDEO disabled: scaling produced invalid input "
+                         "dimensions %dx%d",
+                         state.in_width, state.in_height);
+        state.enabled = false;
+        return state;
+    }
+
+    uint64_t row_bytes = (uint64_t)state.in_width * 2;
+    if ((uint64_t)state.pitch < row_bytes) {
+        warn_report_once(
+            "PVIDEO disabled: pitch %d is smaller than row size %" PRIu64,
+            state.pitch, row_bytes);
+        state.enabled = false;
+        return state;
+    }
+
+    if ((uint64_t)state.pitch > UINT64_MAX / (uint64_t)state.in_height) {
+        warn_report_once("PVIDEO disabled: source span overflow");
+        state.enabled = false;
+        return state;
+    }
+
+    uint64_t span = (uint64_t)state.pitch * (uint64_t)state.in_height;
+    uint64_t offset = state.offset;
+    uint64_t limit = state.limit;
+    if (offset > limit || span > limit - offset) {
+        warn_report_once("PVIDEO disabled: source exceeds its DMA limit");
+        state.enabled = false;
+        return state;
+    }
+
+    uint64_t base = state.base;
+    uint64_t vram_size = memory_region_size(d->vram);
+    if (base > vram_size || offset > vram_size - base ||
+        span > vram_size - base - offset) {
+        warn_report_once("PVIDEO disabled: source exceeds guest VRAM");
+        state.enabled = false;
+        return state;
+    }
+
+    uint64_t pixel_count = (uint64_t)state.in_width * state.in_height;
+    if (pixel_count > SIZE_MAX / 4) {
+        warn_report_once("PVIDEO disabled: converted image size overflow");
+        state.enabled = false;
+        return state;
     }
 
     state.out_x =
@@ -1412,10 +1790,6 @@ static PvideoState get_pvideo_state(PGRAPHState *pg)
     // Note: PVIDEO color keying ignores alpha.
     state.color_key = d->pvideo.regs[NV_PVIDEO_COLOR_KEY] & 0xFFFFFF;
 
-    assert(state.offset + state.pitch * state.in_height <= state.limit);
-    hwaddr end = state.base + state.offset + state.pitch * state.in_height;
-    assert(end <= memory_region_size(d->vram));
-
     return state;
 }
 
@@ -1427,6 +1801,24 @@ static void update_uniforms(PGRAPHState *pg, SurfaceBinding *surface)
 
     int display_size_loc = uniform_index(l, "display_size");  // FIXME: Cache
     uniform2f(l, display_size_loc, r->display.width, r->display.height);
+
+#ifdef __ANDROID__
+    if (r->display.direct_present) {
+        uniform2f(l, uniform_index(l, "output_offset"),
+                  r->display.present_viewport.offset.x,
+                  r->display.present_viewport.offset.y);
+        uniform2f(l, uniform_index(l, "output_size"),
+                  r->display.present_viewport.extent.width,
+                  r->display.present_viewport.extent.height);
+    } else
+#endif
+    {
+        uniform2f(l, uniform_index(l, "output_offset"), 0.0f, 0.0f);
+        uniform2f(l, uniform_index(l, "output_size"), r->display.width,
+                  r->display.height);
+    }
+    uniform1i(l, uniform_index(l, "flip_y"),
+              !r->display.direct_present);
 
     VGADisplayParams vga_display_params;
     d->vga.get_params(&d->vga, &vga_display_params);
@@ -1463,6 +1855,36 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
     NV2AState *d = container_of(pg, NV2AState, pgraph);
     PGRAPHVkState *r = pg->vk_renderer_state;
     PGRAPHVkDisplayState *disp = &r->display;
+    uint32_t present_sync_index = 0;
+
+#ifdef __ANDROID__
+    if (disp->direct_present) {
+        present_sync_index = disp->present_frame % disp->image_count;
+        VK_CHECK(vkWaitForFences(
+            r->device, 1, &disp->present_fences[present_sync_index],
+            VK_TRUE, UINT64_MAX));
+
+        uint32_t acquired_index = 0;
+        VkResult acquire_result = vkAcquireNextImageKHR(
+            r->device, disp->swapchain, UINT64_MAX,
+            disp->image_available[present_sync_index], VK_NULL_HANDLE,
+            &acquired_index);
+        if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+            __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
+                                "present: swapchain out of date");
+            return;
+        }
+        if (acquire_result != VK_SUCCESS &&
+            acquire_result != VK_SUBOPTIMAL_KHR) {
+            __android_log_print(ANDROID_LOG_ERROR, "hakuX-vk",
+                                "present: acquire failed (%d)",
+                                acquire_result);
+            return;
+        }
+        disp->render_idx = acquired_index;
+    }
+#endif
+
     DisplayImage *img = &disp->images[disp->render_idx];
 
     if (img->image == VK_NULL_HANDLE || img->framebuffer == VK_NULL_HANDLE) {
@@ -1495,11 +1917,12 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
     update_uniforms(pg, surface);
     update_descriptor_set(pg, surface);
 
-    if (img->fence_submitted) {
+    if (!disp->direct_present && img->fence_submitted) {
         VK_CHECK(vkWaitForFences(r->device, 1, &img->fence, VK_TRUE, UINT64_MAX));
         img->fence_submitted = false;
     }
 
+    VK_CHECK(vkResetCommandBuffer(img->cmd_buffer, 0));
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -1514,16 +1937,29 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
                                       surface->host_fmt.vk_format,
                                       VK_IMAGE_LAYOUT_GENERAL,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    VkImageLayout display_old_layout =
+        img->valid ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                   : VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!disp->direct_present) {
+        display_old_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
     pgraph_vk_transition_image_layout(
         pg, cmd, img->image, VK_FORMAT_R8G8B8A8_UNORM,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        display_old_layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
+    VkClearValue clear_value = {
+        .color.float32 = { 0.0f, 0.0f, 0.0f, 1.0f },
+    };
     VkRenderPassBeginInfo render_pass_begin_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = disp->render_pass,
         .framebuffer = img->framebuffer,
-        .renderArea.extent.width = disp->width,
-        .renderArea.extent.height = disp->height,
+        .renderArea.extent.width =
+            disp->direct_present ? disp->swapchain_extent.width : disp->width,
+        .renderArea.extent.height =
+            disp->direct_present ? disp->swapchain_extent.height : disp->height,
+        .clearValueCount = 1,
+        .pClearValues = &clear_value,
     };
     vkCmdBeginRenderPass(cmd, &render_pass_begin_info,
                          VK_SUBPASS_CONTENTS_INLINE);
@@ -1536,16 +1972,25 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
                             0, NULL);
 
     VkViewport viewport = {
-        .width = disp->width,
-        .height = disp->height,
+        .x = disp->direct_present ? disp->present_viewport.offset.x : 0,
+        .y = disp->direct_present ? disp->present_viewport.offset.y : 0,
+        .width = disp->direct_present ?
+                     disp->present_viewport.extent.width :
+                     disp->width,
+        .height = disp->direct_present ?
+                      disp->present_viewport.extent.height :
+                      disp->height,
         .minDepth = 0.0,
         .maxDepth = 1.0,
     };
     vkCmdSetViewport(cmd, 0, 1, &viewport);
 
     VkRect2D scissor = {
-        .extent.width = disp->width,
-        .extent.height = disp->height,
+        .offset = disp->direct_present ? disp->present_viewport.offset :
+                                        (VkOffset2D){ 0, 0 },
+        .extent = disp->direct_present ? disp->present_viewport.extent :
+                                        (VkExtent2D){ disp->width,
+                                                      disp->height },
     };
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
@@ -1562,7 +2007,8 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                       VK_IMAGE_LAYOUT_GENERAL);
 
-    if (!disp->blend_active && disp->blend_prev_image) {
+    if (!disp->direct_present && !disp->blend_active &&
+        disp->blend_prev_image) {
         pgraph_vk_transition_image_layout(pg, cmd, img->image,
                                           VK_FORMAT_R8G8B8A8_UNORM,
                                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1591,6 +2037,11 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
                                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         disp->blend_prev_valid = true;
+    } else if (disp->direct_present) {
+        pgraph_vk_transition_image_layout(
+            pg, cmd, img->image, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     } else {
         pgraph_vk_transition_image_layout(pg, cmd, img->image,
                                           VK_FORMAT_R8G8B8A8_UNORM,
@@ -1604,18 +2055,59 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
 
     pgraph_vk_render_thread_wait_idle(r);
 
-    vkResetFences(r->device, 1, &img->fence);
     VkSubmitInfo submit_info = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .commandBufferCount = 1,
         .pCommandBuffers = &cmd,
     };
-    VK_CHECK(vkQueueSubmit(r->queue, 1, &submit_info, img->fence));
-    img->fence_submitted = true;
+#ifdef __ANDROID__
+    VkPipelineStageFlags present_wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    if (disp->direct_present) {
+        submit_info.waitSemaphoreCount = 1;
+        submit_info.pWaitSemaphores =
+            &disp->image_available[present_sync_index];
+        submit_info.pWaitDstStageMask = &present_wait_stage;
+        submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores =
+            &disp->render_finished[present_sync_index];
+        VK_CHECK(vkResetFences(
+            r->device, 1, &disp->present_fences[present_sync_index]));
+        VK_CHECK(vkQueueSubmit(
+            r->queue, 1, &submit_info,
+            disp->present_fences[present_sync_index]));
+
+        uint32_t present_image_index = disp->render_idx;
+        VkPresentInfoKHR present_info = {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &disp->render_finished[present_sync_index],
+            .swapchainCount = 1,
+            .pSwapchains = &disp->swapchain,
+            .pImageIndices = &present_image_index,
+        };
+        VkResult present_result = vkQueuePresentKHR(r->queue, &present_info);
+        if (present_result != VK_SUCCESS &&
+            present_result != VK_SUBOPTIMAL_KHR &&
+            present_result != VK_ERROR_OUT_OF_DATE_KHR) {
+            __android_log_print(ANDROID_LOG_ERROR, "hakuX-vk",
+                                "present: queue present failed (%d)",
+                                present_result);
+        }
+        disp->present_frame++;
+    } else
+#endif
+    {
+        VK_CHECK(vkResetFences(r->device, 1, &img->fence));
+        VK_CHECK(vkQueueSubmit(r->queue, 1, &submit_info, img->fence));
+        img->fence_submitted = true;
+    }
     img->valid = true;
 
     disp->display_idx = disp->render_idx;
-    disp->render_idx = (disp->render_idx + 1) % NUM_DISPLAY_IMAGES;
+    if (!disp->direct_present) {
+        disp->render_idx =
+            (disp->render_idx + 1) % disp->image_count;
+    }
 #ifdef __ANDROID__
     {
         static int render_count = 0;
@@ -1736,10 +2228,10 @@ void pgraph_vk_render_display(PGRAPHState *pg)
         }
     }
 
-    disp->blend_active = !r->frame_was_skipped &&
-                         r->blend_after_skip &&
-                         xemu_get_frame_skip() &&
-                         disp->blend_prev_valid;
+    disp->blend_active =
+        !disp->direct_present && !r->frame_was_skipped &&
+        r->blend_after_skip && xemu_get_frame_skip() &&
+        disp->blend_prev_valid;
     if (disp->blend_active) {
         r->blend_after_skip = false;
     }

@@ -614,7 +614,7 @@ struct DisplaySettings {
   std::string filtering = "nearest";
   std::string aspect_ratio = "fit";
   std::string tcg_thread = "multi";
-  std::string audio_driver = "aaudio";
+  std::string audio_driver = "openslES";
 };
 
 static bool WriteConfigToml(const std::string& config_path,
@@ -899,9 +899,13 @@ static SetupFiles SyncSetupFiles() {
   }
   {
     std::string drv = GetPrefString(env, activity, "setting_audio_driver");
-    if (drv == "dummy") ds.audio_driver = "dummy";
-    else if (drv == "openslES") ds.audio_driver = "android";
-    else ds.audio_driver = "aaudio";  // default and explicit aaudio
+    if (drv == "dummy") {
+      ds.audio_driver = "dummy";
+    } else if (drv == "aaudio") {
+      ds.audio_driver = "aaudio";
+    } else {
+      ds.audio_driver = "openslES";
+    }
   }
 
   bool fp_safe = GetPrefBool(env, activity, "fp_safe", true);
@@ -1180,8 +1184,7 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   (void)argv;
 
   LogInfo("SDL_main: start");
-  // Prefer AAudio on Android, but keep Android AudioTrack as fallback.
-  SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, "aaudio,android",
+  SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, "openslES",
                           SDL_HINT_OVERRIDE);
   SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
   SDL_DisableScreenSaver();
@@ -1202,7 +1205,7 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   // Apply user's audio driver preference (overrides the default set above)
   if (!setup.audio_driver.empty()) {
     std::string hint = setup.audio_driver;
-    if (hint == "aaudio") hint = "aaudio,android";
+    if (hint == "aaudio") hint = "aaudio,openslES";
     SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, hint.c_str(), SDL_HINT_OVERRIDE);
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                         "audio driver hint: %s", hint.c_str());

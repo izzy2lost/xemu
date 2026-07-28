@@ -1,5 +1,6 @@
 package com.izzy2lost.x1box
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -23,6 +24,8 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.ViewConfiguration
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -146,11 +149,6 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     DebugLog.initialize(this)
-    val prefs = getSharedPreferences("x1box_prefs", Context.MODE_PRIVATE)
-    val rendererPref = PerGameSettingsManager.getRuntimeOverride(this, "setting_renderer")
-      ?: prefs.getString("setting_renderer", "vulkan")
-      ?: "vulkan"
-    nativeSetenv("XEMU_RENDERER", if (rendererPref == "opengl") "opengl" else "vulkan")
     OrientationLocker(this, landscapeOnly = true).enable()
     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     val requestedSlot = intent?.getIntExtra(EXTRA_AUTO_LOAD_SNAPSHOT_SLOT, 0) ?: 0
@@ -162,6 +160,9 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     setupFpsOverlay()
     setupControllerDetection()
     hideSystemUI()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      registerPredictiveBackCallback()
+    }
   }
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -178,13 +179,26 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     }
   }
 
+  @SuppressLint("GestureBackNavigation")
   override fun onBackPressed() {
+    handleBackNavigation()
+  }
+
+  private fun handleBackNavigation() {
     val currentDialog = inGameMenuDialog
     if (currentDialog?.isShowing == true) {
       currentDialog.dismiss()
       return
     }
     showInGameMenu()
+  }
+
+  @androidx.annotation.RequiresApi(Build.VERSION_CODES.TIRAMISU)
+  private fun registerPredictiveBackCallback() {
+    onBackInvokedDispatcher.registerOnBackInvokedCallback(
+      OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+      OnBackInvokedCallback(::handleBackNavigation),
+    )
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {

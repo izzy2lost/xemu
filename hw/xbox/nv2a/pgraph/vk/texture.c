@@ -2245,7 +2245,14 @@ void pgraph_vk_trim_texture_cache(PGRAPHState *pg)
         num_evicted += 1;
     }
 
-    NV2A_VK_DPRINTF("Evicted %d textures, %d remain", num_evicted, r->texture_cache.num_used);
+    /*
+     * Eviction normally moves images into the reuse pool. Under memory
+     * pressure the memory must be returned to the driver instead.
+     */
+    image_pool_drain(r);
+
+    NV2A_VK_DPRINTF("Evicted %d textures, %d remain", num_evicted,
+                    r->texture_cache.num_used);
 }
 
 void pgraph_vk_init_textures(PGRAPHState *pg)

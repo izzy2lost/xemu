@@ -1,5 +1,6 @@
 package org.libsdl.app;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceCallback;
@@ -14,6 +15,7 @@ import android.util.Log;
 
 import java.util.Arrays;
 
+@SuppressLint("MissingPermission")
 public class SDLAudioManager {
     protected static final String TAG = "SDLAudio";
 

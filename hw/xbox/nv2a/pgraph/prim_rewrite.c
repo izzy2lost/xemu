@@ -41,8 +41,18 @@ static void ensure_capacity(PrimRewriteBuf *buf, unsigned int needed)
     if (needed <= buf->capacity) {
         return;
     }
-    buf->capacity = MAX(needed, buf->capacity * 2);
-    buf->data = g_realloc(buf->data, buf->capacity * sizeof(uint32_t));
+
+    unsigned int next = buf->capacity ? buf->capacity : 256;
+    while (next < needed) {
+        if (next > UINT_MAX / 2) {
+            next = needed;
+            break;
+        }
+        next *= 2;
+    }
+
+    buf->capacity = next;
+    buf->data = g_realloc_n(buf->data, buf->capacity, sizeof(uint32_t));
 }
 
 enum ShaderPrimitiveMode
@@ -63,6 +73,9 @@ pgraph_prim_rewrite_get_output_mode(enum ShaderPrimitiveMode primitive_mode,
     case PRIM_TYPE_QUADS:
     case PRIM_TYPE_QUAD_STRIP:
     case PRIM_TYPE_POLYGON:
+        if (polygon_mode == POLY_MODE_POINT) {
+            return PRIM_TYPE_POINTS;
+        }
         return polygon_mode == POLY_MODE_LINE ? PRIM_TYPE_LINES :
                                                 PRIM_TYPE_TRIANGLES;
     default:
@@ -84,37 +97,48 @@ static inline bool needs_rewrite(PrimAssemblyState mode)
     }
 }
 
-static unsigned int max_output_indices(enum ShaderPrimitiveMode mode,
-                                       enum ShaderPolygonMode polygon_mode,
-                                       unsigned int input_count)
+static uint64_t max_output_indices(enum ShaderPrimitiveMode mode,
+                                   enum ShaderPolygonMode polygon_mode,
+                                   unsigned int input_count)
 {
     switch (mode) {
+    case PRIM_TYPE_POINTS:
+        return input_count;
     case PRIM_TYPE_LINES:
         return input_count;
     case PRIM_TYPE_LINE_STRIP:
-        return (input_count >= 2) ? (input_count - 1) * 2 : 0;
+        return input_count >= 2 ? (uint64_t)(input_count - 1) * 2 : 0;
     case PRIM_TYPE_LINE_LOOP:
-        return (input_count >= 2) ? input_count * 2 : 0;
+        return input_count >= 2 ? (uint64_t)input_count * 2 : 0;
     case PRIM_TYPE_TRIANGLES:
         return input_count;
     case PRIM_TYPE_TRIANGLE_STRIP:
     case PRIM_TYPE_TRIANGLE_FAN:
-        return (input_count >= 3) ? (input_count - 2) * 3 : 0;
+        return input_count >= 3 ? (uint64_t)(input_count - 2) * 3 : 0;
     case PRIM_TYPE_POLYGON:
-        if (polygon_mode == POLY_MODE_LINE) {
-            return (input_count >= 2) ? input_count * 2 : 0;
+        if (polygon_mode == POLY_MODE_POINT) {
+            return input_count;
         }
-        return (input_count >= 3) ? (input_count - 2) * 3 : 0;
+        if (polygon_mode == POLY_MODE_LINE) {
+            return input_count >= 2 ? (uint64_t)input_count * 2 : 0;
+        }
+        return input_count >= 3 ? (uint64_t)(input_count - 2) * 3 : 0;
     case PRIM_TYPE_QUADS:
-        if (polygon_mode == POLY_MODE_LINE) {
-            return (input_count / 4) * 8;
+        if (polygon_mode == POLY_MODE_POINT) {
+            return input_count;
         }
-        return (input_count / 4) * 6;
+        if (polygon_mode == POLY_MODE_LINE) {
+            return (uint64_t)(input_count / 4) * 8;
+        }
+        return (uint64_t)(input_count / 4) * 6;
     case PRIM_TYPE_QUAD_STRIP:
-        if (polygon_mode == POLY_MODE_LINE) {
-            return (input_count >= 4) ? ((input_count - 2) / 2) * 8 : 0;
+        if (polygon_mode == POLY_MODE_POINT) {
+            return input_count;
         }
-        return (input_count >= 4) ? ((input_count - 2) / 2) * 6 : 0;
+        if (polygon_mode == POLY_MODE_LINE) {
+            return input_count >= 4 ? (uint64_t)((input_count - 2) / 2) * 8 : 0;
+        }
+        return input_count >= 4 ? (uint64_t)((input_count - 2) / 2) * 6 : 0;
     default:
         return 0;
     }
@@ -165,6 +189,14 @@ static inline void emit_tri_pv(PrimRewrite *r, uint32_t a, uint32_t b,
         emit_tri(r, b, c, a);
     } else {
         emit_tri(r, c, a, b);
+    }
+}
+
+static void rewrite_points(PrimRewrite *r, const uint32_t *idx, uint32_t base,
+                           unsigned int count)
+{
+    for (unsigned int i = 0; i < count; i++) {
+        emit_vertex(r, idx_at(idx, i, base));
     }
 }
 
@@ -391,6 +423,9 @@ static void rewrite_indices(PrimRewrite *r, const PrimAssemblyState *mode,
                             unsigned int num_indices)
 {
     switch (mode->primitive_mode) {
+    case PRIM_TYPE_POINTS:
+        rewrite_points(r, idx, base, num_indices);
+        break;
     case PRIM_TYPE_LINES:
         rewrite_lines(r, idx, base, num_indices, mode->last_provoking);
         break;
@@ -410,21 +445,27 @@ static void rewrite_indices(PrimRewrite *r, const PrimAssemblyState *mode,
         rewrite_triangle_fan(r, idx, base, num_indices, mode->last_provoking);
         break;
     case PRIM_TYPE_QUADS:
-        if (mode->polygon_mode == POLY_MODE_LINE) {
+        if (mode->polygon_mode == POLY_MODE_POINT) {
+            rewrite_points(r, idx, base, num_indices);
+        } else if (mode->polygon_mode == POLY_MODE_LINE) {
             rewrite_quads_line(r, idx, base, num_indices);
         } else {
             rewrite_quads(r, idx, base, num_indices, mode->flat_shading);
         }
         break;
     case PRIM_TYPE_QUAD_STRIP:
-        if (mode->polygon_mode == POLY_MODE_LINE) {
+        if (mode->polygon_mode == POLY_MODE_POINT) {
+            rewrite_points(r, idx, base, num_indices);
+        } else if (mode->polygon_mode == POLY_MODE_LINE) {
             rewrite_quad_strip_line(r, idx, base, num_indices);
         } else {
             rewrite_quad_strip(r, idx, base, num_indices, mode->flat_shading);
         }
         break;
     case PRIM_TYPE_POLYGON:
-        if (mode->polygon_mode == POLY_MODE_LINE) {
+        if (mode->polygon_mode == POLY_MODE_POINT) {
+            rewrite_points(r, idx, base, num_indices);
+        } else if (mode->polygon_mode == POLY_MODE_LINE) {
             rewrite_polygon_line(r, idx, base, num_indices);
         } else {
             rewrite_polygon(r, idx, base, num_indices);
@@ -444,34 +485,41 @@ PrimRewrite pgraph_prim_rewrite_ranges(PrimRewriteBuf *buf,
 {
     PrimRewrite result = { 0 };
 
-    assert(mode.polygon_mode != POLY_MODE_POINT ||
-           mode.primitive_mode != PRIM_TYPE_POLYGON);
-
     if (!needs_rewrite(mode)) {
         return result;
     }
 
-    unsigned int total_max_output = 0;
+    uint64_t total_max_output = 0;
     for (unsigned int r = 0; r < num_ranges; r++) {
-        total_max_output += max_output_indices(mode.primitive_mode,
-                                               mode.polygon_mode, counts[r]);
-    }
-
-    if (total_max_output == 0) {
-        return result;
-    }
-
-    ensure_capacity(buf, total_max_output);
-    result.indices = buf->data;
-
-    for (unsigned int r = 0; r < num_ranges; r++) {
-        if (counts[r] == 0) {
+        if (counts[r] <= 0) {
             continue;
         }
 
+        uint64_t range_max = max_output_indices(mode.primitive_mode,
+                                                mode.polygon_mode, counts[r]);
+        if (UINT64_MAX - total_max_output < range_max) {
+            return result;
+        }
+        total_max_output += range_max;
+    }
+
+    if (total_max_output == 0 || total_max_output > UINT_MAX) {
+        return result;
+    }
+
+    ensure_capacity(buf, (unsigned int)total_max_output);
+    result.indices = buf->data;
+
+    for (unsigned int r = 0; r < num_ranges; r++) {
+        if (counts[r] <= 0) {
+            continue;
+        }
+
+        assert(starts[r] >= 0);
         rewrite_indices(&result, &mode, NULL, starts[r], counts[r]);
     }
 
+    assert(result.num_indices <= total_max_output);
     return result;
 }
 
@@ -482,24 +530,22 @@ PrimRewrite pgraph_prim_rewrite_indexed(PrimRewriteBuf *buf,
 {
     PrimRewrite result = { 0 };
 
-    assert(mode.polygon_mode != POLY_MODE_POINT ||
-           mode.primitive_mode != PRIM_TYPE_POLYGON);
-
     if (!needs_rewrite(mode)) {
         return result;
     }
 
-    unsigned int max_output = max_output_indices(
+    uint64_t max_output = max_output_indices(
         mode.primitive_mode, mode.polygon_mode, num_input_indices);
 
-    if (max_output == 0) {
+    if (max_output == 0 || max_output > UINT_MAX) {
         return result;
     }
 
-    ensure_capacity(buf, max_output);
+    ensure_capacity(buf, (unsigned int)max_output);
     result.indices = buf->data;
 
     rewrite_indices(&result, &mode, input_indices, 0, num_input_indices);
 
+    assert(result.num_indices <= max_output);
     return result;
 }

@@ -17,7 +17,11 @@ object GpuDriverHelper {
   private lateinit var appContext: Context
 
   val driverInstallDir: String get() = appContext.filesDir.absolutePath + "/gpu_driver/"
-  val driverStorageDir: String get() = appContext.getExternalFilesDir(null)!!.absolutePath + "/gpu_drivers/"
+  val driverStorageDir: String
+    get() {
+      val storageRoot = appContext.getExternalFilesDir(null) ?: appContext.filesDir
+      return File(storageRoot, "gpu_drivers").absolutePath + File.separator
+    }
   val hookLibDir: String get() = appContext.applicationInfo.nativeLibraryDir + "/"
 
   fun init(context: Context) {
@@ -63,8 +67,23 @@ object GpuDriverHelper {
       return false
     }
 
-    val namedFile = File(driverStorageDir, metadata.name?.replace(" ", "_") + ".zip")
-    tmpFile.renameTo(namedFile)
+    val safeName = metadata.name
+      ?.trim()
+      ?.replace(Regex("[^A-Za-z0-9._-]+"), "_")
+      ?.trim('.', '_')
+      ?.takeIf { it.isNotEmpty() }
+      ?: "custom_driver"
+    val namedFile = File(driverStorageDir, "$safeName.zip")
+    if (!tmpFile.renameTo(namedFile)) {
+      try {
+        tmpFile.copyTo(namedFile, overwrite = true)
+        tmpFile.delete()
+      } catch (e: IOException) {
+        Log.e(TAG, "Failed to save driver ZIP", e)
+        tmpFile.delete()
+        return false
+      }
+    }
 
     return installDriver(namedFile)
   }
@@ -72,16 +91,29 @@ object GpuDriverHelper {
   fun installDriver(driverZip: File): Boolean {
     val installDir = File(driverInstallDir)
     installDir.deleteRecursively()
-    installDir.mkdirs()
+    if (!installDir.mkdirs() && !installDir.isDirectory) {
+      Log.e(TAG, "Failed to create driver install directory")
+      return false
+    }
+    val installRoot = installDir.canonicalFile
+    val installRootPrefix = installRoot.path + File.separator
 
     try {
       ZipFile(driverZip).use { zip ->
         zip.entries().asSequence().forEach { entry ->
+          val outFile = File(installRoot, entry.name).canonicalFile
+          if (outFile != installRoot && !outFile.path.startsWith(installRootPrefix)) {
+            throw IOException("Driver ZIP entry escapes install directory: ${entry.name}")
+          }
           if (entry.isDirectory) {
-            File(installDir, entry.name).mkdirs()
+            if (!outFile.mkdirs() && !outFile.isDirectory) {
+              throw IOException("Failed to create driver directory: ${entry.name}")
+            }
           } else {
-            val outFile = File(installDir, entry.name)
-            outFile.parentFile?.mkdirs()
+            val parent = outFile.parentFile
+            if (parent != null && !parent.mkdirs() && !parent.isDirectory) {
+              throw IOException("Failed to create driver directory: ${entry.name}")
+            }
             zip.getInputStream(entry).use { input ->
               FileOutputStream(outFile).use { output ->
                 input.copyTo(output)
@@ -108,7 +140,7 @@ object GpuDriverHelper {
     if (!metaFile.exists()) return null
     return try {
       val json = JSONObject(metaFile.readText())
-      json.optString("name", null)
+      json.optionalString("name")
     } catch (e: Exception) {
       null
     }
@@ -119,7 +151,7 @@ object GpuDriverHelper {
     if (!metaFile.exists()) return null
     return try {
       val json = JSONObject(metaFile.readText())
-      json.optString("libraryName", null)
+      json.optionalString("libraryName")
     } catch (e: Exception) {
       null
     }
@@ -142,15 +174,15 @@ object GpuDriverHelper {
         val entries = zip.entries()
         while (entries.hasMoreElements()) {
           val entry = entries.nextElement()
-          if (!entry.isDirectory && entry.name.lowercase().endsWith(".json")) {
+          if (!entry.isDirectory && entry.name.equals(META_JSON, ignoreCase = true)) {
             zip.getInputStream(entry).use { input ->
               val text = input.bufferedReader().readText()
               val json = JSONObject(text)
               return DriverMetadata(
-                name = json.optString("name", null),
-                description = json.optString("description", null),
-                author = json.optString("author", null),
-                libraryName = json.optString("libraryName", null),
+                name = json.optionalString("name"),
+                description = json.optionalString("description"),
+                author = json.optionalString("author"),
+                libraryName = json.optionalString("libraryName"),
                 minApi = json.optInt("minApi", 0),
                 path = zipFile.absolutePath
               )
@@ -162,6 +194,12 @@ object GpuDriverHelper {
       Log.e(TAG, "Failed to read driver metadata from ${zipFile.name}", e)
     }
     return null
+  }
+
+  private fun JSONObject.optionalString(key: String): String? {
+    return optString(key)
+      .trim()
+      .takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
   }
 
   private external fun nativeInitializeDriver(

@@ -21,6 +21,7 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <sys/system_properties.h>
 #endif
 
 typedef struct MemoryBudget {
@@ -29,6 +30,7 @@ typedef struct MemoryBudget {
     size_t vertex_inline_cap;
     size_t index_cap;
     size_t staging_cap;
+    size_t uniform_cap;
     size_t perframe_vtx_cap;
     size_t perframe_idx_cap;
     size_t perframe_uni_cap;
@@ -58,17 +60,17 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
 
 #ifdef __ANDROID__
     if (total_heap <= 4 * gib) {
-        b.renderer_budget = 512 * mib;
+        b.renderer_budget = 384 * mib;
     } else if (total_heap <= 6 * gib) {
-        b.renderer_budget = 768 * mib;
+        b.renderer_budget = 512 * mib;
     } else if (total_heap <= 8 * gib) {
-        b.renderer_budget = 1024 * mib;
+        b.renderer_budget = 768 * mib;
     } else if (total_heap <= 12 * gib) {
-        b.renderer_budget = 1536 * mib;
+        b.renderer_budget = 1024 * mib;
     } else if (total_heap <= 16 * gib) {
-        b.renderer_budget = 2048 * mib;
+        b.renderer_budget = 1536 * mib;
     } else if (total_heap <= 22 * gib) {
-        b.renderer_budget = 3072 * mib;
+        b.renderer_budget = 2048 * mib;
     } else {
         b.renderer_budget = SIZE_MAX;
     }
@@ -80,6 +82,7 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
         b.vertex_inline_cap = SIZE_MAX;
         b.index_cap = SIZE_MAX;
         b.staging_cap = SIZE_MAX;
+        b.uniform_cap = SIZE_MAX;
         b.perframe_vtx_cap = SIZE_MAX;
         b.perframe_idx_cap = SIZE_MAX;
         b.perframe_uni_cap = SIZE_MAX;
@@ -90,13 +93,52 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
         b.surface_image_pool_max = 64;
     } else {
         size_t budget = b.renderer_budget;
-        b.vertex_inline_cap = MAX(8 * mib, budget / 5);
-        b.index_cap         = MAX(4 * mib, budget / 20);
-        b.staging_cap       = MAX(16 * mib, budget * 18 / 100);
-        b.perframe_vtx_cap  = MAX(8 * mib, budget * 10 / 100);
-        b.perframe_idx_cap  = MAX(2 * mib, budget / 50);
-        b.perframe_uni_cap  = MAX(8 * mib, budget * 6 / 100);
-        b.perframe_stg_cap  = MAX(16 * mib, budget * 12 / 100);
+        /*
+         * Leave room for textures, surfaces, pipelines, and driver-private
+         * allocations. These caps are per allocation; per-frame allocations
+         * are multiplied by the active submit-frame count below.
+         */
+        b.vertex_inline_cap = MAX(32 * mib, budget / 16);
+        b.index_cap = MAX(8 * mib, budget / 64);
+        b.staging_cap = MAX(64 * mib, budget / 16);
+#ifdef __ANDROID__
+        /*
+         * This buffer also controls the maximum amount of draw work in one
+         * queue submission. Large desktop-sized batches can run for tens of
+         * seconds on mobile GPUs and trigger the Android GPU watchdog.
+         */
+        if (total_heap <= 4 * gib) {
+            b.uniform_cap = 1 * mib;
+        } else if (total_heap <= 6 * gib) {
+            b.uniform_cap = 2 * mib;
+        } else if (total_heap <= 8 * gib) {
+            b.uniform_cap = 4 * mib;
+        } else {
+            b.uniform_cap = 8 * mib;
+        }
+#else
+        b.uniform_cap = MAX(16 * mib, budget / 32);
+#endif
+#ifdef __ANDROID__
+        char uniform_kb_property[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.vk.uniform_kb",
+                                  uniform_kb_property) > 0) {
+            char *end = NULL;
+            unsigned long uniform_kb =
+                strtoul(uniform_kb_property, &end, 10);
+            if (end != uniform_kb_property && *end == '\0' &&
+                uniform_kb >= 8 && uniform_kb <= 8192) {
+                b.uniform_cap = uniform_kb * 1024;
+                __android_log_print(
+                    ANDROID_LOG_WARN, "hakuX-vk",
+                    "diagnostic uniform batch override: %luKB", uniform_kb);
+            }
+        }
+#endif
+        b.perframe_vtx_cap = MAX(16 * mib, budget / 32);
+        b.perframe_idx_cap = MAX(4 * mib, budget / 128);
+        b.perframe_uni_cap = MAX(8 * mib, budget / 64);
+        b.perframe_stg_cap = MAX(32 * mib, budget / 16);
 
         size_t budget_mib = budget / mib;
         b.shader_module_cache_entries = budget_mib * 4;
@@ -107,7 +149,11 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
             b.shader_module_cache_entries = 50 * 1024;
         }
 
-        if (budget_mib <= 768) {
+        if (budget_mib <= 512) {
+            b.texture_cache_entries = 128;
+            b.image_pool_max = 8;
+            b.surface_image_pool_max = 4;
+        } else if (budget_mib <= 768) {
             b.texture_cache_entries = 256;
             b.image_pool_max = 16;
             b.surface_image_pool_max = 8;
@@ -187,24 +233,24 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
     r->image_pool_max = mb.image_pool_max;
     r->surface_image_pool_max = mb.surface_image_pool_max;
 
-    VK_LOG_ERROR("memory_budget: total_heap=%zuMB budget=%s%zuMB "
-                 "vtx_inline_cap=%zuMB index_cap=%zuMB staging_cap=%zuMB "
-                 "pf_vtx=%zuMB pf_idx=%zuMB pf_uni=%zuMB pf_stg=%zuMB "
-                 "shader_cache=%zu tex_cache=%zu img_pool=%d surf_pool=%d",
-                 mb.total_heap >> 20,
-                 mb.renderer_budget == SIZE_MAX ? "uncapped/" : "",
-                 mb.renderer_budget == SIZE_MAX ? 0 : mb.renderer_budget >> 20,
-                 mb.vertex_inline_cap == SIZE_MAX ? 0 : mb.vertex_inline_cap >> 20,
-                 mb.index_cap == SIZE_MAX ? 0 : mb.index_cap >> 20,
-                 mb.staging_cap == SIZE_MAX ? 0 : mb.staging_cap >> 20,
-                 mb.perframe_vtx_cap == SIZE_MAX ? 0 : mb.perframe_vtx_cap >> 20,
-                 mb.perframe_idx_cap == SIZE_MAX ? 0 : mb.perframe_idx_cap >> 20,
-                 mb.perframe_uni_cap == SIZE_MAX ? 0 : mb.perframe_uni_cap >> 20,
-                 mb.perframe_stg_cap == SIZE_MAX ? 0 : mb.perframe_stg_cap >> 20,
-                 mb.shader_module_cache_entries,
-                 mb.texture_cache_entries,
-                 mb.image_pool_max,
-                 mb.surface_image_pool_max);
+    VK_LOG_ERROR(
+        "memory_budget: total_heap=%zuMB budget=%s%zuMB "
+        "vtx_inline_cap=%zuMB index_cap=%zuMB staging_cap=%zuMB "
+        "uniform_cap=%zuMB pf_vtx=%zuMB pf_idx=%zuMB "
+        "pf_uni=%zuMB pf_stg=%zuMB "
+        "shader_cache=%zu tex_cache=%zu img_pool=%d surf_pool=%d",
+        mb.total_heap >> 20, mb.renderer_budget == SIZE_MAX ? "uncapped/" : "",
+        mb.renderer_budget == SIZE_MAX ? 0 : mb.renderer_budget >> 20,
+        mb.vertex_inline_cap == SIZE_MAX ? 0 : mb.vertex_inline_cap >> 20,
+        mb.index_cap == SIZE_MAX ? 0 : mb.index_cap >> 20,
+        mb.staging_cap == SIZE_MAX ? 0 : mb.staging_cap >> 20,
+        mb.uniform_cap == SIZE_MAX ? 0 : mb.uniform_cap >> 20,
+        mb.perframe_vtx_cap == SIZE_MAX ? 0 : mb.perframe_vtx_cap >> 20,
+        mb.perframe_idx_cap == SIZE_MAX ? 0 : mb.perframe_idx_cap >> 20,
+        mb.perframe_uni_cap == SIZE_MAX ? 0 : mb.perframe_uni_cap >> 20,
+        mb.perframe_stg_cap == SIZE_MAX ? 0 : mb.perframe_stg_cap >> 20,
+        mb.shader_module_cache_entries, mb.texture_cache_entries,
+        mb.image_pool_max, mb.surface_image_pool_max);
 
     size_t staging_size = vram_size * 2;
     if (staging_size < (32 * mib)) {
@@ -320,9 +366,13 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
     int nframes = xemu_get_submit_frames();
 
     size_t uniform_size;
-    if (nframes >= 3)      uniform_size = 128 * mib;
-    else if (nframes == 2) uniform_size = 64 * mib;
-    else                   uniform_size = 32 * mib;
+    if (nframes >= 3)
+        uniform_size = 128 * mib;
+    else if (nframes == 2)
+        uniform_size = 64 * mib;
+    else
+        uniform_size = 32 * mib;
+    uniform_size = MIN(uniform_size, mb.uniform_cap);
 
     r->storage_buffers[BUFFER_UNIFORM] = (StorageBuffer){
         .alloc_info = device_alloc_create_info,
@@ -394,17 +444,22 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
     uni_max = MIN(uni_max, mb.perframe_uni_cap);
     stg_max = MIN(stg_max, mb.perframe_stg_cap);
 
-    for (int i = 0; i < NUM_SUBMIT_FRAMES; i++) {
+    /*
+     * Submit depth is fixed before renderer initialization. Do not reserve
+     * full staging and mirrored VRAM buffers for frame slots that cannot be
+     * reached during this run.
+     */
+    for (int i = 0; i < nframes; i++) {
         FrameStagingState *fs = &r->frame_staging[i];
 
-        size_t idx_cap = MIN(r->storage_buffers[BUFFER_INDEX].buffer_size,
-                             idx_max);
-        size_t vtx_cap = MIN(r->storage_buffers[BUFFER_VERTEX_INLINE].buffer_size,
-                             vtx_max);
-        size_t uni_cap = MIN(r->storage_buffers[BUFFER_UNIFORM].buffer_size,
-                             uni_max);
-        size_t stg_cap = MIN(r->storage_buffers[BUFFER_STAGING_SRC].buffer_size,
-                             stg_max);
+        size_t idx_cap =
+            MIN(r->storage_buffers[BUFFER_INDEX].buffer_size, idx_max);
+        size_t vtx_cap =
+            MIN(r->storage_buffers[BUFFER_VERTEX_INLINE].buffer_size, vtx_max);
+        size_t uni_cap =
+            MIN(r->storage_buffers[BUFFER_UNIFORM].buffer_size, uni_max);
+        size_t stg_cap =
+            MIN(r->storage_buffers[BUFFER_STAGING_SRC].buffer_size, stg_max);
 
         fs->index_staging = (StorageBuffer){
             .alloc_info = host_alloc_create_info,

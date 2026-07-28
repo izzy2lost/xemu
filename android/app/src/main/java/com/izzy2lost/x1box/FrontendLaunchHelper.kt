@@ -55,13 +55,14 @@ object FrontendLaunchHelper {
     if (intent == null) {
       return
     }
-    val flags = intent.flags and
-      (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-    if (flags == 0) {
+    if (intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION == 0) {
       return
     }
     try {
-      context.contentResolver.takePersistableUriPermission(uri, flags)
+      context.contentResolver.takePersistableUriPermission(
+        uri,
+        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+      )
     } catch (_: SecurityException) {
     } catch (_: IllegalArgumentException) {
     }

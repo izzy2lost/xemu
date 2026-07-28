@@ -60,7 +60,7 @@
               android:contentDescription="@string/library_about_button_desc"
               android:padding="6dp"
               android:src="@drawable/ic_xemu_info"
-              android:tint="@color/game_library_top_button_content" />
+              app:tint="@color/game_library_top_button_content" />
 
             <View
               android:layout_width="0dp"
@@ -75,7 +75,7 @@
               android:contentDescription="@string/library_settings"
               android:padding="6dp"
               android:src="@drawable/ic_xemu_settings"
-              android:tint="@color/game_library_top_button_content" />
+              app:tint="@color/game_library_top_button_content" />
           </LinearLayout>
 
           <!--
@@ -134,7 +134,7 @@
               android:layout_marginEnd="6dp"
               android:contentDescription="@null"
               android:src="@drawable/ic_xemu_info"
-              android:tint="@color/xemu_notice" />
+              app:tint="@color/xemu_notice" />
 
             <TextView
               android:id="@+id/tv_library_long_press_hint"

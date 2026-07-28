@@ -1,15 +1,14 @@
-# xemu Android bootstrap
+# xemu Android
 
-This directory mirrors Super3's Android setup (AGP, NDK, SDK levels) and wires
-up SDL2 for an Android-native entry point. It currently builds a minimal SDL2
-bootstrap (see `app/src/main/cpp/xemu_android.cpp`) that opens an ES context and
-runs an event loop. The xemu core is not yet wired.
+This directory contains the Android frontend and native build for xemu. The
+Android entry point in `app/src/main/cpp/xemu_android.cpp` integrates the xemu
+core with SDL2 and the Android Vulkan/OpenGL rendering paths.
 
 ## Toolchain expectations
 - Android SDK 36
 - Build Tools 36.1.0
-- NDK r29+ (configured to 29.0.14206865 in Gradle)
-- CMake 3.30.3
+- NDK r30+ (configured to 30.0.15729638 in Gradle)
+- CMake 3.22.1
 - Meson
 - Ninja
 - JDK 21
@@ -30,14 +29,32 @@ From this directory:
 ./gradlew assembleDebug
 ```
 
+For a release-optimized APK that Android Studio can profile without making the
+app debuggable:
+
+```
+./gradlew assembleProfile
+```
+
+The resulting APK is written to
+`app/build/outputs/apk/profile/app-profile.apk`. Open it with Android Studio's
+**Profile or Debug APK** action. A connected arm64 Android device is required
+to record CPU, memory, power, or system traces.
+
+Host tools installed outside the normal `PATH` can be supplied in the ignored
+`local.properties` file:
+
+```
+xemu.cargoExecutable=/absolute/path/to/cargo
+xemu.mesonExecutable=/absolute/path/to/meson
+xemu.cargoHome=/absolute/path/to/cargo-home
+xemu.rustupHome=/absolute/path/to/rustup-home
+xemu.hostRustLinker=/absolute/path/to/a/host-linker
+```
+
 ## SDL2
 SDL2 is fetched via CMake (default `release-2.32.10`). To use a local checkout:
 
 ```
 ./gradlew assembleDebug -Pandroid.experimental.cmake.arguments=-DSDL2_LOCAL_DIR=/path/to/SDL
 ```
-
-## Core integration note
-Mainline xemu moved to SDL3 on 2026-01-21. The last SDL2-based tag is `v0.8.133`.
-If you plan to wire the core into Android with SDL2, start from that tag or
-cherry-pick the SDL2-based frontend changes.

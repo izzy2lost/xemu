@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.30)
+cmake_minimum_required(VERSION 3.22.1)
 project(xemu_android LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -16,9 +16,18 @@ endif()
 
 option(XEMU_ENABLE_VULKAN "Enable Vulkan renderer" ON)
 option(XEMU_ENABLE_XISO_CONVERTER "Enable ISO->XISO converter library" ON)
+option(XEMU_ENABLE_LTO "Enable interprocedural optimization for release builds" OFF)
 option(XEMU_OPT_NATIVE_FLOAT "Enable native ARM64 float operations for SSE/FPU" OFF)
 option(XEMU_OPT_TCG_PEEPHOLE "Enable TCG optimizer setcond+brcond peephole fusion" OFF)
 option(XEMU_OPT_TB_CACHE_HINTS "Enable persistent TB cache hints (pre-warm on load)" OFF)
+
+if(XEMU_ENABLE_LTO)
+  # CMake 3.22's Android IPO probe requests GNU gold, which modern NDKs no
+  # longer ship. Android's Clang/LLD toolchain supports ThinLTO directly.
+  add_compile_options(-flto=thin)
+  add_link_options(-flto=thin -fuse-ld=lld)
+  message(STATUS "Native ThinLTO enabled")
+endif()
 
 find_program(CARGO_EXECUTABLE NAMES cargo cargo.exe)
 if(CARGO_EXECUTABLE MATCHES "-NOTFOUND$" OR NOT CARGO_EXECUTABLE)
@@ -29,6 +38,20 @@ if(CARGO_EXECUTABLE MATCHES "-NOTFOUND$" OR NOT CARGO_EXECUTABLE)
     endif()
   endif()
 endif()
+
+set(XEMU_CARGO_ENV_VARS "")
+if(DEFINED XEMU_CARGO_HOME AND NOT XEMU_CARGO_HOME STREQUAL "")
+  list(APPEND XEMU_CARGO_ENV_VARS "CARGO_HOME=${XEMU_CARGO_HOME}")
+endif()
+if(DEFINED XEMU_RUSTUP_HOME AND NOT XEMU_RUSTUP_HOME STREQUAL "")
+  list(APPEND XEMU_CARGO_ENV_VARS "RUSTUP_HOME=${XEMU_RUSTUP_HOME}")
+endif()
+if(DEFINED XEMU_HOST_RUST_LINKER AND NOT XEMU_HOST_RUST_LINKER STREQUAL "")
+  list(APPEND XEMU_CARGO_ENV_VARS
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${XEMU_HOST_RUST_LINKER}"
+  )
+endif()
+
 set(XEMU_XISO_CONVERTER_BUILD_ENABLED ${XEMU_ENABLE_XISO_CONVERTER})
 if(XEMU_XISO_CONVERTER_BUILD_ENABLED AND NOT CARGO_EXECUTABLE)
   message(WARNING "cargo not found in PATH; disabling XISO converter")
@@ -240,6 +263,9 @@ if(NOT NINJA_EXECUTABLE)
   message(FATAL_ERROR "ninja not found in PATH; required to build glib for Android")
 endif()
 
+get_filename_component(NINJA_DIRECTORY "${NINJA_EXECUTABLE}" DIRECTORY)
+set(GLIB_BUILD_PATH "${NINJA_DIRECTORY}:$ENV{PATH}")
+
 if(CMAKE_ANDROID_NDK)
   set(NDK_PATH "${CMAKE_ANDROID_NDK}")
 elseif(ANDROID_NDK)
@@ -321,6 +347,7 @@ if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
       "CARGO_TARGET_DIR=${XISO_CONVERTER_RS_TARGET_DIR}"
       "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${XISO_CONVERTER_RS_LINKER}"
       "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=${XISO_CONVERTER_RS_AR}"
+      ${XEMU_CARGO_ENV_VARS}
       ${XISO_CONVERTER_CARGO_ENV_VARS}
       "${CARGO_EXECUTABLE}" build
       --manifest-path "${XISO_CONVERTER_RS_DIR}/Cargo.toml"
@@ -425,6 +452,7 @@ add_custom_command(
     "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=${DSP56300_RS_AR}"
     "CC_aarch64_linux_android=${DSP56300_RS_LINKER}"
     "AR_aarch64_linux_android=${DSP56300_RS_AR}"
+    ${XEMU_CARGO_ENV_VARS}
     ${DSP56300_CARGO_ENV_VARS}
     "${CARGO_EXECUTABLE}" build
     --manifest-path "${DSP56300_RS_DIR}/Cargo.toml"
@@ -495,6 +523,7 @@ ExternalProject_Add(glib_ep
   PATCH_COMMAND
     "${CMAKE_COMMAND}" -DGLIB_SOURCE_DIR="${GLIB_SOURCE_DIR}" -P "${CMAKE_CURRENT_LIST_DIR}/patch_glib.cmake"
   CONFIGURE_COMMAND
+    "${CMAKE_COMMAND}" -E env "PATH=${GLIB_BUILD_PATH}"
     "${MESON_EXECUTABLE}" setup "${GLIB_BUILD_DIR}" "${GLIB_SOURCE_DIR}"
     --cross-file "${GLIB_CROSS_FILE}"
     --prefix "${GLIB_INSTALL_DIR}"
@@ -510,7 +539,9 @@ ExternalProject_Add(glib_ep
     -Dinternal_pcre=true
     -Dinstalled_tests=false
   BUILD_COMMAND "${NINJA_EXECUTABLE}" -C "${GLIB_BUILD_DIR}" -j 1
-  INSTALL_COMMAND "${MESON_EXECUTABLE}" install -C "${GLIB_BUILD_DIR}"
+  INSTALL_COMMAND
+    "${CMAKE_COMMAND}" -E env "PATH=${GLIB_BUILD_PATH}"
+    "${MESON_EXECUTABLE}" install -C "${GLIB_BUILD_DIR}"
   BUILD_BYPRODUCTS
     "${GLIB_INSTALL_DIR}/lib/libglib-2.0.a"
     "${GLIB_INSTALL_DIR}/lib/libgobject-2.0.a"

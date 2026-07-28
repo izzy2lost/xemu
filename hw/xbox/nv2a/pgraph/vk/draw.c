@@ -24,7 +24,14 @@
 #include "system/physmem.h"
 #include "ui/xemu-settings.h"
 #include "hw/xbox/nv2a/pgraph/prim_rewrite.h"
+#include <glib/gstdio.h>
 #include <math.h>
+
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
+
+#define VK_PIPELINE_CACHE_MAX_DISK_SIZE (256 * 1024 * 1024)
 
 static bool g_xemu_fast_fences = false;
 static bool g_xemu_draw_reorder = false;
@@ -33,6 +40,44 @@ static bool g_xemu_bindless_textures = false;
 static bool g_xemu_async_compile = false;
 static bool g_xemu_frame_skip = false;
 static int g_xemu_submit_frames = 3;
+
+static int get_command_buffer_draw_limit(PGRAPHVkState *r)
+{
+#ifdef __ANDROID__
+    /* ARM's older Mali Android drivers can reset on very large graphics
+     * command buffers. Keep the workaround vendor-scoped and make its
+     * threshold tunable while profiling new devices. */
+    if (r->device_props.vendorID == 0x13B5u) {
+        static int limit = -1;
+        if (limit < 0) {
+            limit = 256;
+            char property[PROP_VALUE_MAX] = {};
+            if (__system_property_get("debug.xemu.vk.max_draws",
+                                      property) > 0) {
+                char *end = NULL;
+                long value = strtol(property, &end, 10);
+                if (end != property && *end == '\0' &&
+                    value >= 1 && value <= 256) {
+                    limit = value;
+                }
+            }
+            __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                                "Mali command-buffer draw limit: %d", limit);
+        }
+        return limit;
+    }
+#endif
+    return INT_MAX;
+}
+
+static bool requires_strict_draw_serialization(PGRAPHVkState *r)
+{
+#ifdef __ANDROID__
+    return r->device_props.vendorID == 0x13B5u;
+#else
+    return false;
+#endif
+}
 
 struct OptBisectStats g_opt_stats;
 
@@ -382,14 +427,37 @@ static void init_pipeline_cache(PGRAPHState *pg)
 
     void *initial_data = NULL;
     gsize initial_size = 0;
+    bool loaded_from_disk = false;
 
     if (g_config.perf.cache_shaders) {
         const char *base = xemu_settings_get_base_path();
         char *plc_path = g_strdup_printf("%svk_pipeline_cache.bin", base);
-        if (g_file_get_contents(plc_path, (gchar **)&initial_data,
-                                &initial_size, NULL)) {
-            VK_LOG("Loaded pipeline cache from disk (%zu bytes)", initial_size);
-            g_nv2a_stats.shader_stats.pipeline_cache_disk_loaded = 1;
+        GStatBuf stat_buf;
+
+        if (g_stat(plc_path, &stat_buf) == 0 &&
+            (stat_buf.st_size <= 0 ||
+             stat_buf.st_size > VK_PIPELINE_CACHE_MAX_DISK_SIZE)) {
+            warn_report(
+                "Ignoring invalid Vulkan pipeline cache size: %" G_GINT64_FORMAT
+                " bytes",
+                (int64_t)stat_buf.st_size);
+        } else {
+            GError *error = NULL;
+            if (g_file_get_contents(plc_path, (gchar **)&initial_data,
+                                    &initial_size, &error)) {
+                if (initial_size > 0) {
+                    loaded_from_disk = true;
+                    VK_LOG("Loaded pipeline cache from disk (%zu bytes)",
+                           initial_size);
+                } else {
+                    g_clear_pointer(&initial_data, g_free);
+                }
+            } else if (!g_error_matches(error, G_FILE_ERROR,
+                                        G_FILE_ERROR_NOENT)) {
+                warn_report("Failed to load Vulkan pipeline cache: %s",
+                            error->message);
+            }
+            g_clear_error(&error);
         }
         g_free(plc_path);
     }
@@ -401,9 +469,26 @@ static void init_pipeline_cache(PGRAPHState *pg)
         .pInitialData = initial_data,
         .pNext = NULL,
     };
-    VK_CHECK(vkCreatePipelineCache(r->device, &cache_info, NULL,
-                                   &r->vk_pipeline_cache));
+
+    VkResult result = vkCreatePipelineCache(r->device, &cache_info, NULL,
+                                            &r->vk_pipeline_cache);
+    if (result != VK_SUCCESS && initial_data != NULL) {
+        warn_report("Vulkan rejected the saved pipeline cache (%d); "
+                    "retrying with an empty cache",
+                    result);
+        cache_info.initialDataSize = 0;
+        cache_info.pInitialData = NULL;
+        r->vk_pipeline_cache = VK_NULL_HANDLE;
+        result = vkCreatePipelineCache(r->device, &cache_info, NULL,
+                                       &r->vk_pipeline_cache);
+        loaded_from_disk = false;
+    }
     g_free(initial_data);
+    VK_CHECK(result);
+
+    if (loaded_from_disk) {
+        g_nv2a_stats.shader_stats.pipeline_cache_disk_loaded = 1;
+    }
 
     const size_t pipeline_cache_size = 2048;
     lru_init(&r->pipeline_cache, 4096);
@@ -425,22 +510,46 @@ static void init_pipeline_cache(PGRAPHState *pg)
 static void save_pipeline_cache_to_disk(PGRAPHVkState *r)
 {
     size_t size = 0;
-    VkResult res = vkGetPipelineCacheData(r->device, r->vk_pipeline_cache,
-                                          &size, NULL);
-    if (res == VK_SUCCESS && size > 0) {
-        void *data = g_malloc(size);
-        res = vkGetPipelineCacheData(r->device, r->vk_pipeline_cache,
-                                     &size, data);
-        if (res == VK_SUCCESS) {
-            const char *base = xemu_settings_get_base_path();
-            char *plc_path = g_strdup_printf("%svk_pipeline_cache.bin", base);
-            g_file_set_contents(plc_path, (const gchar *)data, size, NULL);
+    VkResult res =
+        vkGetPipelineCacheData(r->device, r->vk_pipeline_cache, &size, NULL);
+    if (res != VK_SUCCESS || size == 0 ||
+        size > VK_PIPELINE_CACHE_MAX_DISK_SIZE || size > G_MAXSSIZE) {
+        if (res != VK_SUCCESS || size > VK_PIPELINE_CACHE_MAX_DISK_SIZE ||
+            size > G_MAXSSIZE) {
+            warn_report("Skipping Vulkan pipeline cache save "
+                        "(result=%d, size=%zu)",
+                        res, size);
+        }
+        return;
+    }
+
+    void *data = g_try_malloc(size);
+    if (data == NULL) {
+        warn_report("Unable to allocate %zu bytes for Vulkan pipeline cache",
+                    size);
+        return;
+    }
+
+    res = vkGetPipelineCacheData(r->device, r->vk_pipeline_cache, &size, data);
+    if (res == VK_SUCCESS) {
+        const char *base = xemu_settings_get_base_path();
+        char *plc_path = g_strdup_printf("%svk_pipeline_cache.bin", base);
+        GError *error = NULL;
+
+        if (g_file_set_contents(plc_path, data, (gssize)size, &error)) {
             VK_LOG("Saved pipeline cache to disk (%zu bytes)", size);
             g_nv2a_stats.shader_stats.pipeline_cache_disk_saved++;
-            g_free(plc_path);
+        } else {
+            warn_report("Failed to save Vulkan pipeline cache: %s",
+                        error->message);
         }
-        g_free(data);
+        g_clear_error(&error);
+        g_free(plc_path);
+    } else {
+        warn_report("Failed to read Vulkan pipeline cache data (%d)", res);
     }
+
+    g_free(data);
 }
 
 #define PIPELINE_CACHE_SAVE_INTERVAL_US (30 * 1000000LL)
@@ -542,6 +651,8 @@ void pgraph_vk_init_pipelines(PGRAPHState *pg)
     for (int i = 0; i < NUM_SUBMIT_FRAMES; i++) {
         VK_CHECK(vkCreateFence(r->device, &fence_info, NULL,
                                &r->frame_fences[i]));
+        VK_CHECK(vkCreateSemaphore(r->device, &semaphore_info, NULL,
+                                   &r->aux_draw_semaphores[i]));
     }
 
     VK_CHECK(
@@ -576,6 +687,7 @@ void pgraph_vk_finalize_pipelines(PGRAPHState *pg)
         }
         r->deferred_framebuffer_count[i] = 0;
         vkDestroyFence(r->device, r->frame_fences[i], NULL);
+        vkDestroySemaphore(r->device, r->aux_draw_semaphores[i], NULL);
     }
     vkDestroyFence(r->device, r->aux_fence, NULL);
     vkDestroySemaphore(r->device, r->stall_chain_semaphore, NULL);
@@ -2121,7 +2233,12 @@ void pgraph_vk_flush_all_frames(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
     pgraph_vk_render_thread_wait_idle(r);
-    for (int i = 0; i < NUM_SUBMIT_FRAMES; i++) {
+    /*
+     * Per-frame staging resources are allocated only for the configured
+     * submit depth. Inactive slots intentionally have no upload bitmap (or
+     * staging buffers), so never reset them here.
+     */
+    for (int i = 0; i < r->num_active_frames; i++) {
         r->frame_enqueued[i] = false;
         if (r->frame_submitted[i]) {
             VK_CHECK(vkWaitForFences(r->device, 1, &r->frame_fences[i],
@@ -2259,10 +2376,12 @@ void pgraph_vk_finish(PGRAPHState *pg, FinishReason finish_reason)
 #endif
         flush_memory_buffer(pg, cmd);
 
-        /* Execution barrier between aux CB (staging copies) and main CB
-         * (draws).  Both CBs are submitted in a single VkSubmitInfo, so
-         * this barrier's second synchronization scope covers the main CB's
-         * commands (they are later in submission order). */
+        /*
+         * Keep the local transfer barrier as well as the explicit semaphore
+         * used at submission time. Older Mali drivers have proven unreliable
+         * when staging copies and draws are merely adjacent command buffers
+         * in one VkSubmitInfo.
+         */
         VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT |
                                          VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
                                          VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
@@ -2307,30 +2426,44 @@ void pgraph_vk_finish(PGRAPHState *pg, FinishReason finish_reason)
         if (r->is_render_thread_context) {
             /* Render thread path: always synchronous, consume chain if
              * pending but never signal it. */
-            VkSemaphore wait_sems[1];
-            VkPipelineStageFlags wait_stages[1];
-            uint32_t wait_count = 0;
+            VkSemaphore chain_wait_sems[1];
+            VkPipelineStageFlags chain_wait_stages[1];
+            uint32_t chain_wait_count = 0;
             if (r->stall_chain_pending) {
-                wait_sems[0] = r->stall_chain_semaphore;
-                wait_stages[0] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-                wait_count = 1;
+                chain_wait_sems[0] = r->stall_chain_semaphore;
+                chain_wait_stages[0] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                chain_wait_count = 1;
                 r->stall_chain_pending = false;
             }
 
-            VkCommandBuffer cbs[] = {
-                r->aux_command_buffer, r->command_buffer
-            };
-            VkSubmitInfo submit_info = {
-                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .commandBufferCount = ARRAY_SIZE(cbs),
-                .pCommandBuffers = cbs,
-                .waitSemaphoreCount = wait_count,
-                .pWaitSemaphores = wait_sems,
-                .pWaitDstStageMask = wait_stages,
+            VkSemaphore aux_draw_semaphore =
+                r->aux_draw_semaphores[r->current_frame];
+            VkPipelineStageFlags aux_wait_stage =
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            VkSubmitInfo submit_infos[] = {
+                {
+                    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                    .waitSemaphoreCount = chain_wait_count,
+                    .pWaitSemaphores = chain_wait_sems,
+                    .pWaitDstStageMask = chain_wait_stages,
+                    .commandBufferCount = 1,
+                    .pCommandBuffers = &r->aux_command_buffer,
+                    .signalSemaphoreCount = 1,
+                    .pSignalSemaphores = &aux_draw_semaphore,
+                },
+                {
+                    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                    .waitSemaphoreCount = 1,
+                    .pWaitSemaphores = &aux_draw_semaphore,
+                    .pWaitDstStageMask = &aux_wait_stage,
+                    .commandBufferCount = 1,
+                    .pCommandBuffers = &r->command_buffer,
+                },
             };
 
             vkResetFences(r->device, 1, &r->command_buffer_fence);
-            VK_CHECK(vkQueueSubmit(r->queue, 1, &submit_info,
+            VK_CHECK(vkQueueSubmit(r->queue, ARRAY_SIZE(submit_infos),
+                                   submit_infos,
                                    r->command_buffer_fence));
             qatomic_inc(&r->submit_count);
 
@@ -2379,6 +2512,8 @@ void pgraph_vk_finish(PGRAPHState *pg, FinishReason finish_reason)
             cmd->finish.aux_command_buffer = r->aux_command_buffer;
             cmd->finish.command_buffer = r->command_buffer;
             cmd->finish.fence = r->command_buffer_fence;
+            cmd->finish.aux_draw_semaphore =
+                r->aux_draw_semaphores[r->current_frame];
             cmd->finish.frame_index = r->current_frame;
 
             if (r->pending_post_fence_cb) {
@@ -3434,6 +3569,28 @@ static void end_draw(PGRAPHState *pg)
     }
 
     r->in_draw = false;
+
+    /*
+     * Mali r38p1 can lose the device when two NV2A draws overlap within the
+     * same graphics command buffer. Close the render pass and establish a
+     * full memory dependency at each guest draw boundary. This is cheaper
+     * than submitting and waiting after every draw while preserving strict
+     * Xbox draw ordering.
+     */
+    if (requires_strict_draw_serialization(r)) {
+        end_render_pass(r);
+        VkMemoryBarrier barrier = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT |
+                             VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT |
+                             VK_ACCESS_MEMORY_WRITE_BIT,
+        };
+        vkCmdPipelineBarrier(r->command_buffer,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0, 1, &barrier, 0, NULL, 0, NULL);
+    }
 }
 
 typedef struct VertexBufferRemap {
@@ -4972,6 +5129,19 @@ void pgraph_vk_draw_end(NV2AState *d)
         return;
     }
 
+    /*
+     * Submit previously recorded/queued work before admitting a new draw
+     * when this driver's conservative command-buffer limit is reached.
+     * Count queued entries too: reorder entries emit individual Vk draws,
+     * while merged draws can split again when uniform offsets differ.
+     */
+    int pending_draws = r->reorder_window.count + r->draw_queue.count;
+    int draw_limit = get_command_buffer_draw_limit(r);
+    if ((r->in_command_buffer || pending_draws > 0) &&
+        r->draws_in_cb + pending_draws >= draw_limit) {
+        pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
+    }
+
     uint32_t control_0 = pgraph_vk_reg_r(pg, NV_PGRAPH_CONTROL_0);
     bool mask_alpha = control_0 & NV_PGRAPH_CONTROL_0_ALPHA_WRITE_ENABLE;
     bool mask_red = control_0 & NV_PGRAPH_CONTROL_0_RED_WRITE_ENABLE;
@@ -4988,7 +5158,7 @@ void pgraph_vk_draw_end(NV2AState *d)
         return;
     }
 
-    if (g_xemu_draw_reorder &&
+    if (g_xemu_draw_reorder && !requires_strict_draw_serialization(r) &&
         (pg->draw_arrays_length || pg->inline_elements_length) && !pg->clearing) {
         ReorderWindow *w = &r->reorder_window;
         bool is_safe = classify_draw_safe(pg);
@@ -5046,7 +5216,8 @@ void pgraph_vk_draw_end(NV2AState *d)
         r->reorder_window.active = false;
     }
 
-    if (g_xemu_draw_merge && pg->draw_arrays_length && !pg->clearing) {
+    if (g_xemu_draw_merge && !requires_strict_draw_serialization(r) &&
+        pg->draw_arrays_length && !pg->clearing) {
         DrawQueue *q = &r->draw_queue;
 
         if (q->active) {
@@ -5102,7 +5273,8 @@ void pgraph_vk_draw_end(NV2AState *d)
         goto post_draw;
     }
 
-    if (g_xemu_draw_merge && pg->inline_elements_length && !pg->clearing) {
+    if (g_xemu_draw_merge && !requires_strict_draw_serialization(r) &&
+        pg->inline_elements_length && !pg->clearing) {
         DrawQueue *q = &r->draw_queue;
 
         if (q->active) {

@@ -41,6 +41,16 @@
 
 extern int nv2a_vk_dgroup_indent;
 
+#ifdef __ANDROID__
+#define VK_CHECK_ABORT(expr, result)                                          \
+    __android_log_assert("vk_result == VK_SUCCESS", "hakuX-vk",              \
+                         "VK_CHECK FAILED: %s = %d at %s:%d",                 \
+                         expr, result, __FILE__, __LINE__)
+#else
+#define VK_CHECK_ABORT(expr, result)                                          \
+    assert((result) == VK_SUCCESS && "vk check failed")
+#endif
+
 #define NV2A_VK_XDPRINTF(x, fmt, ...)                                  \
     do {                                                               \
         if (x) {                                                       \
@@ -71,8 +81,8 @@ extern int nv2a_vk_dgroup_indent;
                          #x, vk_result, __FILE__, __LINE__);                   \
             fprintf(stderr, "VK_CHECK FAILED: %s = %d at %s:%d\n",            \
                     #x, vk_result, __FILE__, __LINE__);                        \
+            VK_CHECK_ABORT(#x, vk_result);                                     \
         }                                                                      \
-        assert(vk_result == VK_SUCCESS && "vk check failed");                  \
     } while (0)
 
 void pgraph_vk_debug_frame_terminator(void);

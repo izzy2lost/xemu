@@ -63,6 +63,7 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <SDL_vulkan.h>
 #endif
 #ifdef _WIN32
 #include "nvapi.h"
@@ -142,6 +143,35 @@ static int64_t g_android_frame_interval_ns = 16666666;
 static int g_android_display_mode = 0; /* 0=stretch, 1=4:3, 2=16:9 */
 static GLuint g_android_last_hw_tex = 0;
 static bool g_android_last_hw_flip = false;
+static bool g_android_direct_vulkan = false;
+
+bool xemu_android_vulkan_direct_present_enabled(void)
+{
+    return g_android_direct_vulkan;
+}
+
+bool xemu_android_vulkan_create_surface(VkInstance instance,
+                                        VkSurfaceKHR *surface)
+{
+    if (!g_android_direct_vulkan || !m_window || !surface) {
+        return false;
+    }
+    return SDL_Vulkan_CreateSurface(m_window, instance, surface) == SDL_TRUE;
+}
+
+void xemu_android_vulkan_get_drawable_size(int *width, int *height)
+{
+    if (g_android_direct_vulkan && m_window) {
+        SDL_Vulkan_GetDrawableSize(m_window, width, height);
+        return;
+    }
+    if (width) {
+        *width = 0;
+    }
+    if (height) {
+        *height = 0;
+    }
+}
 
 static bool sdl2_is_render_thread(void)
 {
@@ -1058,10 +1088,12 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     }
 #endif
 
-    // On Android, always use OpenGL window even for Vulkan because Vulkan
-    // needs GL context for external memory display presentation
 #ifdef __ANDROID__
-    SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    g_android_direct_vulkan =
+        g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN;
+    SDL_WindowFlags window_flags = (SDL_WindowFlags)(
+        (g_android_direct_vulkan ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) |
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 #else
     bool use_vulkan = (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN);
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(
@@ -1089,48 +1121,60 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     }
 #endif
 
-    m_context = SDL_GL_CreateContext(m_window);
+    m_context = NULL;
+#ifdef __ANDROID__
+    if (!g_android_direct_vulkan)
+#endif
+    {
+        m_context = SDL_GL_CreateContext(m_window);
 
 #ifndef __ANDROID__
-    if (m_context != NULL && epoxy_gl_version() < 40) {
-        SDL_GL_MakeCurrent(NULL, NULL);
-        SDL_GL_DeleteContext(m_context);
-        m_context = NULL;
-    }
+        if (m_context != NULL && epoxy_gl_version() < 40) {
+            SDL_GL_MakeCurrent(NULL, NULL);
+            SDL_GL_DeleteContext(m_context);
+            m_context = NULL;
+        }
 #endif
 
-    if (m_context == NULL) {
+        if (m_context == NULL) {
 #ifdef __ANDROID__
-        const char *msg =
-            "Unable to create OpenGL ES context. This usually means the\r\n"
-            "graphics device on this system does not support OpenGL ES 3.0.\r\n"
-            "\r\n"
-            "xemu cannot continue and will now exit.";
+            const char *msg =
+                "Unable to create OpenGL ES context. This usually means the\r\n"
+                "graphics device on this system does not support OpenGL ES 3.0.\r\n"
+                "\r\n"
+                "xemu cannot continue and will now exit.";
 #else
-        const char *msg =
-            "Unable to create OpenGL context. This usually means the\r\n"
-            "graphics device on this system does not support OpenGL 4.0.\r\n"
-            "\r\n"
-            "xemu cannot continue and will now exit.";
+            const char *msg =
+                "Unable to create OpenGL context. This usually means the\r\n"
+                "graphics device on this system does not support OpenGL 4.0.\r\n"
+                "\r\n"
+                "xemu cannot continue and will now exit.";
 #endif
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
-            "Unable to create OpenGL context",
-            msg,
-            m_window);
-        SDL_DestroyWindow(m_window);
-        SDL_Quit();
-        exit(1);
-    }
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                "Unable to create OpenGL context",
+                msg,
+                m_window);
+            SDL_DestroyWindow(m_window);
+            SDL_Quit();
+            exit(1);
+        }
 
-    if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
-        fprintf(stderr, "Failed to make GL context current: %s\n", SDL_GetError());
-        SDL_DestroyWindow(m_window);
-        SDL_Quit();
-        exit(1);
+        if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+            fprintf(stderr, "Failed to make GL context current: %s\n", SDL_GetError());
+            SDL_DestroyWindow(m_window);
+            SDL_Quit();
+            exit(1);
+        }
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "sdl2_display_very_early_init: GL context current");
+#endif
     }
 #ifdef __ANDROID__
-    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                        "sdl2_display_very_early_init: GL context current");
+    if (g_android_direct_vulkan) {
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "sdl2_display_very_early_init: native Vulkan window");
+    }
 #endif
 
     int width, height, channels = 0;
@@ -1148,12 +1192,13 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 
     fprintf(stderr, "CPU: %s\n", xemu_get_cpu_info());
     fprintf(stderr, "OS_Version: %s\n", xemu_get_os_info());
-    fprintf(stderr, "GL_VENDOR: %s\n", glGetString(GL_VENDOR));
-    fprintf(stderr, "GL_RENDERER: %s\n", glGetString(GL_RENDERER));
-    fprintf(stderr, "GL_VERSION: %s\n", glGetString(GL_VERSION));
-    fprintf(stderr, "GL_SHADING_LANGUAGE_VERSION: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
+    if (m_context) {
+        fprintf(stderr, "GL_VENDOR: %s\n", glGetString(GL_VENDOR));
+        fprintf(stderr, "GL_RENDERER: %s\n", glGetString(GL_RENDERER));
+        fprintf(stderr, "GL_VERSION: %s\n", glGetString(GL_VERSION));
+        fprintf(stderr, "GL_SHADING_LANGUAGE_VERSION: %s\n",
+                glGetString(GL_SHADING_LANGUAGE_VERSION));
 #ifdef __ANDROID__
-    {
         const char *vendor = (const char *)glGetString(GL_VENDOR);
         const char *renderer = (const char *)glGetString(GL_RENDERER);
         const char *version = (const char *)glGetString(GL_VERSION);
@@ -1178,12 +1223,12 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                 "android: force glFinish before swap enabled");
         }
-    }
 #endif
+    }
 
     // Initialize offscreen rendering context now
 #ifdef __ANDROID__
-    // Android uses a separate preinit path on the SDL thread.
+    // Android initializes the selected renderer from the SDL thread.
 #else
     nv2a_context_init();
 #endif
@@ -1332,7 +1377,8 @@ void xemu_android_display_preinit(void)
     initialized = true;
     sdl_render_thread_id = SDL_ThreadID();
     sdl2_display_very_early_init(NULL);
-    if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+    if (!g_android_direct_vulkan &&
+        SDL_GL_MakeCurrent(m_window, m_context) != 0) {
 #ifdef __ANDROID__
         __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
                             "xemu_android_display_preinit: make current failed: %s",
@@ -1340,11 +1386,13 @@ void xemu_android_display_preinit(void)
 #endif
     }
 #ifdef __ANDROID__
-    // Cache EGL state now while GL context is current on this thread
-    extern void glo_android_cache_current_egl_state(void);
-    glo_android_cache_current_egl_state();
-    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                        "xemu_android_display_preinit: cached EGL state");
+    if (!g_android_direct_vulkan) {
+        // Cache EGL state now while GL context is current on this thread.
+        extern void glo_android_cache_current_egl_state(void);
+        glo_android_cache_current_egl_state();
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "xemu_android_display_preinit: cached EGL state");
+    }
 #endif
     nv2a_android_early_context_init();
     qemu_sem_init(&display_init_sem, 0);
@@ -1373,7 +1421,8 @@ void xemu_android_display_loop(void)
     if (sdl_render_thread_id == 0) {
         sdl_render_thread_id = SDL_ThreadID();
     }
-    if (SDL_GL_GetCurrentContext() != m_context) {
+    if (!g_android_direct_vulkan &&
+        SDL_GL_GetCurrentContext() != m_context) {
         if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
 #ifdef __ANDROID__
             __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
@@ -1385,8 +1434,10 @@ void xemu_android_display_loop(void)
     }
 #ifdef __ANDROID__
     xemu_android_refresh_frame_limit_from_env();
-    SDL_GL_SetSwapInterval(g_config.display.window.vsync ? 1 : 0);
-    xemu_hud_init(m_window, m_context);
+    if (!g_android_direct_vulkan) {
+        SDL_GL_SetSwapInterval(g_config.display.window.vsync ? 1 : 0);
+        xemu_hud_init(m_window, m_context);
+    }
 #endif
     tcg_register_init_ctx();
     qemu_set_current_aio_context(qemu_get_aio_context());
@@ -1445,9 +1496,26 @@ void xemu_android_display_loop(void)
             bql_unlock();
             qemu_mutex_unlock_main_loop();
         }
-        sdl2_gl_refresh(&sdl2_console[0].dcl);
+        if (g_android_direct_vulkan) {
+            /*
+             * The Vulkan renderer acquires and presents the SDL native
+             * surface while servicing this framebuffer request. Android's
+             * controller overlay is a separate View above the SDL surface.
+             */
+            (void)nv2a_get_framebuffer_surface();
+            nv2a_release_framebuffer_surface();
+            qemu_mutex_lock_main_loop();
+            bql_lock();
+            sdl2_poll_events(&sdl2_console[0]);
+            bql_unlock();
+            qemu_mutex_unlock_main_loop();
+            SDL_Delay(1);
+        } else {
+            sdl2_gl_refresh(&sdl2_console[0].dcl);
+        }
 #ifdef __ANDROID__
-        if (!g_android_paused && SDL_GL_GetCurrentContext() != NULL) {
+        if (!g_android_direct_vulkan && !g_android_paused &&
+            SDL_GL_GetCurrentContext() != NULL) {
             android_log_gl_error("loop-end");
         }
 #else

@@ -20,6 +20,10 @@
 #include "qemu/osdep.h"
 #include "renderer.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 void pgraph_vk_snapshot_state(PGRAPHState *pg, RenderCommandSnapshot *snap)
 {
     memcpy(snap->regs, pg->regs_, sizeof(snap->regs));
@@ -112,14 +116,14 @@ void pgraph_vk_snapshot_state(PGRAPHState *pg, RenderCommandSnapshot *snap)
 
 static void process_finish(PGRAPHVkState *r, RenderCommand *cmd)
 {
-    VkSemaphore wait_sems[1];
-    VkPipelineStageFlags wait_stages[1];
-    uint32_t wait_count = 0;
+    VkSemaphore chain_wait_sems[1];
+    VkPipelineStageFlags chain_wait_stages[1];
+    uint32_t chain_wait_count = 0;
 
     if (cmd->finish.chain_wait) {
-        wait_sems[0] = cmd->finish.chain_semaphore;
-        wait_stages[0] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-        wait_count = 1;
+        chain_wait_sems[0] = cmd->finish.chain_semaphore;
+        chain_wait_stages[0] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        chain_wait_count = 1;
     }
 
     VkSemaphore signal_sems[1];
@@ -130,35 +134,66 @@ static void process_finish(PGRAPHVkState *r, RenderCommand *cmd)
         signal_count = 1;
     }
 
-    VkCommandBuffer cbs[] = {
-        cmd->finish.aux_command_buffer, cmd->finish.command_buffer
-    };
-    VkSubmitInfo submit_info = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .commandBufferCount = ARRAY_SIZE(cbs),
-        .pCommandBuffers = cbs,
-        .waitSemaphoreCount = wait_count,
-        .pWaitSemaphores = wait_sems,
-        .pWaitDstStageMask = wait_stages,
-        .signalSemaphoreCount = signal_count,
-        .pSignalSemaphores = signal_sems,
+    VkPipelineStageFlags aux_wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkSubmitInfo submit_infos[] = {
+        {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = chain_wait_count,
+            .pWaitSemaphores = chain_wait_sems,
+            .pWaitDstStageMask = chain_wait_stages,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cmd->finish.aux_command_buffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &cmd->finish.aux_draw_semaphore,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &cmd->finish.aux_draw_semaphore,
+            .pWaitDstStageMask = &aux_wait_stage,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cmd->finish.command_buffer,
+            .signalSemaphoreCount = signal_count,
+            .pSignalSemaphores = signal_sems,
+        },
     };
 
     vkResetFences(r->device, 1, &cmd->finish.fence);
-    VK_CHECK(vkQueueSubmit(r->queue, 1, &submit_info,
+    VK_CHECK(vkQueueSubmit(r->queue, ARRAY_SIZE(submit_infos), submit_infos,
                            cmd->finish.fence));
     qatomic_set(&r->frame_submitted[cmd->finish.frame_index], true);
     qatomic_inc(&r->submit_count);
 
     if (!cmd->finish.deferred) {
-        VK_CHECK(vkWaitForFences(r->device, 1, &cmd->finish.fence,
-                                 VK_TRUE, UINT64_MAX));
+        VkResult wait_result = vkWaitForFences(
+            r->device, 1, &cmd->finish.fence, VK_TRUE, UINT64_MAX);
+#ifdef __ANDROID__
+        if (wait_result != VK_SUCCESS) {
+            __android_log_print(
+                ANDROID_LOG_ERROR, "hakuX-vk",
+                "finish wait failed: result=%d reason=%d frame=%d submit=%u",
+                wait_result, cmd->finish.reason, cmd->finish.frame_index,
+                qatomic_read(&r->submit_count));
+        }
+#endif
+        VK_CHECK(wait_result);
         if (cmd->finish.post_fence_cb) {
             cmd->finish.post_fence_cb(r, NULL, cmd->finish.post_fence_opaque);
         }
     } else if (cmd->finish.post_fence_cb) {
-        VK_CHECK(vkWaitForFences(r->device, 1, &cmd->finish.fence,
-                                 VK_TRUE, UINT64_MAX));
+        VkResult wait_result = vkWaitForFences(
+            r->device, 1, &cmd->finish.fence, VK_TRUE, UINT64_MAX);
+#ifdef __ANDROID__
+        if (wait_result != VK_SUCCESS) {
+            __android_log_print(
+                ANDROID_LOG_ERROR, "hakuX-vk",
+                "deferred finish wait failed: result=%d reason=%d frame=%d "
+                "submit=%u",
+                wait_result, cmd->finish.reason, cmd->finish.frame_index,
+                qatomic_read(&r->submit_count));
+        }
+#endif
+        VK_CHECK(wait_result);
         cmd->finish.post_fence_cb(r, NULL, cmd->finish.post_fence_opaque);
     }
 
@@ -243,7 +278,8 @@ static void *render_thread_func(void *opaque)
             PGRAPHState *pg = &d->pgraph;
             r->is_render_thread_context = true;
 #if HAVE_EXTERNAL_MEMORY
-            if (r->display.use_external_memory) {
+            if (r->display.use_external_memory ||
+                r->display.direct_present) {
                 pgraph_vk_render_display(pg);
             }
 #else
