@@ -5,6 +5,7 @@
 #include "migration/qemu-file.h"
 #include "system/runstate.h"
 #include "xemu-xbe.h"
+#include "hw/xbox/nv2a/nv2a.h"
 
 #include <SDL.h>
 #include <SDL_atomic.h>
@@ -110,20 +111,70 @@ static char *get_snapshot_title(void)
     return g_strdup("Unknown Game");
 }
 
-static bool capture_snapshot_thumbnail(uint8_t **pixels_out, size_t *pixels_size_out)
+#define SNAPSHOT_PREVIEW_BYTES                                  \
+    ((size_t)SNAPSHOT_PREVIEW_WIDTH * SNAPSHOT_PREVIEW_HEIGHT * 4)
+
+/*
+ * Point sample an RGBA8 frame down to preview size. The preview file stores
+ * rows bottom-up (the Java decoder flips them back), which matches glReadPixels
+ * output but not a Vulkan image copy, hence flip_rows.
+ */
+static uint8_t *scale_to_snapshot_preview(const uint8_t *src, int src_w,
+                                          int src_h, bool flip_rows)
+{
+    uint8_t *dst = g_malloc(SNAPSHOT_PREVIEW_BYTES);
+
+    for (int y = 0; y < SNAPSHOT_PREVIEW_HEIGHT; ++y) {
+        const int sample_y = flip_rows ? (SNAPSHOT_PREVIEW_HEIGHT - 1 - y) : y;
+        const int src_y = (int)(((int64_t)sample_y * src_h) / SNAPSHOT_PREVIEW_HEIGHT);
+        for (int x = 0; x < SNAPSHOT_PREVIEW_WIDTH; ++x) {
+            const int src_x = (int)(((int64_t)x * src_w) / SNAPSHOT_PREVIEW_WIDTH);
+            const size_t src_off = ((size_t)src_y * (size_t)src_w + (size_t)src_x) * 4;
+            const size_t dst_off =
+                ((size_t)y * (size_t)SNAPSHOT_PREVIEW_WIDTH + (size_t)x) * 4;
+            memcpy(dst + dst_off, src + src_off, 4);
+        }
+    }
+
+    return dst;
+}
+
+#ifdef CONFIG_VULKAN
+/*
+ * Under Vulkan direct presentation there is no GL framebuffer to read from, so
+ * the renderer copies the presented frame out for us. The capture is requested
+ * a frame ahead by xemu_android_process_snapshot_request().
+ */
+static bool capture_snapshot_thumbnail_vulkan(uint8_t **pixels_out,
+                                              size_t *pixels_size_out)
+{
+    uint8_t *frame = NULL;
+    int frame_w = 0;
+    int frame_h = 0;
+
+    if (!nv2a_android_take_display_capture(&frame, &frame_w, &frame_h)) {
+        return false;
+    }
+
+    if (frame_w <= 0 || frame_h <= 0) {
+        g_free(frame);
+        return false;
+    }
+
+    *pixels_out = scale_to_snapshot_preview(frame, frame_w, frame_h, true);
+    *pixels_size_out = SNAPSHOT_PREVIEW_BYTES;
+    g_free(frame);
+    return true;
+}
+#endif
+
+static bool capture_snapshot_thumbnail_gl(uint8_t **pixels_out,
+                                          size_t *pixels_size_out)
 {
     GLint viewport[4] = { 0, 0, 0, 0 };
     GLint prev_pack_alignment = 4;
     uint8_t *src_pixels = NULL;
-    uint8_t *dst_pixels = NULL;
     bool ok = false;
-
-    if (!pixels_out || !pixels_size_out) {
-        return false;
-    }
-
-    *pixels_out = NULL;
-    *pixels_size_out = 0;
 
     if (!SDL_GL_GetCurrentContext() || g_snapshot_display_tex == 0) {
         return false;
@@ -141,11 +192,8 @@ static bool capture_snapshot_thumbnail(uint8_t **pixels_out, size_t *pixels_size
         const int src_w = viewport[2];
         const int src_h = viewport[3];
         const size_t src_bytes = (size_t)src_w * (size_t)src_h * 4;
-        const size_t dst_bytes = (size_t)SNAPSHOT_PREVIEW_WIDTH *
-                                 (size_t)SNAPSHOT_PREVIEW_HEIGHT * 4;
 
         src_pixels = g_malloc(src_bytes);
-        dst_pixels = g_malloc(dst_bytes);
 
         glGetIntegerv(GL_PACK_ALIGNMENT, &prev_pack_alignment);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -156,28 +204,32 @@ static bool capture_snapshot_thumbnail(uint8_t **pixels_out, size_t *pixels_size
             goto cleanup;
         }
 
-        for (int y = 0; y < SNAPSHOT_PREVIEW_HEIGHT; ++y) {
-            const int src_y = (int)(((int64_t)y * src_h) / SNAPSHOT_PREVIEW_HEIGHT);
-            for (int x = 0; x < SNAPSHOT_PREVIEW_WIDTH; ++x) {
-                const int src_x = (int)(((int64_t)x * src_w) / SNAPSHOT_PREVIEW_WIDTH);
-                const size_t src_off = ((size_t)src_y * (size_t)src_w + (size_t)src_x) * 4;
-                const size_t dst_off =
-                    ((size_t)y * (size_t)SNAPSHOT_PREVIEW_WIDTH + (size_t)x) * 4;
-                memcpy(dst_pixels + dst_off, src_pixels + src_off, 4);
-            }
-        }
+        *pixels_out = scale_to_snapshot_preview(src_pixels, src_w, src_h, false);
+        *pixels_size_out = SNAPSHOT_PREVIEW_BYTES;
+        ok = true;
     }
-
-    *pixels_out = dst_pixels;
-    *pixels_size_out = (size_t)SNAPSHOT_PREVIEW_WIDTH *
-                       (size_t)SNAPSHOT_PREVIEW_HEIGHT * 4;
-    dst_pixels = NULL;
-    ok = true;
 
 cleanup:
     g_free(src_pixels);
-    g_free(dst_pixels);
     return ok;
+}
+
+static bool capture_snapshot_thumbnail(uint8_t **pixels_out, size_t *pixels_size_out)
+{
+    if (!pixels_out || !pixels_size_out) {
+        return false;
+    }
+
+    *pixels_out = NULL;
+    *pixels_size_out = 0;
+
+#ifdef CONFIG_VULKAN
+    if (capture_snapshot_thumbnail_vulkan(pixels_out, pixels_size_out)) {
+        return true;
+    }
+#endif
+
+    return capture_snapshot_thumbnail_gl(pixels_out, pixels_size_out);
 }
 
 static void write_snapshot_preview_sidecar(const char *vm_name)
@@ -390,6 +442,32 @@ static struct {
     .cond = PTHREAD_COND_INITIALIZER,
 };
 
+/*
+ * Number of frames a save will wait for the renderer to hand back a preview
+ * frame before giving up and writing the snapshot without one.
+ */
+#define SNAPSHOT_CAPTURE_MAX_WAIT_FRAMES 30
+
+static int g_snap_capture_waits;
+
+/* True while the renderer still owes us a frame for the preview thumbnail. */
+static bool snapshot_preview_capture_pending(void)
+{
+#ifdef CONFIG_VULKAN
+    return nv2a_android_display_capture_supported() &&
+           !nv2a_android_display_capture_ready();
+#else
+    return false;
+#endif
+}
+
+static void request_snapshot_preview_capture(void)
+{
+#ifdef CONFIG_VULKAN
+    nv2a_android_request_display_capture();
+#endif
+}
+
 void xemu_android_process_snapshot_request(void)
 {
     if (SDL_AtomicCAS(&g_reboot_pending, 1, 0)) {
@@ -398,8 +476,9 @@ void xemu_android_process_snapshot_request(void)
          * pause_all_vcpus+qemu_system_reset+resume_all_vcpus but never calls
          * cpu_enable_ticks — so time stays frozen after the reset. Call
          * vm_start() first to re-enable ticks and put the VM in RUNNING state
-         * before the reset fires. The BQL is held here (we're inside
-         * sdl2_gl_refresh). */
+         * before the reset fires. The BQL is held here (this runs on the
+         * display thread, either from sdl2_gl_refresh or, under Vulkan direct
+         * presentation, from xemu_android_display_loop). */
         if (!runstate_is_running()) {
             vm_start();
         }
@@ -420,6 +499,22 @@ void xemu_android_process_snapshot_request(void)
         pthread_mutex_unlock(&g_snap_req.lock);
         return;
     }
+
+    if (g_snap_req.type == SNAP_SAVE && snapshot_preview_capture_pending()) {
+        /*
+         * The preview has to come from the frame the user is looking at, so ask
+         * the renderer for it and retry on a later frame once it lands. The
+         * snapshot request stays pending in the meantime.
+         */
+        if (g_snap_capture_waits < SNAPSHOT_CAPTURE_MAX_WAIT_FRAMES) {
+            g_snap_capture_waits++;
+            request_snapshot_preview_capture();
+            pthread_mutex_unlock(&g_snap_req.lock);
+            return;
+        }
+        SNAP_LOGW("snapshot preview capture timed out; saving without preview");
+    }
+    g_snap_capture_waits = 0;
 
     Error *err = NULL;
 

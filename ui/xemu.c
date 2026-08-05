@@ -1374,6 +1374,9 @@ static void register_sdl1(void)
 type_init(register_sdl1);
 
 #ifdef __ANDROID__
+/* Implemented alongside the Android snapshot JNI entry points. */
+extern void xemu_android_process_snapshot_request(void);
+
 void xemu_android_force_xemu_display_link(void)
 {
 }
@@ -1517,6 +1520,12 @@ void xemu_android_display_loop(void)
             qemu_mutex_lock_main_loop();
             bql_lock();
             sdl2_poll_events(&sdl2_console[0]);
+            /*
+             * There is no HUD to render here, but snapshot and reboot requests
+             * from the Java menu are serviced on this thread with the BQL held.
+             * The GL path reaches this via xemu_hud_render().
+             */
+            xemu_android_process_snapshot_request();
             bql_unlock();
             qemu_mutex_unlock_main_loop();
             SDL_Delay(1);

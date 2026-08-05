@@ -827,6 +827,24 @@ typedef struct PGRAPHVkDisplayState {
     int draw_time;
     bool use_external_memory;
 
+#ifdef __ANDROID__
+    /*
+     * On-demand readback of the presented frame, used for save state
+     * thumbnails. Under direct presentation there is no GL framebuffer for the
+     * UI to glReadPixels from, so the copy is recorded into the same command
+     * buffer that renders the frame.
+     */
+    struct {
+        bool supported; /* Swapchain images can be used as a transfer source */
+        int state; /* DisplayCaptureState, accessed atomically */
+        VkBuffer buffer;
+        VmaAllocation allocation;
+        void *mapped;
+        size_t size;
+        int width, height;
+    } capture;
+#endif
+
     VkImage blend_prev_image;
     VkImageView blend_prev_view;
     VmaAllocation blend_prev_alloc;

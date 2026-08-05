@@ -27,6 +27,18 @@ void nv2a_context_init(void);
 void nv2a_android_early_context_init(void);
 bool nv2a_android_copy_readback(uint8_t **buffer, size_t *buffer_size,
                                 int *width, int *height);
+
+/*
+ * Read the presented frame back for save state thumbnails. Only implemented by
+ * the Vulkan direct presentation path, where there is no GL framebuffer for the
+ * UI to read from. A capture is produced one frame after it is requested; the
+ * caller polls nv2a_android_display_capture_ready() and then takes ownership of
+ * the tightly packed, top-down RGBA8 buffer.
+ */
+bool nv2a_android_display_capture_supported(void);
+void nv2a_android_request_display_capture(void);
+bool nv2a_android_display_capture_ready(void);
+bool nv2a_android_take_display_capture(uint8_t **rgba, int *width, int *height);
 #endif
 int nv2a_get_framebuffer_surface(void);
 void nv2a_release_framebuffer_surface(void);

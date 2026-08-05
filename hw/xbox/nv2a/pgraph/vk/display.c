@@ -30,6 +30,133 @@
 
 extern bool xemu_get_frame_skip(void);
 
+#ifdef __ANDROID__
+#include "hw/xbox/nv2a/nv2a.h"
+
+enum DisplayCaptureState {
+    DISPLAY_CAPTURE_IDLE,
+    DISPLAY_CAPTURE_REQUESTED,
+    DISPLAY_CAPTURE_READY,
+};
+
+static void destroy_display_capture_buffer(PGRAPHState *pg)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+    PGRAPHVkDisplayState *d = &r->display;
+
+    if (d->capture.mapped) {
+        vmaUnmapMemory(r->allocator, d->capture.allocation);
+        d->capture.mapped = NULL;
+    }
+    if (d->capture.buffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(r->allocator, d->capture.buffer,
+                         d->capture.allocation);
+        d->capture.buffer = VK_NULL_HANDLE;
+        d->capture.allocation = VK_NULL_HANDLE;
+    }
+    d->capture.size = 0;
+    d->capture.width = 0;
+    d->capture.height = 0;
+    qatomic_set(&d->capture.state, DISPLAY_CAPTURE_IDLE);
+}
+
+static bool ensure_display_capture_buffer(PGRAPHState *pg, size_t size)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+    PGRAPHVkDisplayState *d = &r->display;
+
+    if (d->capture.buffer != VK_NULL_HANDLE && d->capture.size >= size) {
+        return true;
+    }
+
+    destroy_display_capture_buffer(pg);
+
+    VkBufferCreateInfo buffer_create_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VmaAllocationCreateInfo alloc_create_info = {
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+    };
+    if (vmaCreateBuffer(r->allocator, &buffer_create_info, &alloc_create_info,
+                        &d->capture.buffer, &d->capture.allocation,
+                        NULL) != VK_SUCCESS) {
+        d->capture.buffer = VK_NULL_HANDLE;
+        d->capture.allocation = VK_NULL_HANDLE;
+        return false;
+    }
+    if (vmaMapMemory(r->allocator, d->capture.allocation,
+                     &d->capture.mapped) != VK_SUCCESS) {
+        d->capture.mapped = NULL;
+        destroy_display_capture_buffer(pg);
+        return false;
+    }
+
+    d->capture.size = size;
+    return true;
+}
+
+bool nv2a_android_display_capture_supported(void)
+{
+    NV2AState *d = g_nv2a;
+    if (!d || !d->pgraph.renderer ||
+        d->pgraph.renderer->type != CONFIG_DISPLAY_RENDERER_VULKAN) {
+        return false;
+    }
+    PGRAPHVkState *r = d->pgraph.vk_renderer_state;
+    if (!r) {
+        return false;
+    }
+    return r->display.direct_present && r->display.capture.supported;
+}
+
+void nv2a_android_request_display_capture(void)
+{
+    if (!nv2a_android_display_capture_supported()) {
+        return;
+    }
+    PGRAPHVkDisplayState *disp = &g_nv2a->pgraph.vk_renderer_state->display;
+    qatomic_cmpxchg(&disp->capture.state, DISPLAY_CAPTURE_IDLE,
+                    DISPLAY_CAPTURE_REQUESTED);
+}
+
+bool nv2a_android_display_capture_ready(void)
+{
+    if (!nv2a_android_display_capture_supported()) {
+        return false;
+    }
+    PGRAPHVkDisplayState *disp = &g_nv2a->pgraph.vk_renderer_state->display;
+    return qatomic_read(&disp->capture.state) == DISPLAY_CAPTURE_READY;
+}
+
+bool nv2a_android_take_display_capture(uint8_t **rgba, int *width, int *height)
+{
+    if (!nv2a_android_display_capture_ready()) {
+        return false;
+    }
+
+    PGRAPHVkDisplayState *disp = &g_nv2a->pgraph.vk_renderer_state->display;
+    size_t size = (size_t)disp->capture.width * disp->capture.height * 4;
+
+    if (!disp->capture.mapped || size == 0 || size > disp->capture.size) {
+        qatomic_set(&disp->capture.state, DISPLAY_CAPTURE_IDLE);
+        return false;
+    }
+
+    *rgba = g_malloc(size);
+    memcpy(*rgba, disp->capture.mapped, size);
+    *width = disp->capture.width;
+    *height = disp->capture.height;
+
+    /* Consume the frame so the next request captures a fresh one. */
+    qatomic_set(&disp->capture.state, DISPLAY_CAPTURE_IDLE);
+    return true;
+}
+#endif
+
 #if HAVE_EXTERNAL_MEMORY
 #ifdef __ANDROID__
 #include <android/hardware_buffer.h>
@@ -745,6 +872,8 @@ static void destroy_current_display_image(PGRAPHState *pg)
 #ifdef __ANDROID__
     if (d->direct_present && d->swapchain != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(r->device);
+        /* Safe to release now that nothing can still be copying into it. */
+        destroy_display_capture_buffer(pg);
         for (uint32_t i = 0; i < d->image_count; i++) {
             DisplayImage *img = &d->images[i];
             if (img->framebuffer != VK_NULL_HANDLE) {
@@ -1319,6 +1448,13 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
         pre_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     }
 
+    /*
+     * Save state thumbnails read the presented frame back off the swapchain.
+     * The extra usage bit is optional; without it thumbnails are skipped.
+     */
+    d->capture.supported =
+        (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+
     VkSwapchainCreateInfoKHR create_info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = r->present_surface,
@@ -1327,7 +1463,9 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
         .imageColorSpace = selected.colorSpace,
         .imageExtent = extent,
         .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                      (d->capture.supported ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                                            : 0),
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = pre_transform,
         .compositeAlpha = composite_alpha,
@@ -1853,6 +1991,9 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
     PGRAPHVkState *r = pg->vk_renderer_state;
     PGRAPHVkDisplayState *disp = &r->display;
     uint32_t present_sync_index = 0;
+#ifdef __ANDROID__
+    bool capture_this_frame = false;
+#endif
 
 #ifdef __ANDROID__
     if (disp->direct_present) {
@@ -1883,6 +2024,21 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
             VK_CHECK(vkWaitForFences(
                 r->device, 1, &disp->image_in_flight[acquired_index],
                 VK_TRUE, UINT64_MAX));
+        }
+
+        if (disp->capture.supported &&
+            qatomic_read(&disp->capture.state) == DISPLAY_CAPTURE_REQUESTED) {
+            size_t capture_size =
+                (size_t)disp->present_viewport.extent.width *
+                disp->present_viewport.extent.height * 4;
+            if (ensure_display_capture_buffer(pg, capture_size)) {
+                capture_this_frame = true;
+            } else {
+                __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
+                                    "capture: staging buffer allocation failed");
+                disp->capture.supported = false;
+                qatomic_set(&disp->capture.state, DISPLAY_CAPTURE_IDLE);
+            }
         }
     }
 #endif
@@ -2102,10 +2258,36 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         disp->blend_prev_valid = true;
     } else if (disp->direct_present) {
-        pgraph_vk_transition_image_layout(
-            pg, cmd, img->image, VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+#ifdef __ANDROID__
+        if (capture_this_frame) {
+            pgraph_vk_transition_image_layout(
+                pg, cmd, img->image, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+            VkBufferImageCopy capture_region = {
+                .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                .imageOffset = { disp->present_viewport.offset.x,
+                                 disp->present_viewport.offset.y, 0 },
+                .imageExtent = { disp->present_viewport.extent.width,
+                                 disp->present_viewport.extent.height, 1 },
+            };
+            vkCmdCopyImageToBuffer(cmd, img->image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   disp->capture.buffer, 1, &capture_region);
+
+            pgraph_vk_transition_image_layout(
+                pg, cmd, img->image, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        } else
+#endif
+        {
+            pgraph_vk_transition_image_layout(
+                pg, cmd, img->image, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        }
     } else {
         pgraph_vk_transition_image_layout(pg, cmd, img->image,
                                           VK_FORMAT_R8G8B8A8_UNORM,
@@ -2160,6 +2342,22 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
                                 present_result);
         }
         disp->present_frame++;
+
+        if (capture_this_frame) {
+            /*
+             * Stalling for the readback is acceptable here: a capture is only
+             * ever requested for a single frame when a save state is written.
+             */
+            VK_CHECK(vkWaitForFences(
+                r->device, 1, &disp->present_fences[present_sync_index],
+                VK_TRUE, UINT64_MAX));
+            VK_CHECK(vmaInvalidateAllocation(r->allocator,
+                                             disp->capture.allocation, 0,
+                                             VK_WHOLE_SIZE));
+            disp->capture.width = disp->present_viewport.extent.width;
+            disp->capture.height = disp->present_viewport.extent.height;
+            qatomic_set(&disp->capture.state, DISPLAY_CAPTURE_READY);
+        }
     } else
 #endif
     {
@@ -2237,6 +2435,10 @@ void pgraph_vk_finalize_display(PGRAPHState *pg)
     PGRAPHVkState *r = pg->vk_renderer_state;
 
     destroy_pvideo_image(pg);
+
+#ifdef __ANDROID__
+    destroy_display_capture_buffer(pg);
+#endif
 
     if (r->display.images[0].image != VK_NULL_HANDLE) {
         destroy_current_display_image(pg);
