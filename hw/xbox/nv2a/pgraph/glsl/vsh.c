@@ -233,7 +233,8 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         "}\n");
 
     pgraph_glsl_get_vtx_header(header, opts.vulkan, state->smooth_shading,
-                               false, opts.prefix_outputs, false);
+                               false, opts.prefix_outputs, false,
+                               opts.depth_via_varying, opts.z_perspective);
 
     if (opts.prefix_outputs) {
         mstring_append(header,

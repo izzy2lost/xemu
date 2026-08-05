@@ -26,6 +26,7 @@
 #endif
 
 #include "hw/xbox/nv2a/nv2a_int.h"
+#include "qemu/main-loop.h"
 #include "ui/xemu-notifications.h"
 #include "ui/xemu-settings.h"
 #include "util.h"
@@ -896,6 +897,23 @@ void pgraph_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
     }
 }
 
+static void pgraph_update_irq_bh(void *opaque)
+{
+    NV2AState *d = opaque;
+    nv2a_update_irq(d);
+}
+
+/* Raising a PGRAPH interrupt needs the BQL, but taking the BQL from the
+ * pfifo thread can deadlock: a BQL holder may itself be blocked waiting on
+ * this very thread (e.g. IDE DMA loading game data into GPU-watched RAM
+ * holds the BQL and waits for the memory-access-callback flush that only
+ * the pfifo thread performs). Defer the IRQ raise to a main-loop bottom
+ * half, which runs with the BQL already held. */
+static void pgraph_schedule_irq_update(NV2AState *d)
+{
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), pgraph_update_irq_bh, d);
+}
+
 void pgraph_context_switch(NV2AState *d, unsigned int channel_id)
 {
     PGRAPHState *pg = &d->pgraph;
@@ -919,12 +937,8 @@ void pgraph_context_switch(NV2AState *d, unsigned int channel_id)
                             NV_PGRAPH_DEBUG_3_HW_CONTEXT_SWITCH));
 
         pg->waiting_for_context_switch = true;
-        qemu_mutex_unlock(&pg->lock);
-        bql_lock();
         pg->pending_interrupts |= NV_PGRAPH_INTR_CONTEXT_SWITCH;
-        nv2a_update_irq(d);
-        bql_unlock();
-        qemu_mutex_lock(&pg->lock);
+        pgraph_schedule_irq_update(d);
     }
 }
 
@@ -1764,11 +1778,7 @@ DEF_METHOD(NV097, NO_OPERATION)
     pg->pending_interrupts |= NV_PGRAPH_INTR_ERROR;
     pg->waiting_for_nop = true;
 
-    qemu_mutex_unlock(&pg->lock);
-    bql_lock();
-    nv2a_update_irq(d);
-    bql_unlock();
-    qemu_mutex_lock(&pg->lock);
+    pgraph_schedule_irq_update(d);
 }
 
 DEF_METHOD(NV097, WAIT_FOR_IDLE)
@@ -3773,11 +3783,26 @@ DEF_METHOD(NV097, DRAW_ARRAYS)
     pg->draw_arrays_prevent_connect = false;
 }
 
-DEF_METHOD_NON_INC(NV097, INLINE_ARRAY)
+/* Defined without the NON_INC wrapper on purpose: bulk vertex data would
+ * otherwise pay a dispatch-loop iteration per word. Consume the whole run
+ * at once (little-endian host assumed, as everywhere in this fork). */
+DEF_METHOD(NV097, INLINE_ARRAY)
 {
     pgraph_check_within_begin_end_block(pg);
     assert(pg->inline_array_length < NV2A_MAX_BATCH_LENGTH);
-    pg->inline_array[pg->inline_array_length++] = parameter;
+
+    if (inc) {
+        pg->inline_array[pg->inline_array_length++] = parameter;
+        return;
+    }
+
+    size_t count = MIN(num_words_available,
+                       (size_t)NV2A_MAX_BATCH_LENGTH -
+                           (size_t)pg->inline_array_length);
+    memcpy(&pg->inline_array[pg->inline_array_length], parameters,
+           count * sizeof(uint32_t));
+    pg->inline_array_length += count;
+    *num_words_consumed = count;
 }
 
 DEF_METHOD_INC(NV097, SET_EYE_VECTOR)

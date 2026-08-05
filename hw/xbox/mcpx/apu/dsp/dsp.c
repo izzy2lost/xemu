@@ -175,6 +175,15 @@ void dsp_write_memory(DSPState *dsp, char space, uint32_t address,
     dsp->ops->write_memory(dsp, space, address, value);
 }
 
+uint32_t *dsp_get_memory_ptr(DSPState *dsp, char space, uint32_t address,
+                             uint32_t count)
+{
+    if (!dsp->ops->get_memory_ptr) {
+        return NULL;
+    }
+    return dsp->ops->get_memory_ptr(dsp, space, address, count);
+}
+
 bool dsp_get_halt_requested(DSPState *dsp)
 {
     return dsp->ops->get_halt_requested(dsp);

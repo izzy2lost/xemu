@@ -107,6 +107,12 @@ typedef struct GenVshGlslOptions {
     int ubo_binding;
     int ubo_set;
     int vertex_push_offset;
+    /* Carry depth to the fragment stage as an interpolated varying instead of
+     * reconstructing it there from the triangle's vertices, which removes the
+     * need for a geometry shader. z_perspective selects the interpolation
+     * mode and must agree with the fragment shader. */
+    bool depth_via_varying;
+    bool z_perspective;
 } GenVshGlslOptions;
 
 MString *pgraph_glsl_gen_vsh(const VshState *state,

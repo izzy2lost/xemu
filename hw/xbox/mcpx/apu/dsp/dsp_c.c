@@ -147,6 +147,24 @@ static void dsp_c_write_memory(DSPState *dsp, char space, uint32_t address,
     dsp56k_write_memory(c_core(dsp), space_id, address, value);
 }
 
+/*
+ * The interpreter keeps the mixbuf in its own array rather than in xram, and
+ * writes there have no side effects (see write_memory_raw), so the range can
+ * be handed out directly for bulk transfers.
+ */
+static uint32_t *dsp_c_get_memory_ptr(DSPState *dsp, char space, uint32_t addr,
+                                      uint32_t count)
+{
+    if (space != 'X' || count == 0 || count > DSP_MIXBUFFER_SIZE) {
+        return NULL;
+    }
+    if (addr < DSP_MIXBUFFER_BASE ||
+        addr - DSP_MIXBUFFER_BASE > DSP_MIXBUFFER_SIZE - count) {
+        return NULL;
+    }
+    return c_core(dsp)->mixbuffer + (addr - DSP_MIXBUFFER_BASE);
+}
+
 static bool dsp_c_get_halt_requested(DSPState *dsp)
 {
     return c_core(dsp)->is_idle;
@@ -296,4 +314,5 @@ const DSPOps c_dsp_ops = {
     .sync_from_vm = dsp_c_sync_from_vm,
     .sync_to_vm = dsp_c_sync_to_vm,
     .write_memory = dsp_c_write_memory,
+    .get_memory_ptr = dsp_c_get_memory_ptr,
 };

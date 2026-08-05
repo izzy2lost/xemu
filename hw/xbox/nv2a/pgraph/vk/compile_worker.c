@@ -137,6 +137,7 @@ static void process_pipeline_job(PGRAPHVkState *r, CompileJob *job)
         target->layout = p->layout;
         target->render_pass = p->render_pass;
         target->has_dynamic_line_width = p->has_dynamic_line_width;
+        target->has_dynamic_depth_bias = p->has_dynamic_depth_bias;
     }
     qatomic_set(&target->pending, false);
 }

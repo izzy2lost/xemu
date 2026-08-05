@@ -98,7 +98,8 @@ typedef struct UniformInfo {
 #define GLSL_DEFINE(a, b) "#define " stringify(a) " " b "\n"
 
 MString *pgraph_glsl_get_vtx_header(MString *out, bool location, bool smooth,
-                                    bool in, bool prefix, bool array);
+                                    bool in, bool prefix, bool array,
+                                    bool depth_varying, bool z_perspective);
 void pgraph_glsl_append_version(MString *out, bool vulkan, bool gles,
                                 int gles_version);
 

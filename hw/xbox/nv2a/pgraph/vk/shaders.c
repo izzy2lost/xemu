@@ -23,6 +23,61 @@
 #include "renderer.h"
 #include "ui/xemu-settings.h"
 
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+
+/* Carry depth to the fragment stage as an interpolated varying so the depth
+ * geometry shader can be dropped entirely.
+ *
+ * OFF by default: measurement showed the geometry shader is not what faults
+ * Mali (see use_fixed_function_depth below), and it still does real work —
+ * notably converting triangles to lines/points for the non-FILL polygon
+ * modes, which a device without fillModeNonSolid cannot do any other way.
+ * Dropping it produces stretched "wedge" geometry. Kept as an option since it
+ * is a large per-draw saving where it is safe.
+ * Enable for testing with `setprop debug.xemu.vk.depth_varying 1`. */
+static bool use_depth_varying(PGRAPHVkState *r)
+{
+    static int mode = -1;
+    if (mode < 0) {
+        char property[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.vk.depth_varying", property) >
+                0 &&
+            (property[0] == '0' || property[0] == '1')) {
+            mode = property[0] - '0';
+        } else {
+            mode = 0;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "depth via varying (no geometry shader): %d", mode);
+    }
+    return mode == 1;
+}
+
+/* Writing gl_FragDepth forces late-Z and disables hidden-surface removal,
+ * which is what actually drives Mali into a watchdog reset under heavy
+ * overdraw. Kept separate from use_depth_varying() so the geometry shader and
+ * the depth write can be toggled independently while bisecting.
+ * Override with `setprop debug.xemu.vk.ff_depth 0|1`. */
+static bool use_fixed_function_depth(PGRAPHVkState *r)
+{
+    static int mode = -1;
+    if (mode < 0) {
+        char property[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.vk.ff_depth", property) > 0 &&
+            (property[0] == '0' || property[0] == '1')) {
+            mode = property[0] - '0';
+        } else {
+            mode = (r->device_props.vendorID == 0x13B5u) ? 1 : 0;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "fixed-function Z depth (no gl_FragDepth): %d",
+                            mode);
+    }
+    return mode == 1;
+}
+#endif
+
 #if OPT_ASYNC_COMPILE
 extern bool xemu_get_async_compile(void);
 #endif
@@ -857,12 +912,28 @@ get_and_ref_shader_module_for_key(PGRAPHVkState *r,
     return entry->module_info;
 }
 
+bool pgraph_vk_uses_fixed_function_depth(PGRAPHVkState *r,
+                                         const ShaderState *state)
+{
+#ifdef __ANDROID__
+    return use_fixed_function_depth(r) && state->psh.depth_needed &&
+           !state->geom.z_perspective;
+#else
+    return false;
+#endif
+}
+
 static void shader_binding_build_module_keys(
     PGRAPHVkState *r, ShaderBinding *binding,
     ShaderModuleCacheKey *vsh_key, ShaderModuleCacheKey *geom_key,
     ShaderModuleCacheKey *psh_key, bool *need_geom)
 {
-    *need_geom = pgraph_glsl_need_geom(&binding->state.geom);
+    bool depth_varying = false;
+#ifdef __ANDROID__
+    depth_varying = use_depth_varying(r);
+#endif
+
+    *need_geom = pgraph_glsl_need_geom(&binding->state.geom) && !depth_varying;
 
     if (*need_geom) {
         memset(geom_key, 0, sizeof(*geom_key));
@@ -879,6 +950,8 @@ static void shader_binding_build_module_keys(
     vsh_key->vsh.state = binding->state.vsh;
     vsh_key->vsh.glsl_opts.vulkan = true;
     vsh_key->vsh.glsl_opts.prefix_outputs = *need_geom;
+    vsh_key->vsh.glsl_opts.depth_via_varying = depth_varying;
+    vsh_key->vsh.glsl_opts.z_perspective = binding->state.geom.z_perspective;
     vsh_key->vsh.glsl_opts.use_push_constants_for_uniform_attrs =
         r->use_push_constants_for_uniform_attrs;
 #if OPT_BINDLESS_TEXTURES
@@ -902,6 +975,10 @@ static void shader_binding_build_module_keys(
     psh_key->kind = VK_SHADER_STAGE_FRAGMENT_BIT;
     psh_key->psh.state = binding->state.psh;
     psh_key->psh.glsl_opts.vulkan = true;
+    psh_key->psh.glsl_opts.depth_via_varying = depth_varying;
+#ifdef __ANDROID__
+    psh_key->psh.glsl_opts.fixed_function_depth = use_fixed_function_depth(r);
+#endif
 #if OPT_BINDLESS_TEXTURES
     if (r->bindless_textures_supported) {
         psh_key->psh.glsl_opts.ubo_binding = 1;

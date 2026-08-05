@@ -214,8 +214,10 @@ add_optional_instance_extension_names(PGRAPHState *pg,
     }
 #endif
 
+    /* validation may also be enabled with Android's debug property.  Use the
+     * resolved state so property-enabled diagnostics still get a messenger. */
     r->debug_utils_extension_enabled =
-        g_config.display.vulkan.validation_layers &&
+        enable_validation &&
         add_extension_if_available(available_extensions, enabled_extension_names,
                                    VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 }
@@ -593,8 +595,18 @@ static void add_optional_device_extension_names(
 
 #ifdef __ANDROID__
     extern bool xemu_android_vulkan_custom_driver_zip_loaded(void);
-    if (r->device_props.vendorID == 0x5143u &&
-        !xemu_android_vulkan_custom_driver_zip_loaded()) {
+    if (r->device_props.vendorID == 0x13B5u) {
+        /* Mali-G715 r54 can segfault inside
+         * command_buffer::push_descriptor_set while updating an otherwise
+         * valid combined image sampler.  Regular descriptor sets avoid that
+         * driver path and are required for stable gameplay. */
+        r->push_descriptors_supported = false;
+        fprintf(stderr, "Mali GPU: omitting %s (stock driver crashes while pushing texture descriptors)\n",
+                VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+        __android_log_print(ANDROID_LOG_INFO, "hakuX",
+                            "Mali driver: push descriptors disabled");
+    } else if (r->device_props.vendorID == 0x5143u &&
+               !xemu_android_vulkan_custom_driver_zip_loaded()) {
         r->push_descriptors_supported = false;
         fprintf(stderr, "Qualcomm GPU: omitting %s (crashes in stock driver)\n",
                 VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);

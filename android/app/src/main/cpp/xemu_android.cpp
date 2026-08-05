@@ -1272,7 +1272,6 @@ extern "C" int SDL_main(int argc, char* argv[]) {
     } else if (!g_config.sys.files.eeprom_path) {
       xemu_settings_set_string(&g_config.sys.files.eeprom_path, "");
     }
-    setenv("XEMU_ANDROID_FORCE_CPU_BLIT", "0", 1);
     g_config.general.show_welcome = false;
 
     // Apply the early renderer selection from activity prefs/runtime overrides.

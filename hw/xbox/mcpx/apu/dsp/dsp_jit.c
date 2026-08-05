@@ -24,6 +24,15 @@
 
 #include <dsp56300.h>
 
+/*
+ * X-space mixbuf window. Kept here so the region table and
+ * dsp_jit_get_memory_ptr() cannot drift apart.
+ */
+#define MIXBUF_ADDR_BASE   0x1400
+#define MIXBUF_ADDR_END    0x1800
+#define MIXBUF_WORDS       (MIXBUF_ADDR_END - MIXBUF_ADDR_BASE)
+#define MIXBUF_XRAM_OFFSET 0xC00
+
 /* Map C interpreter interrupt indices to architectural IVT slots.
  * Architectural slot = vectorAddr / 2 (per DSP56300FM Table 2-2). */
 static const int cinterp_to_arch[4] = {
@@ -114,6 +123,26 @@ static void dsp_jit_write_memory(DSPState *dsp, char space, uint32_t addr,
                                 (space == 'Y') ? DSP56300_MEM_SPACE_Y :
                                                  DSP56300_MEM_SPACE_P;
     dsp56300_write_memory(jit_be(dsp)->jit, space_id, addr, value);
+}
+
+/*
+ * The mixbuf window is registered as a plain buffer region aliased at
+ * xram[0xC00] (see the x_regions table in dsp_jit_init), and X-space writes
+ * have no side effects -- only P-space marks the JIT dirty bitmap. So handing
+ * out a direct pointer is equivalent to a run of dsp56300_write_memory calls,
+ * minus the per-word FFI hop and region scan.
+ */
+static uint32_t *dsp_jit_get_memory_ptr(DSPState *dsp, char space,
+                                        uint32_t addr, uint32_t count)
+{
+    if (space != 'X' || count == 0 || count > MIXBUF_WORDS) {
+        return NULL;
+    }
+    if (addr < MIXBUF_ADDR_BASE ||
+        addr - MIXBUF_ADDR_BASE > MIXBUF_WORDS - count) {
+        return NULL;
+    }
+    return jit_be(dsp)->xram + MIXBUF_XRAM_OFFSET + (addr - MIXBUF_ADDR_BASE);
 }
 
 static bool dsp_jit_get_halt_requested(DSPState *dsp)
@@ -278,10 +307,11 @@ static JitBackend *dsp_create_jit_backend(DSPState *dsp)
           .end = 0x1000,
           .kind = DSP56300_REGION_BUFFER,
           .data = { .buffer = { .base = be->xram, .offset = 0 } } },
-        { .start = 0x1400,
-          .end = 0x1800,
+        { .start = MIXBUF_ADDR_BASE,
+          .end = MIXBUF_ADDR_END,
           .kind = DSP56300_REGION_BUFFER,
-          .data = { .buffer = { .base = be->xram, .offset = 0xC00 } } },
+          .data = { .buffer = { .base = be->xram,
+                                .offset = MIXBUF_XRAM_OFFSET } } },
         { .start = 0xFFFF80,
           .end = 0x1000000,
           .kind = DSP56300_REGION_CALLBACK,
@@ -352,6 +382,7 @@ const DSPOps jit_dsp_ops = {
     .start_frame = dsp_start_frame_impl,
     .read_memory = dsp_jit_read_memory,
     .write_memory = dsp_jit_write_memory,
+    .get_memory_ptr = dsp_jit_get_memory_ptr,
     .get_halt_requested = dsp_jit_get_halt_requested,
     .set_halt_requested = dsp_jit_set_halt_requested,
     .get_cycle_count = dsp_jit_get_cycle_count,

@@ -202,6 +202,17 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    if (event.keyCode == KeyEvent.KEYCODE_F12) {
+      if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+        nativeDumpDiagFrames(1)
+        controllerBridge?.onButtonPressed(OnScreenController.Button.A)
+        Handler(Looper.getMainLooper()).postDelayed({
+          controllerBridge?.onButtonReleased(OnScreenController.Button.A)
+        }, 100L)
+      }
+      return true
+    }
+
     if (event.keyCode == KeyEvent.KEYCODE_BACK && !isGamepadKeyEvent(event)) {
       if (event.action == KeyEvent.ACTION_UP && event.repeatCount == 0) {
         val currentDialog = inGameMenuDialog
@@ -604,6 +615,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private external fun nativeResumeEmulation()
   private external fun nativeSetReturnToLibraryOnExit(enable: Boolean)
   private external fun nativeExitEmulation()
+  private external fun nativeDumpDiagFrames(numFrames: Int)
 
   private fun slotName(slot: Int) = "android_slot_$slot"
 

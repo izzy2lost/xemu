@@ -217,6 +217,7 @@ typedef struct PipelineBinding {
     VkRenderPass render_pass;
     unsigned int draw_time;
     bool has_dynamic_line_width;
+    bool has_dynamic_depth_bias;
 #if OPT_ASYNC_COMPILE
     bool pending;
 #endif
@@ -414,6 +415,7 @@ typedef struct PipelineCreateParams {
     int num_dynamic_states;
 
     bool has_dynamic_line_width;
+    bool has_dynamic_depth_bias;
 
     VkPipelineLayout layout;
     VkRenderPass render_pass;
@@ -710,6 +712,10 @@ typedef struct TextureBinding {
     uint32_t submit_time;
     unsigned int dirty_check_frame;
     bool dirty_check_result;
+    /* Monotonic creation id: tells a recreated texture apart from the one
+     * previously in this node even if the LRU node (and the driver's Vk
+     * handles) got recycled. */
+    uint64_t seq;
 #if OPT_BINDLESS_TEXTURES
     uint32_t bindless_slot;
     uint32_t bindless_binding;
@@ -799,15 +805,22 @@ typedef struct PGRAPHVkDisplayState {
     VkSemaphore image_available[NUM_DISPLAY_IMAGES];
     VkSemaphore render_finished[NUM_DISPLAY_IMAGES];
     VkFence present_fences[NUM_DISPLAY_IMAGES];
+    VkFence image_in_flight[NUM_DISPLAY_IMAGES];
     uint32_t present_frame;
 
     struct {
         PvideoState state;
         int width, height;
-        VkImage image;
-        VkImageView image_view;
-        VmaAllocation allocation;
+        VkImage images[NUM_DISPLAY_IMAGES];
+        VkImageView image_views[NUM_DISPLAY_IMAGES];
+        VmaAllocation allocations[NUM_DISPLAY_IMAGES];
+        bool image_valid[NUM_DISPLAY_IMAGES];
         VkSampler sampler;
+        VkBuffer staging_buffers[NUM_DISPLAY_IMAGES];
+        VmaAllocation staging_allocations[NUM_DISPLAY_IMAGES];
+        void *staging_mapped[NUM_DISPLAY_IMAGES];
+        bool upload_pending[NUM_DISPLAY_IMAGES];
+        size_t staging_size;
     } pvideo;
 
     int width, height;
@@ -938,6 +951,9 @@ typedef struct ReorderWindowEntry {
 #endif
     bool has_dynamic_line_width;
     float line_width;
+    bool has_dynamic_depth_bias;
+    float depth_bias_constant;
+    float depth_bias_slope;
 
     VkViewport viewport;
     VkRect2D scissor;
@@ -1208,6 +1224,7 @@ typedef struct PGRAPHVkState {
     TextureBinding *texture_bindings[NV2A_MAX_TEXTURES];
     TextureBinding dummy_texture;
     bool texture_bindings_changed;
+    uint64_t texture_binding_seq;
     QTAILQ_HEAD(, PooledImage) image_pool;
     int image_pool_count;
     QTAILQ_HEAD(, PooledSurfaceImage) surface_image_pool;
@@ -1413,7 +1430,6 @@ VkDeviceSize pgraph_vk_append_to_buffer(PGRAPHState *pg, int index, void **data,
                                         VkDeviceAddress alignment);
 VkDeviceSize pgraph_vk_staging_alloc(PGRAPHState *pg, VkDeviceSize size);
 void pgraph_vk_staging_reset(PGRAPHState *pg);
-bool pgraph_vk_staging_reclaim_any(PGRAPHState *pg);
 
 // command.c
 void pgraph_vk_init_command_buffers(PGRAPHState *pg);
@@ -1534,6 +1550,10 @@ void pgraph_vk_init_shaders(PGRAPHState *pg);
 void pgraph_vk_finalize_shaders(PGRAPHState *pg);
 void pgraph_vk_update_descriptor_sets(PGRAPHState *pg);
 void pgraph_vk_bind_shaders(PGRAPHState *pg);
+/* True when Z-buffer depth is left to the fixed-function pipeline, so polygon
+ * offset must come from vkCmdSetDepthBias rather than the fragment shader. */
+bool pgraph_vk_uses_fixed_function_depth(PGRAPHVkState *r,
+                                         const ShaderState *state);
 void pgraph_vk_reclaim_descriptor_overflow(PGRAPHVkState *r);
 void pgraph_vk_update_shader_uniforms(PGRAPHState *pg);
 

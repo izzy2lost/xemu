@@ -278,16 +278,18 @@ if(NDK_PATH STREQUAL "")
   message(FATAL_ERROR "Android NDK path not found in CMAKE_ANDROID_NDK/ANDROID_NDK")
 endif()
 
+# Keep the fallbacks in sync with minSdk in app/build.gradle.kts. Anything
+# below 29 makes clang fall back to emulated TLS for the whole native build.
 if(DEFINED ANDROID_PLATFORM)
   string(REPLACE "android-" "" ANDROID_API "${ANDROID_PLATFORM}")
 elseif(DEFINED CMAKE_SYSTEM_VERSION)
   set(ANDROID_API "${CMAKE_SYSTEM_VERSION}")
 else()
-  set(ANDROID_API "26")
+  set(ANDROID_API "29")
 endif()
 
 if(NOT ANDROID_API)
-  set(ANDROID_API "26")
+  set(ANDROID_API "29")
 endif()
 
 set(ANDROID_TRIPLE "aarch64-none-linux-android${ANDROID_API}")

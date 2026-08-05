@@ -868,7 +868,9 @@ static MString* psh_convert(struct PixelShader *ps)
 {
     MString *preflight = mstring_new();
     pgraph_glsl_get_vtx_header(preflight, ps->opts.vulkan,
-                             ps->state->smooth_shading, true, false, false);
+                             ps->state->smooth_shading, true, false, false,
+                             ps->opts.depth_via_varying,
+                             ps->state->z_perspective);
 
     if (ps->opts.vulkan) {
         if (ps->opts.ubo_set > 0) {
@@ -1034,7 +1036,7 @@ static MString* psh_convert(struct PixelShader *ps)
         "}\n"
         );
 
-    if (ps->state->depth_needed) {
+    if (ps->state->depth_needed && !ps->opts.depth_via_varying) {
         mstring_append(preflight,
             "float kahan_det(vec2 a, vec2 b) {\n"
             "    precise float cd = a.y*b.x;\n"
@@ -1049,6 +1051,26 @@ static MString* psh_convert(struct PixelShader *ps)
 
     MString *clip = mstring_new();
     int wc_count = ps->state->window_clip_count;
+
+    /* Screen-space derivatives are undefined after a non-uniform discard, so
+     * sample the interpolated depth and its slope before any clipping runs.
+     * The slope replaces the geometry shader's triMZ: it is the same
+     * max(|dz/dx|, |dz/dy|) in unscaled guest pixels, and for a W-buffer the
+     * gradient of W already folds in the triMZ*zvalue*zvalue scaling. */
+    if (ps->state->depth_needed && ps->opts.depth_via_varying) {
+        mstring_append_fmt(
+            clip, "float rawDepth = vtxPos0.%s;\n",
+            ps->state->z_perspective ? "w" : "z");
+        if (ps->state->z_perspective) {
+            mstring_append(
+                clip,
+                "float depthSlope = max(abs(dFdx(rawDepth)) * float(surfaceScale.x),\n"
+                "                       abs(dFdy(rawDepth)) * float(surfaceScale.y));\n"
+                "if (isnan(depthSlope) || isinf(depthSlope)) {\n"
+                "  depthSlope = 0.0;\n"
+                "}\n");
+        }
+    }
 
     if (wc_count > 0) {
         mstring_append_fmt(clip, "/*  Window-clip (%slusive, %d regions) */\n",
@@ -1098,6 +1120,33 @@ static MString* psh_convert(struct PixelShader *ps)
     }
 
     if (ps->state->depth_needed) {
+    if (ps->opts.depth_via_varying) {
+        if (ps->state->z_perspective) {
+            /* Perspective-correct interpolation of W is exactly the guest's
+             * W-buffer depth, so the varying can be used directly. */
+            mstring_append(
+                clip,
+                "precise float zvalue = rawDepth;\n"
+                "if (zvalue > 0.0) {\n"
+                "  zvalue += depthOffset;\n"
+                "  zvalue += depthFactor*depthSlope;\n"
+                "} else {\n"
+                "  zvalue = uintBitsToFloat(0x7F7FFFFFu);\n"
+                "}\n"
+                "if (isnan(zvalue)) {\n"
+                "  zvalue = uintBitsToFloat(0x7F7FFFFFu);\n"
+                "}\n");
+        } else {
+            /* Z-buffer: the vertex stage already emits
+             * gl_Position.z/w == guest depth / zmax, so fixed-function depth
+             * is already the emulated value and gl_FragDepth is not written
+             * at all. That keeps early-Z / hidden-surface removal alive, which
+             * a tile-based GPU needs to survive heavy overdraw. Polygon offset
+             * moves to hardware depth bias; zvalue here only feeds the guest
+             * depth-clip rejection below. */
+            mstring_append(clip, "precise float zvalue = rawDepth;\n");
+        }
+    } else {
         if (ps->state->z_perspective) {
             mstring_append(
                 clip,
@@ -1105,12 +1154,18 @@ static MString* psh_convert(struct PixelShader *ps)
                 "precise float bc0 = area(unscaled_xy, vtxPos1.xy, vtxPos2.xy);\n"
                 "precise float bc1 = area(unscaled_xy, vtxPos2.xy, vtxPos0.xy);\n"
                 "precise float bc2 = area(unscaled_xy, vtxPos0.xy, vtxPos1.xy);\n"
-                "bc0 /= vtxPos0.w;\n"
-                "bc1 /= vtxPos1.w;\n"
-                "bc2 /= vtxPos2.w;\n"
-                "float inv_bcsum = 1.0 / (bc0 + bc1 + bc2);\n"
-                "if (isinf(inv_bcsum)) {\n"
-                "  inv_bcsum = 0.0;\n"
+                "vec3 bary_w = vec3(vtxPos0.w, vtxPos1.w, vtxPos2.w);\n"
+                "if (any(isnan(bary_w)) || any(isinf(bary_w)) ||\n"
+                "    any(lessThanEqual(abs(bary_w), vec3(1.0e-20)))) {\n"
+                "  discard;\n"
+                "}\n"
+                "bc0 /= bary_w.x;\n"
+                "bc1 /= bary_w.y;\n"
+                "bc2 /= bary_w.z;\n"
+                "float bcsum = bc0 + bc1 + bc2;\n"
+                "float inv_bcsum = 0.0;\n"
+                "if (!isnan(bcsum) && !isinf(bcsum) && abs(bcsum) > 1.0e-20) {\n"
+                "  inv_bcsum = 1.0 / bcsum;\n"
                 "}\n"
                 "bc1 *= inv_bcsum;\n"
                 "bc2 *= inv_bcsum;\n"
@@ -1132,9 +1187,10 @@ static MString* psh_convert(struct PixelShader *ps)
                 "precise float bc0 = area(unscaled_xy, vtxPos1.xy, vtxPos2.xy);\n"
                 "precise float bc1 = area(unscaled_xy, vtxPos2.xy, vtxPos0.xy);\n"
                 "precise float bc2 = area(unscaled_xy, vtxPos0.xy, vtxPos1.xy);\n"
-                "float inv_bcsum = 1.0 / (bc0 + bc1 + bc2);\n"
-                "if (isinf(inv_bcsum)) {\n"
-                "  inv_bcsum = 0.0;\n"
+                "float bcsum = bc0 + bc1 + bc2;\n"
+                "float inv_bcsum = 0.0;\n"
+                "if (!isnan(bcsum) && !isinf(bcsum) && abs(bcsum) > 1.0e-20) {\n"
+                "  inv_bcsum = 1.0 / bcsum;\n"
                 "}\n"
                 "bc1 *= inv_bcsum;\n"
                 "bc2 *= inv_bcsum;\n"
@@ -1142,6 +1198,14 @@ static MString* psh_convert(struct PixelShader *ps)
                 "zvalue += depthOffset;\n"
                 "zvalue += depthFactor*triMZ;\n");
         }
+
+    }
+
+        mstring_append(
+            clip,
+            "if (isnan(zvalue) || isinf(zvalue)) {\n"
+            "  discard;\n"
+            "}\n");
 
         if (ps->state->depth_clipping) {
             mstring_append(
@@ -1583,7 +1647,11 @@ static MString* psh_convert(struct PixelShader *ps)
         }
     }
 
-    if (ps->state->depth_needed) {
+    /* The vertex stage already emits gl_FragCoord.z == guest depth / zmax for
+     * Z-buffer draws, so fixed-function depth is correct and writing
+     * gl_FragDepth would only cost early-Z. */
+    if (ps->state->depth_needed &&
+        !(ps->opts.fixed_function_depth && !ps->state->z_perspective)) {
         switch (ps->state->depth_format) {
         case DEPTH_FORMAT_D16:
             mstring_append(

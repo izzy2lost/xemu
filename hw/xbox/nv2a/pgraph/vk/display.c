@@ -136,14 +136,15 @@ static uint8_t *convert_texture_data__CR8YB8CB8YA8(uint8_t *data_out,
                                                    const uint8_t *data_in,
                                                    unsigned int width,
                                                    unsigned int height,
-                                                   unsigned int pitch)
+                                                   unsigned int input_pitch,
+                                                   size_t output_pitch)
 {
     int x, y;
     for (y = 0; y < height; y++) {
-        const uint8_t *line = &data_in[y * pitch];
-        const uint32_t row_offset = y * width;
+        const uint8_t *line = &data_in[y * input_pitch];
+        uint8_t *output_line = &data_out[y * output_pitch];
         for (x = 0; x < width; x++) {
-            uint8_t *pixel = &data_out[(row_offset + x) * 4];
+            uint8_t *pixel = &output_line[x * 4];
             convert_yuy2_to_rgb(line, x, &pixel[0], &pixel[1], &pixel[2]);
             pixel[3] = 255;
         }
@@ -169,17 +170,33 @@ static void destroy_pvideo_image(PGRAPHState *pg)
         d->pvideo.sampler = VK_NULL_HANDLE;
     }
 
-    if (d->pvideo.image_view != VK_NULL_HANDLE) {
-        vkDestroyImageView(r->device, d->pvideo.image_view, NULL);
-        d->pvideo.image_view = VK_NULL_HANDLE;
+    for (int i = 0; i < NUM_DISPLAY_IMAGES; i++) {
+        if (d->pvideo.staging_mapped[i] != NULL) {
+            vmaUnmapMemory(r->allocator,
+                           d->pvideo.staging_allocations[i]);
+            d->pvideo.staging_mapped[i] = NULL;
+        }
+        if (d->pvideo.staging_buffers[i] != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(r->allocator, d->pvideo.staging_buffers[i],
+                             d->pvideo.staging_allocations[i]);
+            d->pvideo.staging_buffers[i] = VK_NULL_HANDLE;
+            d->pvideo.staging_allocations[i] = VK_NULL_HANDLE;
+        }
+        if (d->pvideo.image_views[i] != VK_NULL_HANDLE) {
+            vkDestroyImageView(r->device, d->pvideo.image_views[i], NULL);
+            d->pvideo.image_views[i] = VK_NULL_HANDLE;
+        }
+        if (d->pvideo.images[i] != VK_NULL_HANDLE) {
+            vmaDestroyImage(r->allocator, d->pvideo.images[i],
+                            d->pvideo.allocations[i]);
+            d->pvideo.images[i] = VK_NULL_HANDLE;
+            d->pvideo.allocations[i] = VK_NULL_HANDLE;
+        }
+        d->pvideo.image_valid[i] = false;
+        d->pvideo.upload_pending[i] = false;
     }
 
-    if (d->pvideo.image != VK_NULL_HANDLE) {
-        vmaDestroyImage(r->allocator, d->pvideo.image, d->pvideo.allocation);
-        d->pvideo.image = VK_NULL_HANDLE;
-        d->pvideo.allocation = VK_NULL_HANDLE;
-    }
-
+    d->pvideo.staging_size = 0;
     d->pvideo.width = 0;
     d->pvideo.height = 0;
 }
@@ -189,12 +206,12 @@ static void create_pvideo_image(PGRAPHState *pg, int width, int height)
     PGRAPHVkState *r = pg->vk_renderer_state;
     PGRAPHVkDisplayState *d = &r->display;
 
-    if (d->pvideo.image != VK_NULL_HANDLE && d->pvideo.width == width &&
+    if (d->pvideo.images[0] != VK_NULL_HANDLE && d->pvideo.width == width &&
         d->pvideo.height == height) {
         return;
     }
 
-    if (d->pvideo.image != VK_NULL_HANDLE) {
+    if (d->pvideo.images[0] != VK_NULL_HANDLE) {
         /*
          * Display command buffers can still sample the old PVIDEO image.
          * Resolution changes are rare, so wait before replacing its resources.
@@ -214,7 +231,8 @@ static void create_pvideo_image(PGRAPHState *pg, int width, int height)
         .format = VK_FORMAT_R8G8B8A8_UNORM,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .flags = 0,
@@ -222,13 +240,8 @@ static void create_pvideo_image(PGRAPHState *pg, int width, int height)
     VmaAllocationCreateInfo alloc_create_info = {
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
     };
-    VK_CHECK(vmaCreateImage(r->allocator, &image_create_info,
-                            &alloc_create_info, &d->pvideo.image,
-                            &d->pvideo.allocation, NULL));
-
     VkImageViewCreateInfo image_view_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = d->pvideo.image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
         .format = VK_FORMAT_R8G8B8A8_UNORM,
         .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -237,8 +250,15 @@ static void create_pvideo_image(PGRAPHState *pg, int width, int height)
         .subresourceRange.baseArrayLayer = 0,
         .subresourceRange.layerCount = image_create_info.arrayLayers,
     };
-    VK_CHECK(vkCreateImageView(r->device, &image_view_create_info, NULL,
-                               &d->pvideo.image_view));
+    for (int i = 0; i < NUM_DISPLAY_IMAGES; i++) {
+        VK_CHECK(vmaCreateImage(r->allocator, &image_create_info,
+                                &alloc_create_info, &d->pvideo.images[i],
+                                &d->pvideo.allocations[i], NULL));
+        image_view_create_info.image = d->pvideo.images[i];
+        VK_CHECK(vkCreateImageView(r->device, &image_view_create_info, NULL,
+                                   &d->pvideo.image_views[i]));
+        d->pvideo.image_valid[i] = false;
+    }
 
     VkSamplerCreateInfo sampler_create_info = {
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -253,6 +273,30 @@ static void create_pvideo_image(PGRAPHState *pg, int width, int height)
     VK_CHECK(vkCreateSampler(r->device, &sampler_create_info, NULL,
                              &d->pvideo.sampler));
 
+    /* PVIDEO is refreshed independently of guest draws. Keep one upload
+     * buffer per display-image slot so the copy can be recorded in the same
+     * command buffer that samples it without racing another frame. */
+    d->pvideo.staging_size = (size_t)width * height * 4;
+    VkBufferCreateInfo buffer_create_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = d->pvideo.staging_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VmaAllocationCreateInfo staging_alloc_create_info = {
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+    };
+    for (int i = 0; i < NUM_DISPLAY_IMAGES; i++) {
+        VK_CHECK(vmaCreateBuffer(r->allocator, &buffer_create_info,
+                                 &staging_alloc_create_info,
+                                 &d->pvideo.staging_buffers[i],
+                                 &d->pvideo.staging_allocations[i], NULL));
+        VK_CHECK(vmaMapMemory(r->allocator,
+                              d->pvideo.staging_allocations[i],
+                              &d->pvideo.staging_mapped[i]));
+    }
+
     d->pvideo.width = width;
     d->pvideo.height = height;
 }
@@ -264,76 +308,24 @@ static void upload_pvideo_image(PGRAPHState *pg, PvideoState state)
     PGRAPHVkDisplayState *disp = &r->display;
 
     create_pvideo_image(pg, state.in_width, state.in_height);
+    assert(disp->render_idx >= 0 && disp->render_idx < NUM_DISPLAY_IMAGES);
+    int image_index = disp->render_idx;
 
     // FIXME: Dirty tracking. We don't necessarily need to upload so much.
 
     size_t display_data_size = state.in_width * state.in_height * 4;
-
-    VkDeviceSize staging_base = pgraph_vk_staging_alloc(pg, display_data_size);
-    if (staging_base == VK_WHOLE_SIZE) {
-        if (pgraph_vk_staging_reclaim_any(pg)) {
-            pgraph_vk_staging_reset(pg);
-            staging_base = pgraph_vk_staging_alloc(pg, display_data_size);
-        }
-        if (staging_base == VK_WHOLE_SIZE) {
-            pgraph_vk_flush_all_frames(pg);
-            pgraph_vk_staging_reset(pg);
-            staging_base = pgraph_vk_staging_alloc(pg, display_data_size);
-            assert(staging_base != VK_WHOLE_SIZE);
-        }
-    }
-
-    StorageBuffer *disp_staging = get_staging_buffer(r, BUFFER_STAGING_SRC);
-    uint8_t *mapped_memory_ptr =
-        (uint8_t *)disp_staging->mapped + staging_base;
+    assert(display_data_size <= disp->pvideo.staging_size);
+    uint8_t *mapped_memory_ptr = disp->pvideo.staging_mapped[image_index];
 
     convert_texture_data__CR8YB8CB8YA8(
         mapped_memory_ptr, d->vram_ptr + state.base + state.offset,
-        state.in_width, state.in_height, state.pitch);
+        state.in_width, state.in_height, state.pitch,
+        (size_t)state.in_width * 4);
 
-    vmaFlushAllocation(r->allocator, disp_staging->allocation,
-                       staging_base, display_data_size);
-
-    VkCommandBuffer cmd = pgraph_vk_begin_single_time_commands(pg);
-
-    VkBufferMemoryBarrier host_barrier = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-        .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = disp_staging->buffer,
-        .offset = staging_base,
-        .size = display_data_size
-    };
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
-                         &host_barrier, 0, NULL);
-
-    pgraph_vk_transition_image_layout(
-        pg, cmd, disp->pvideo.image, VK_FORMAT_R8G8B8A8_UNORM,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-    VkBufferImageCopy region = {
-        .bufferOffset = staging_base,
-        .bufferRowLength = 0,
-        .bufferImageHeight = 0,
-        .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .imageSubresource.mipLevel = 0,
-        .imageSubresource.baseArrayLayer = 0,
-        .imageSubresource.layerCount = 1,
-        .imageOffset = (VkOffset3D){ 0, 0, 0 },
-        .imageExtent = (VkExtent3D){ state.in_width, state.in_height, 1 },
-    };
-    vkCmdCopyBufferToImage(cmd, disp_staging->buffer,
-                           disp->pvideo.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-    pgraph_vk_transition_image_layout(pg, cmd, disp->pvideo.image,
-                                      VK_FORMAT_R8G8B8A8_UNORM,
-                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    pgraph_vk_end_single_time_commands(pg, cmd);
+    vmaFlushAllocation(r->allocator,
+                       disp->pvideo.staging_allocations[image_index],
+                       0, display_data_size);
+    disp->pvideo.upload_pending[image_index] = true;
 }
 
 static const char *display_frag_glsl =
@@ -367,7 +359,8 @@ static const char *display_frag_glsl =
     "    }\n"
     "    out_Color.rgba = texture(tex, tex_coord);\n"
     "    if (pvideo_enable) {\n"
-    "        vec2 screen_coord = vec2(display_coord.x, display_size.y - display_coord.y) * pvideo_scale.z;\n"
+    "        float screen_y = flip_y ? display_size.y - display_coord.y : display_coord.y;\n"
+    "        vec2 screen_coord = vec2(display_coord.x, screen_y) * pvideo_scale.z;\n"
     "        vec4 output_region = vec4(pvideo_pos.xy, pvideo_pos.xy + pvideo_pos.zw);\n"
     "        bvec4 clip = bvec4(lessThan(screen_coord, output_region.xy),\n"
     "                           greaterThan(screen_coord, output_region.zw));\n"
@@ -779,6 +772,7 @@ static void destroy_current_display_image(PGRAPHState *pg)
                 vkDestroyFence(r->device, d->present_fences[i], NULL);
                 d->present_fences[i] = VK_NULL_HANDLE;
             }
+            d->image_in_flight[i] = VK_NULL_HANDLE;
         }
         vkDestroySwapchainKHR(r->device, d->swapchain, NULL);
         d->swapchain = VK_NULL_HANDLE;
@@ -1389,6 +1383,7 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
     d->render_idx = 0;
     d->display_idx = 0;
     d->present_frame = 0;
+    memset(d->image_in_flight, 0, sizeof(d->image_in_flight));
 
     for (uint32_t i = 0; i < image_count; i++) {
         DisplayImage *img = &d->images[i];
@@ -1596,11 +1591,13 @@ static void update_descriptor_set(PGRAPHState *pg, SurfaceBinding *surface)
     };
 
     if (r->display.pvideo.state.enabled) {
-        assert(r->display.pvideo.image_view != VK_NULL_HANDLE);
+        assert(r->display.pvideo.image_views[r->display.render_idx] !=
+               VK_NULL_HANDLE);
         assert(r->display.pvideo.sampler != VK_NULL_HANDLE);
         image_infos[1] = (VkDescriptorImageInfo){
             .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .imageView = r->display.pvideo.image_view,
+            .imageView =
+                r->display.pvideo.image_views[r->display.render_idx],
             .sampler = r->display.pvideo.sampler,
         };
     } else {
@@ -1882,6 +1879,11 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
             return;
         }
         disp->render_idx = acquired_index;
+        if (disp->image_in_flight[acquired_index] != VK_NULL_HANDLE) {
+            VK_CHECK(vkWaitForFences(
+                r->device, 1, &disp->image_in_flight[acquired_index],
+                VK_TRUE, UINT64_MAX));
+        }
     }
 #endif
 
@@ -1889,6 +1891,15 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
 
     if (img->image == VK_NULL_HANDLE || img->framebuffer == VK_NULL_HANDLE) {
         return;
+    }
+
+    /* The descriptor set and PVIDEO image use the same display-image slot.
+     * Wait before updating either resource when the compatibility presenter
+     * cycles back to a slot that is still in flight. */
+    if (!disp->direct_present && img->fence_submitted) {
+        VK_CHECK(vkWaitForFences(r->device, 1, &img->fence, VK_TRUE,
+                                 UINT64_MAX));
+        img->fence_submitted = false;
     }
 
     {
@@ -1917,11 +1928,6 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
     update_uniforms(pg, surface);
     update_descriptor_set(pg, surface);
 
-    if (!disp->direct_present && img->fence_submitted) {
-        VK_CHECK(vkWaitForFences(r->device, 1, &img->fence, VK_TRUE, UINT64_MAX));
-        img->fence_submitted = false;
-    }
-
     VK_CHECK(vkResetCommandBuffer(img->cmd_buffer, 0));
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1930,12 +1936,70 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
     VK_CHECK(vkBeginCommandBuffer(img->cmd_buffer, &begin_info));
     VkCommandBuffer cmd = img->cmd_buffer;
 
+    if (disp->pvideo.state.enabled &&
+        disp->pvideo.upload_pending[disp->render_idx]) {
+        int pvideo_index = disp->render_idx;
+        VkDeviceSize upload_size =
+            (VkDeviceSize)disp->pvideo.width * disp->pvideo.height * 4;
+        VkBufferMemoryBarrier host_barrier = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = disp->pvideo.staging_buffers[pvideo_index],
+            .offset = 0,
+            .size = upload_size,
+        };
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, NULL, 1, &host_barrier, 0, NULL);
+
+        pgraph_vk_transition_image_layout(
+            pg, cmd, disp->pvideo.images[pvideo_index],
+            VK_FORMAT_R8G8B8A8_UNORM,
+            disp->pvideo.image_valid[pvideo_index]
+                ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                : VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        VkBufferImageCopy region = {
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .imageOffset = { 0, 0, 0 },
+            .imageExtent = {
+                disp->pvideo.width,
+                disp->pvideo.height,
+                1,
+            },
+        };
+        vkCmdCopyBufferToImage(
+            cmd, disp->pvideo.staging_buffers[pvideo_index],
+            disp->pvideo.images[pvideo_index],
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        pgraph_vk_transition_image_layout(
+            pg, cmd, disp->pvideo.images[pvideo_index],
+            VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        disp->pvideo.image_valid[pvideo_index] = true;
+        disp->pvideo.upload_pending[pvideo_index] = false;
+    }
+
     pgraph_vk_begin_debug_marker(r, cmd, RGBA_YELLOW,
         "Display Surface %08"HWADDR_PRIx, surface->vram_addr);
 
+    VkImageLayout surface_layout = surface->image_layout;
     pgraph_vk_transition_image_layout(pg, cmd, surface->image,
                                       surface->host_fmt.vk_format,
-                                      VK_IMAGE_LAYOUT_GENERAL,
+                                      surface_layout,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     VkImageLayout display_old_layout =
         img->valid ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
@@ -2005,7 +2069,7 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
     pgraph_vk_transition_image_layout(pg, cmd, surface->image,
                                       surface->host_fmt.vk_format,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                      VK_IMAGE_LAYOUT_GENERAL);
+                                      surface_layout);
 
     if (!disp->direct_present && !disp->blend_active &&
         disp->blend_prev_image) {
@@ -2077,6 +2141,8 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
             disp->present_fences[present_sync_index]));
 
         uint32_t present_image_index = disp->render_idx;
+        disp->image_in_flight[present_image_index] =
+            disp->present_fences[present_sync_index];
         VkPresentInfoKHR present_info = {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,

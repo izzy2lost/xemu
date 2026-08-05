@@ -572,16 +572,10 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
         pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
         staging_base = pgraph_vk_staging_alloc(pg, texture_data_size);
         if (staging_base == VK_WHOLE_SIZE) {
-            if (pgraph_vk_staging_reclaim_any(pg)) {
-                pgraph_vk_staging_reset(pg);
-                staging_base = pgraph_vk_staging_alloc(pg, texture_data_size);
-            }
-            if (staging_base == VK_WHOLE_SIZE) {
-                pgraph_vk_flush_all_frames(pg);
-                pgraph_vk_staging_reset(pg);
-                staging_base = pgraph_vk_staging_alloc(pg, texture_data_size);
-                assert(staging_base != VK_WHOLE_SIZE);
-            }
+            pgraph_vk_flush_all_frames(pg);
+            pgraph_vk_staging_reset(pg);
+            staging_base = pgraph_vk_staging_alloc(pg, texture_data_size);
+            assert(staging_base != VK_WHOLE_SIZE);
         }
     }
     StorageBuffer *staging = get_staging_buffer(r, BUFFER_STAGING_SRC);
@@ -871,6 +865,22 @@ static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surfac
 // surface image (already in GENERAL layout) can be sampled as a texture
 // without copying.  The caller stores the surface image_view in
 // tex_surface_direct_views[] for the descriptor binding code.
+static bool can_bind_surface_direct(PGRAPHVkState *r,
+                                    const SurfaceBinding *surface)
+{
+#ifdef __ANDROID__
+    /* Mali-G715 r54 eventually segfaults in both push_descriptor_set and
+     * vkUpdateDescriptorSets when a transient render-surface view is used as
+     * a combined image sampler.  Use the existing surface-to-texture copy on
+     * Mali so descriptors always reference cache-owned texture views. */
+    if (r->device_props.vendorID == 0x13B5u) {
+        return false;
+    }
+#endif
+    return surface->color ||
+           !(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
+}
+
 static void bind_surface_as_texture(PGRAPHState *pg, SurfaceBinding *surface,
                                     TextureBinding *texture)
 {
@@ -1327,6 +1337,12 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     bool possibly_dirty = false;
     bool possibly_dirty_checked = false;
     bool surface_to_texture = false;
+    if (r->tex_surface_direct[texture_idx]) {
+        /* The descriptor may still reference the surface image.  Ensure a
+         * transition back to the texture cache refreshes its image view and
+         * layout even when the cached TextureBinding itself is unchanged. */
+        r->texture_bindings_changed = true;
+    }
     r->tex_surface_direct[texture_idx] = false;
 
     if (!pgraph_vk_texture_range_valid(d, texture_vram_offset,
@@ -1497,9 +1513,7 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
                 if (snode->submit_time + r->num_active_frames > r->submit_count) {
                     pgraph_vk_flush_all_frames(pg);
                 }
-                bool can_direct_bind =
-                    surface->color ||
-                    !(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
+                bool can_direct_bind = can_bind_surface_direct(r, surface);
 
                 if (can_direct_bind) {
                     VkImageLayout direct_layout;
@@ -1541,9 +1555,7 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
                     copy_surface_to_texture(pg, surface, snode);
                 }
                 did_s2t_copy = true;
-            } else if (surface->color ||
-                       !(surface->host_fmt.aspect &
-                         VK_IMAGE_ASPECT_STENCIL_BIT)) {
+            } else if (can_bind_surface_direct(r, surface)) {
                 // Same draw_time: surface hasn't changed, reuse direct view
                 r->tex_surface_direct[texture_idx] = true;
                 r->tex_surface_direct_views[texture_idx] =
@@ -1849,9 +1861,7 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     r->texture_bindings[texture_idx] = snode;
 
     if (surface_to_texture) {
-        bool can_direct_bind =
-            surface->color ||
-            !(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
+        bool can_direct_bind = can_bind_surface_direct(r, surface);
 
         if (can_direct_bind) {
             VkImageLayout direct_layout;
@@ -2001,6 +2011,7 @@ void pgraph_vk_bind_textures(NV2AState *d)
         }
 
         TextureBinding *prev_binding = r->texture_bindings[i];
+        uint64_t prev_seq = prev_binding ? prev_binding->seq : 0;
         create_texture(pg, i);
 
         r->tex_reg_cache[i].regs[0] = pgraph_vk_reg_r(pg, NV_PGRAPH_TEXOFFSET0 + i * 4);
@@ -2015,7 +2026,11 @@ void pgraph_vk_bind_textures(NV2AState *d)
             (pgraph_vk_reg_r(pg, NV_PGRAPH_SHADERPROG) >> (i * 5)) & 0x1F;
         r->tex_reg_cache[i].valid = true;
 
-        if (r->texture_bindings[i] != prev_binding) {
+        /* The pointer alone is not enough: LRU nodes get recycled, so a
+         * recreated texture can land in the same node. Compare the
+         * per-creation sequence id as well. */
+        if (r->texture_bindings[i] != prev_binding ||
+            r->texture_bindings[i]->seq != prev_seq) {
             r->texture_bindings_changed = true;
         }
 
@@ -2041,6 +2056,7 @@ static void texture_cache_entry_init(Lru *lru, LruNode *node, const void *state)
     snode->submit_time = 0;
     snode->dirty_check_frame = 0;
     snode->dirty_check_result = false;
+    snode->seq = ++r->texture_binding_seq;
 
 #if OPT_BINDLESS_TEXTURES
     if (r->bindless_textures_supported) {

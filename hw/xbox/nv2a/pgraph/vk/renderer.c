@@ -41,11 +41,14 @@ extern bool xemu_get_frame_skip(void);
 #endif
 
 typedef struct {
+    uint32_t shader_cache_abi;
     uint32_t vendor_id;
     uint32_t device_id;
     uint32_t driver_version;
     uint8_t  pipeline_cache_uuid[VK_UUID_SIZE];
 } GpuDriverIdentity;
+
+#define XEMU_VK_SHADER_CACHE_ABI 12
 
 static void remove_directory_recursive(const char *path)
 {
@@ -77,6 +80,7 @@ static void check_driver_identity_and_wipe_caches(PGRAPHVkState *r)
     char *id_path = g_strdup_printf("%sgpu_driver_id.bin", base);
 
     GpuDriverIdentity current;
+    current.shader_cache_abi = XEMU_VK_SHADER_CACHE_ABI;
     current.vendor_id = r->device_props.vendorID;
     current.device_id = r->device_props.deviceID;
     current.driver_version = r->device_props.driverVersion;
@@ -1313,7 +1317,10 @@ static void pgraph_vk_flip_stall(NV2AState *d)
         }
     }
 
-    if (qatomic_read(&diag_frame_active)) {
+    /* Some titles issue FLIP_INCREMENT_WRITE followed immediately by
+     * FLIP_STALL.  The diagnostic fallback sees both; do not consume the
+     * requested frame on the empty notification between them. */
+    if (qatomic_read(&diag_frame_active) && diag_draw_index > 0) {
         DIAG_LOG("flip_stall: diag active, frame_idx=%d/%d, %d draws captured, json_len=%zu\n",
                  diag_current_frame_index, diag_total_frames,
                  diag_draw_index, diag_json_len);

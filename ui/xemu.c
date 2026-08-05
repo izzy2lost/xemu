@@ -1089,8 +1089,18 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 #endif
 
 #ifdef __ANDROID__
+    const char *force_cpu_blit = SDL_getenv("XEMU_ANDROID_FORCE_CPU_BLIT");
+    bool use_vulkan_cpu_blit =
+        force_cpu_blit && strcmp(force_cpu_blit, "1") == 0;
     g_android_direct_vulkan =
-        g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN;
+        g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN &&
+        !use_vulkan_cpu_blit;
+    if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN &&
+        use_vulkan_cpu_blit) {
+        __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                            "Vulkan direct presentation disabled by "
+                            "android.force_cpu_blit");
+    }
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(
         (g_android_direct_vulkan ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) |
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);

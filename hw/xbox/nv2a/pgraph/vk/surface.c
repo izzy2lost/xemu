@@ -1139,6 +1139,14 @@ bool pgraph_vk_prerecord_display_download(NV2AState *d)
     PGRAPHState *pg = &d->pgraph;
     PGRAPHVkState *r = pg->vk_renderer_state;
 
+#ifdef __ANDROID__
+    /* The native Vulkan presenter samples the render surface directly. Only
+     * the compatibility presenter needs a VRAM copy for the VGA/CPU path. */
+    if (r->display.direct_present) {
+        return false;
+    }
+#endif
+
     if (r->display_predownload_pending) {
         return false;
     }
@@ -1202,7 +1210,8 @@ void pgraph_vk_wait_for_surface_download(SurfaceBinding *surface)
      * Android Vulkan currently presents through the CPU/VGA fallback path.
      * Force framebuffer surface download so fallback upload sees fresh pixels.
      */
-    if (!d->pgraph.vk_renderer_state->display.use_external_memory) {
+    if (!d->pgraph.vk_renderer_state->display.direct_present &&
+        !d->pgraph.vk_renderer_state->display.use_external_memory) {
         require_download = true;
     }
 #endif
@@ -2154,16 +2163,10 @@ void pgraph_vk_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
         pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
         staging_base = pgraph_vk_staging_alloc(pg, uploaded_image_size);
         if (staging_base == VK_WHOLE_SIZE) {
-            if (pgraph_vk_staging_reclaim_any(pg)) {
-                pgraph_vk_staging_reset(pg);
-                staging_base = pgraph_vk_staging_alloc(pg, uploaded_image_size);
-            }
-            if (staging_base == VK_WHOLE_SIZE) {
-                pgraph_vk_flush_all_frames(pg);
-                pgraph_vk_staging_reset(pg);
-                staging_base = pgraph_vk_staging_alloc(pg, uploaded_image_size);
-                assert(staging_base != VK_WHOLE_SIZE);
-            }
+            pgraph_vk_flush_all_frames(pg);
+            pgraph_vk_staging_reset(pg);
+            staging_base = pgraph_vk_staging_alloc(pg, uploaded_image_size);
+            assert(staging_base != VK_WHOLE_SIZE);
         }
     }
     StorageBuffer *copy_buffer = get_staging_buffer(r, BUFFER_STAGING_SRC);
@@ -3057,12 +3060,15 @@ void pgraph_vk_init_surfaces(PGRAPHState *pg)
     // Check if the device supports preferred VK_FORMAT_D24_UNORM_S8_UINT
     // format, fall back to D32_SFLOAT_S8_UINT otherwise.
     r->kelvin_surface_zeta_vk_map[NV097_SET_SURFACE_FORMAT_ZETA_Z16] = zeta_d16;
-    if (check_surface_internal_formats_supported(r, &zeta_d24_unorm_s8_uint,
-                                                 1)) {
+    bool d24_supported = check_surface_internal_formats_supported(
+        r, &zeta_d24_unorm_s8_uint, 1);
+    bool d32_supported = check_surface_internal_formats_supported(
+        r, &zeta_d32_sfloat_s8_uint, 1);
+
+    if (d24_supported) {
         r->kelvin_surface_zeta_vk_map[NV097_SET_SURFACE_FORMAT_ZETA_Z24S8] =
             zeta_d24_unorm_s8_uint;
-    } else if (check_surface_internal_formats_supported(
-                   r, &zeta_d32_sfloat_s8_uint, 1)) {
+    } else if (d32_supported) {
         r->kelvin_surface_zeta_vk_map[NV097_SET_SURFACE_FORMAT_ZETA_Z24S8] =
             zeta_d32_sfloat_s8_uint;
     } else {

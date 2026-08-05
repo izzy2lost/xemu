@@ -26,11 +26,24 @@ const char *uniform_element_type_to_str[] = {
 };
 
 MString *pgraph_glsl_get_vtx_header(MString *out, bool location, bool smooth,
-                                    bool in, bool prefix, bool array)
+                                    bool in, bool prefix, bool array,
+                                    bool depth_varying, bool z_perspective)
 {
     const char *smooth_s = "";
     const char *flat_s = "flat ";
+    const char *noperspective_s = "noperspective ";
     const char *qualifier_s = smooth ? smooth_s : flat_s;
+
+    /* When depth is carried by interpolation rather than reconstructed from
+     * the triangle's vertices, vtxPos0 holds the depth quantity and needs the
+     * interpolation mode that reproduces the guest rasterizer: perspective
+     * correct W for a W-buffer, screen-linear Z otherwise. vtxPos1/vtxPos2
+     * and triMZ go unused but stay declared so the location layout (shared
+     * with the geometry stage) is unchanged. */
+    const char *pos0_s = flat_s;
+    if (depth_varying) {
+        pos0_s = z_perspective ? smooth_s : noperspective_s;
+    }
     const char *in_out_s = in ? "in" : "out";
     const char *float_s = "float";
     const char *vec4_s = "vec4";
@@ -48,7 +61,7 @@ MString *pgraph_glsl_get_vtx_header(MString *out, bool location, bool smooth,
         { smooth_s,    vec4_s,  "vtxT1"  },
         { smooth_s,    vec4_s,  "vtxT2"  },
         { smooth_s,    vec4_s,  "vtxT3"  },
-        { flat_s,      vec4_s,  "vtxPos0" },
+        { pos0_s,      vec4_s,  "vtxPos0" },
         { flat_s,      vec4_s,  "vtxPos1" },
         { flat_s,      vec4_s,  "vtxPos2" },
         { flat_s,      float_s, "triMZ"  },

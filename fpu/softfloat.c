@@ -2093,10 +2093,164 @@ float128 float128_sub(float128 a, float128 b, float_status *status)
     return float128_addsub(a, b, status, true);
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * Host-double fast paths for x87 arithmetic.
+ *
+ * Windows and Xbox titles run the x87 unit with precision control set to
+ * double (fpuc=0x023f: 53-bit significand, round-to-nearest-even). In that
+ * mode floatx80_round_pack_canonical() rounds every result to 53 bits and
+ * clears the low 11 bits of the significand -- which is precisely an IEEE
+ * double, so add/sub/mul of two operands that already fit a double produce
+ * bit-identical results when evaluated on the host FPU.
+ *
+ * x87 keeps a 15-bit exponent though, so anything that would overflow,
+ * underflow or become denormal in a double behaves differently and must fall
+ * back to the generic path. Operands and results are therefore restricted to
+ * a window well inside double's normal range; that margin also guarantees the
+ * residual used to derive the inexact flag is itself exactly representable.
+ *
+ * This assumes the host FP environment is at its default (round-to-nearest,
+ * no flush-to-zero). The window excludes denormals, so FTZ cannot matter; a
+ * non-default host rounding mode would, but nothing in QEMU or Bionic changes
+ * it.
+ * ---------------------------------------------------------------------------
+ */
+
+/* floatx80 exponent is biased by 0x3fff; float32 by 0x7f, float64 by 0x3ff. */
+#define FLOATX80_TO_F32_EXP_BIAS  (0x3fff - 0x7f)
+#define FLOATX80_TO_F64_EXP_BIAS  (0x3fff - 0x3ff)
+
+/* Biased double exponents accepted by the fast paths. */
+#define X87_FAST_EXP_MIN 64
+#define X87_FAST_EXP_MAX 1984
+#define X87_FAST_EXP_SPAN (X87_FAST_EXP_MAX - X87_FAST_EXP_MIN)
+
+/* True for a normal floatx80: explicit integer bit set, exponent not 0/max. */
+static inline bool floatx80_is_normal_encoding(floatx80 a)
+{
+    uint32_t exp = a.high & 0x7fff;
+    return (a.low >> 63) != 0 && exp != 0 && exp != 0x7fff;
+}
+
+static inline double x87_bits_to_double(uint64_t b)
+{
+    double d;
+    __builtin_memcpy(&d, &b, sizeof(d));
+    return d;
+}
+
+static inline uint64_t x87_double_to_bits(double d)
+{
+    uint64_t b;
+    __builtin_memcpy(&b, &d, sizeof(b));
+    return b;
+}
+
+/* Exact floatx80 -> double, restricted to the fast-path window. */
+static inline bool floatx80_to_double_fast(floatx80 a, double *out)
+{
+    uint32_t exp;
+
+    if (unlikely((a.low >> 63) == 0)) {
+        return false;   /* zero, denormal, unnormal, pseudo-denormal */
+    }
+    exp = (a.high & 0x7fff) - FLOATX80_TO_F64_EXP_BIAS;
+    if (unlikely(exp - X87_FAST_EXP_MIN > X87_FAST_EXP_SPAN)) {
+        return false;   /* out of window; also catches inf/NaN and underflow */
+    }
+    if (unlikely(a.low & MAKE_64BIT_MASK(0, 11))) {
+        return false;   /* more than 53 significant bits */
+    }
+    *out = x87_bits_to_double(((uint64_t)(a.high >> 15) << 63) |
+                              ((uint64_t)exp << 52) |
+                              ((a.low >> 11) & MAKE_64BIT_MASK(0, 52)));
+    return true;
+}
+
+/* Exact double -> floatx80, restricted to the fast-path window. */
+static inline bool double_to_floatx80_fast(double v, floatx80 *out)
+{
+    uint64_t bits = x87_double_to_bits(v);
+    uint32_t exp = (bits >> 52) & 0x7ff;
+
+    if (unlikely(exp - X87_FAST_EXP_MIN > X87_FAST_EXP_SPAN)) {
+        return false;   /* zero, denormal, inf, NaN, or out of window */
+    }
+    *out = packFloatx80(bits >> 63, exp + FLOATX80_TO_F64_EXP_BIAS,
+                        (1ULL << 63) |
+                        ((bits & MAKE_64BIT_MASK(0, 52)) << 11));
+    return true;
+}
+
+static inline bool x87_fast_mode(float_status *status)
+{
+    return likely(status->floatx80_rounding_precision == floatx80_precision_d &&
+                  status->float_rounding_mode == float_round_nearest_even &&
+                  !status->flush_to_zero && !status->flush_inputs_to_zero);
+}
+
+static bool floatx80_addsub_fast(floatx80 a, floatx80 b, float_status *status,
+                                 bool subtract, floatx80 *res)
+{
+    double da, db, dr, bb, err;
+
+    if (!x87_fast_mode(status) ||
+        !floatx80_to_double_fast(a, &da) ||
+        !floatx80_to_double_fast(b, &db)) {
+        return false;
+    }
+    if (subtract) {
+        db = -db;
+    }
+
+    dr = da + db;
+    if (!double_to_floatx80_fast(dr, res)) {
+        return false;
+    }
+
+    /* 2Sum: exact residual, so the inexact flag matches the generic path. */
+    bb = dr - da;
+    err = (da - (dr - bb)) + (db - bb);
+    if (err != 0.0) {
+        float_raise(float_flag_inexact, status);
+    }
+    return true;
+}
+
+static bool floatx80_mul_fast(floatx80 a, floatx80 b, float_status *status,
+                              floatx80 *res)
+{
+    double da, db, dr, err;
+
+    if (!x87_fast_mode(status) ||
+        !floatx80_to_double_fast(a, &da) ||
+        !floatx80_to_double_fast(b, &db)) {
+        return false;
+    }
+
+    dr = da * db;
+    if (!double_to_floatx80_fast(dr, res)) {
+        return false;
+    }
+
+    /* Fused multiply-add recovers the exact product residual. */
+    err = __builtin_fma(da, db, -dr);
+    if (err != 0.0) {
+        float_raise(float_flag_inexact, status);
+    }
+    return true;
+}
+
 static floatx80 QEMU_FLATTEN
 floatx80_addsub(floatx80 a, floatx80 b, float_status *status, bool subtract)
 {
     FloatParts128 pa, pb, *pr;
+    floatx80 fast;
+
+    if (floatx80_addsub_fast(a, b, status, subtract, &fast)) {
+        return fast;
+    }
 
     if (!floatx80_unpack_canonical(&pa, a, status) ||
         !floatx80_unpack_canonical(&pb, b, status)) {
@@ -2219,6 +2373,11 @@ floatx80 QEMU_FLATTEN
 floatx80_mul(floatx80 a, floatx80 b, float_status *status)
 {
     FloatParts128 pa, pb, *pr;
+    floatx80 fast;
+
+    if (floatx80_mul_fast(a, b, status, &fast)) {
+        return fast;
+    }
 
     if (!floatx80_unpack_canonical(&pa, a, status) ||
         !floatx80_unpack_canonical(&pb, b, status)) {
@@ -2986,10 +3145,33 @@ float128 float64_to_float128(float64 a, float_status *s)
     return float128_round_pack_canonical(&p128, s);
 }
 
+/*
+ * x87 code converts between floatx80 and the narrower formats constantly
+ * (every FLD/FST of a float or double), and the generic unpack/round/pack
+ * path is expensive. The conversions below are exact -- no rounding, so no
+ * dependence on the rounding mode and no exception flags -- whenever the
+ * operand is a normal whose significand already fits the destination. Those
+ * cases are recognised with a few bit tests here; everything else (zero,
+ * denormal, infinity, NaN, invalid floatx80 encodings, values needing
+ * rounding or falling outside the destination's normal exponent range) falls
+ * through to the general implementation unchanged.
+ */
+
 float32 floatx80_to_float32(floatx80 a, float_status *s)
 {
     FloatParts64 p64;
     FloatParts128 p128;
+
+    if (likely(floatx80_is_normal_encoding(a))) {
+        uint32_t exp = (a.high & 0x7fff) - FLOATX80_TO_F32_EXP_BIAS;
+
+        /* Exact iff nothing is lost off the bottom and the result is normal. */
+        if (likely((a.low & MAKE_64BIT_MASK(0, 40)) == 0 &&
+                   exp - 1 < 0xfe)) {
+            return make_float32(((uint32_t)(a.high >> 15) << 31) | (exp << 23) |
+                                (uint32_t)((a.low >> 40) & 0x7fffff));
+        }
+    }
 
     if (floatx80_unpack_canonical(&p128, a, s)) {
         parts_float_to_float_narrow(&p64, &p128, s);
@@ -3003,6 +3185,17 @@ float64 floatx80_to_float64(floatx80 a, float_status *s)
 {
     FloatParts64 p64;
     FloatParts128 p128;
+
+    if (likely(floatx80_is_normal_encoding(a))) {
+        uint32_t exp = (a.high & 0x7fff) - FLOATX80_TO_F64_EXP_BIAS;
+
+        if (likely((a.low & MAKE_64BIT_MASK(0, 11)) == 0 &&
+                   exp - 1 < 0x7fe)) {
+            return make_float64(((uint64_t)(a.high >> 15) << 63) |
+                                ((uint64_t)exp << 52) |
+                                ((a.low >> 11) & MAKE_64BIT_MASK(0, 52)));
+        }
+    }
 
     if (floatx80_unpack_canonical(&p128, a, s)) {
         parts_float_to_float_narrow(&p64, &p128, s);
@@ -3028,6 +3221,18 @@ floatx80 float32_to_floatx80(float32 a, float_status *s)
 {
     FloatParts64 p64;
     FloatParts128 p128;
+    uint32_t av = float32_val(a);
+    uint32_t exp = (av >> 23) & 0xff;
+
+    /*
+     * A normal float32 has a 24-bit significand, which every floatx80
+     * rounding precision (24, 53 or 64 bits) represents exactly, so the
+     * widening cannot round and cannot raise a flag.
+     */
+    if (likely(exp - 1 < 0xfe)) {
+        return packFloatx80(av >> 31, exp + FLOATX80_TO_F32_EXP_BIAS,
+                            (1ULL << 63) | ((uint64_t)(av & 0x7fffff) << 40));
+    }
 
     float32_unpack_canonical(&p64, a, s);
     parts_float_to_float_widen(&p128, &p64, s);
@@ -3038,6 +3243,19 @@ floatx80 float64_to_floatx80(float64 a, float_status *s)
 {
     FloatParts64 p64;
     FloatParts128 p128;
+    uint64_t av = float64_val(a);
+    uint32_t exp = (av >> 52) & 0x7ff;
+
+    /*
+     * Same as above, but a float64's 53-bit significand only survives
+     * intact when the rounding precision is not the 24-bit one.
+     */
+    if (likely(exp - 1 < 0x7fe &&
+               s->floatx80_rounding_precision != floatx80_precision_s)) {
+        return packFloatx80(av >> 63, exp + FLOATX80_TO_F64_EXP_BIAS,
+                            (1ULL << 63) |
+                            ((av & MAKE_64BIT_MASK(0, 52)) << 11));
+    }
 
     float64_unpack_canonical(&p64, a, s);
     parts_float_to_float_widen(&p128, &p64, s);

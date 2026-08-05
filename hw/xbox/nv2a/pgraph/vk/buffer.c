@@ -653,26 +653,3 @@ void pgraph_vk_staging_reset(PGRAPHState *pg)
     PGRAPHVkState *r = pg->vk_renderer_state;
     get_staging_buffer(r, BUFFER_STAGING_SRC)->buffer_offset = 0;
 }
-
-bool pgraph_vk_staging_reclaim_any(PGRAPHState *pg)
-{
-    PGRAPHVkState *r = pg->vk_renderer_state;
-
-    for (int i = 0; i < r->num_active_frames; i++) {
-        if (i == r->current_frame) {
-            continue;
-        }
-        if (!qatomic_read(&r->frame_submitted[i])) {
-            continue;
-        }
-        VkResult result = vkGetFenceStatus(r->device, r->frame_fences[i]);
-        if (result == VK_SUCCESS) {
-            r->frame_staging[i].staging_src.buffer_offset = 0;
-            r->frame_staging[i].index_staging.buffer_offset = 0;
-            r->frame_staging[i].vertex_inline_staging.buffer_offset = 0;
-            r->frame_staging[i].uniform_staging.buffer_offset = 0;
-            return true;
-        }
-    }
-    return false;
-}

@@ -43,6 +43,14 @@ typedef struct DSPOps {
     uint32_t (*read_memory)(DSPState *dsp, char space, uint32_t addr);
     void (*write_memory)(DSPState *dsp, char space, uint32_t addr,
                          uint32_t value);
+    /*
+     * Optional. Returns a pointer to the `count` contiguous 24-bit words
+     * backing [addr, addr + count) in `space`, or NULL when that range is not
+     * plain memory for this backend. Lets bulk transfers skip the per-word
+     * dispatch; only valid for ranges with no side effects on write.
+     */
+    uint32_t *(*get_memory_ptr)(DSPState *dsp, char space, uint32_t addr,
+                                uint32_t count);
     bool (*get_halt_requested)(DSPState *dsp);
     void (*set_halt_requested)(DSPState *dsp, bool idle);
     uint32_t (*get_cycle_count)(DSPState *dsp);
@@ -121,6 +129,8 @@ void dsp_start_frame(DSPState *dsp);
 uint32_t dsp_read_memory(DSPState *dsp, char space, uint32_t addr);
 void dsp_write_memory(DSPState *dsp, char space, uint32_t address,
                       uint32_t value);
+uint32_t *dsp_get_memory_ptr(DSPState *dsp, char space, uint32_t address,
+                             uint32_t count);
 
 /* Accessor functions for backend-independent state access */
 bool dsp_get_halt_requested(DSPState *dsp);

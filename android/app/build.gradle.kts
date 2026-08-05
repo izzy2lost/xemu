@@ -3,7 +3,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
   id("com.android.application")
-  id("org.jetbrains.kotlin.android")
 }
 
 val keystorePropertiesFile = rootProject.file("key.properties")
@@ -54,7 +53,12 @@ android {
 
   defaultConfig {
     applicationId = "com.izzy2lost.x1box"
-    minSdk = 26
+    /*
+     * 29 (Android 10), not lower: below that the NDK toolchain falls back to
+     * *emulated* TLS, which put __emutls_get_address in the hot path of every
+     * emulator thread. Native ELF TLS needs API 29+.
+     */
+    minSdk = 29
     targetSdk = 36
 
     versionCode = 26
@@ -127,7 +131,8 @@ android {
   }
 
   if (!vulkanValidationJniLibs.isNullOrBlank()) {
-    sourceSets.getByName("profile").jniLibs.srcDir(vulkanValidationJniLibs)
+    /* AGP 9 deprecated srcDir() in favour of the mutable `directories` set. */
+    sourceSets.getByName("profile").jniLibs.directories += vulkanValidationJniLibs
   }
 
   externalNativeBuild {

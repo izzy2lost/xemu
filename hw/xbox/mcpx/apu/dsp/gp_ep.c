@@ -63,10 +63,8 @@ static void scatter_gather_rw(MCPXAPUState *d, hwaddr sge_base,
             break;
         }
 
-        uint32_t prd_address = ldl_le_phys(&address_space_memory,
-                                           sge_base + page_entry * 8 + 0);
-        // uint32_t prd_control = ldl_le_phys(&address_space_memory,
-        //                                     sge_base + page_entry * 8 + 4);
+        uint32_t prd_address = apu_ldl_le(d, sge_base + page_entry * 8 + 0);
+        // uint32_t prd_control = apu_ldl_le(d, sge_base + page_entry * 8 + 4);
 
         hwaddr paddr = prd_address + offset_in_page;
 
@@ -74,7 +72,7 @@ static void scatter_gather_rw(MCPXAPUState *d, hwaddr sge_base,
             bytes_to_copy = len;
         }
 
-        if (paddr + bytes_to_copy >= memory_region_size(d->ram)) {
+        if (paddr + bytes_to_copy >= d->ram_size) {
             fprintf(stderr, "scatter_gather_rw: paddr 0x%" HWADDR_PRIx
                             " out of RAM bounds\n", paddr);
             break;
@@ -450,12 +448,52 @@ const MemoryRegionOps ep_ops = {
 
 void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
 {
-    /* Write VP results to the GP DSP MIXBUF */
-    for (int mixbin = 0; mixbin < NUM_MIXBINS; mixbin++) {
-        uint32_t base = GP_DSP_MIXBUF_BASE + mixbin * NUM_SAMPLES_PER_FRAME;
-        for (int sample = 0; sample < NUM_SAMPLES_PER_FRAME; sample++) {
-            dsp_write_memory(d->gp.dsp, 'X', base + sample,
-                             float_to_24b(mixbins[mixbin][sample]));
+    /*
+     * Write VP results to the GP DSP MIXBUF. This is 32x32 words every frame,
+     * and routing each one through dsp_write_memory() costs an indirect call,
+     * an FFI hop and a linear scan of the backend's memory region list. The
+     * whole block is plain memory, so write it directly when the backend can
+     * hand out a pointer.
+     */
+    uint32_t *mixbuf = dsp_get_memory_ptr(d->gp.dsp, 'X', GP_DSP_MIXBUF_BASE,
+                                          NUM_MIXBINS * NUM_SAMPLES_PER_FRAME);
+
+    /*
+     * The JIT backend's memory map comes from an externally fetched crate, so
+     * prove once that the pointer really aliases what dsp_write_memory() would
+     * target instead of trusting that layout. The whole block is overwritten
+     * immediately below, so the sentinels disturb nothing.
+     */
+    static int mixbuf_direct_ok = -1;
+    if (mixbuf && mixbuf_direct_ok < 0) {
+        const uint32_t last = NUM_MIXBINS * NUM_SAMPLES_PER_FRAME - 1;
+
+        dsp_write_memory(d->gp.dsp, 'X', GP_DSP_MIXBUF_BASE, 0xA5A5A5);
+        dsp_write_memory(d->gp.dsp, 'X', GP_DSP_MIXBUF_BASE + last, 0x5A5A5A);
+        mixbuf_direct_ok = mixbuf[0] == 0xA5A5A5 && mixbuf[last] == 0x5A5A5A;
+        if (!mixbuf_direct_ok) {
+            fprintf(stderr, "mcpx apu: DSP mixbuf direct write disabled "
+                            "(backend memory map mismatch)\n");
+        }
+    }
+    if (mixbuf_direct_ok <= 0) {
+        mixbuf = NULL;
+    }
+
+    if (mixbuf) {
+        for (int mixbin = 0; mixbin < NUM_MIXBINS; mixbin++) {
+            uint32_t *dst = mixbuf + mixbin * NUM_SAMPLES_PER_FRAME;
+            for (int sample = 0; sample < NUM_SAMPLES_PER_FRAME; sample++) {
+                dst[sample] = float_to_24b(mixbins[mixbin][sample]);
+            }
+        }
+    } else {
+        for (int mixbin = 0; mixbin < NUM_MIXBINS; mixbin++) {
+            uint32_t base = GP_DSP_MIXBUF_BASE + mixbin * NUM_SAMPLES_PER_FRAME;
+            for (int sample = 0; sample < NUM_SAMPLES_PER_FRAME; sample++) {
+                dsp_write_memory(d->gp.dsp, 'X', base + sample,
+                                 float_to_24b(mixbins[mixbin][sample]));
+            }
         }
     }
 

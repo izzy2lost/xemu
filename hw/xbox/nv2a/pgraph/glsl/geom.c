@@ -128,9 +128,9 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
                        "\n",
                        layout_in, layout_out);
     pgraph_glsl_get_vtx_header(output, opts.vulkan, state->smooth_shading, true,
-                               true, true);
+                               true, true, false, false);
     pgraph_glsl_get_vtx_header(output, opts.vulkan, state->smooth_shading,
-                               false, false, false);
+                               false, false, false, false, false);
 
     mstring_append(
         output,
@@ -189,13 +189,24 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
                 "                v_vtxPos[i2].xy - v_vtxPos[i0].xy);\n"
                 "  precise vec2 b = vec2(v_vtxPos[i0].w - v_vtxPos[i1].w,\n"
                 "                        v_vtxPos[i0].w - v_vtxPos[i2].w);\n"
-                "  b /= vec2(v_vtxPos[i1].w, v_vtxPos[i2].w) * v_vtxPos[i0].w;\n"
+                "  vec2 wdenom = vec2(v_vtxPos[i1].w, v_vtxPos[i2].w) * v_vtxPos[i0].w;\n"
+                "  if (any(isnan(wdenom)) || any(isinf(wdenom)) ||\n"
+                "      any(lessThanEqual(abs(wdenom), vec2(1.0e-20)))) {\n"
+                "    return mat4(v_vtxPos[i0], v_vtxPos[i1], v_vtxPos[i2], 0.0, vec3(0.0));\n"
+                "  }\n"
+                "  b /= wdenom;\n"
                 // The following computes dzx and dzy same as
                 // vec2 dz = b * inverse(m);
                 "  float det = kahan_det(m[0].x, m[1].y, m[1].x, m[0].y);\n"
-                "  float dzx = kahan_det(b.x, m[1].y, b.y, m[0].y) / det;\n"
-                "  float dzy = kahan_det(b.y, m[0].x, b.x, m[1].x) / det;\n"
-                "  float dz = max(abs(dzx), abs(dzy));\n"
+                "  float dz = 0.0;\n"
+                "  if (!isnan(det) && !isinf(det) && abs(det) > 1.0e-20) {\n"
+                "    float dzx = kahan_det(b.x, m[1].y, b.y, m[0].y) / det;\n"
+                "    float dzy = kahan_det(b.y, m[0].x, b.x, m[1].x) / det;\n"
+                "    dz = max(abs(dzx), abs(dzy));\n"
+                "    if (isnan(dz) || isinf(dz)) {\n"
+                "      dz = 0.0;\n"
+                "    }\n"
+                "  }\n"
                 "  return mat4(v_vtxPos[i0], v_vtxPos[i1], v_vtxPos[i2], dz, vec3(0.0));\n"
                 "}\n");
         } else {
@@ -209,9 +220,15 @@ MString *pgraph_glsl_gen_geom(const GeomState *state, GenGeomGlslOptions opts)
                 // The following computes dzx and dzy same as
                 // vec2 dz = b * inverse(m);
                 "  float det = kahan_det(m[0].x, m[1].y, m[1].x, m[0].y);\n"
-                "  float dzx = kahan_det(b.x, m[1].y, b.y, m[0].y) / det;\n"
-                "  float dzy = kahan_det(b.y, m[0].x, b.x, m[1].x) / det;\n"
-                "  float dz = max(abs(dzx), abs(dzy));\n"
+                "  float dz = 0.0;\n"
+                "  if (!isnan(det) && !isinf(det) && abs(det) > 1.0e-20) {\n"
+                "    float dzx = kahan_det(b.x, m[1].y, b.y, m[0].y) / det;\n"
+                "    float dzy = kahan_det(b.y, m[0].x, b.x, m[1].x) / det;\n"
+                "    dz = max(abs(dzx), abs(dzy));\n"
+                "    if (isnan(dz) || isinf(dz)) {\n"
+                "      dz = 0.0;\n"
+                "    }\n"
+                "  }\n"
                 "  return mat4(v_vtxPos[i0], v_vtxPos[i1], v_vtxPos[i2], dz, vec3(0.0));\n"
                 "}\n");
         }

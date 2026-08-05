@@ -41,6 +41,44 @@ static bool g_xemu_async_compile = false;
 static bool g_xemu_frame_skip = false;
 static int g_xemu_submit_frames = 3;
 
+/* Guest polygon offset for the fixed-function depth path.
+ *
+ * Vulkan computes o = m*slopeFactor + r*constantFactor, where m is the max
+ * depth slope in normalized units and r is the minimum resolvable difference.
+ * The guest wants (depthOffset + depthFactor*slope_raw)/zmax, i.e.
+ * depthOffset/zmax + depthFactor*m. For a unorm depth buffer r is 2^-n while
+ * zmax is 2^n - 1, so r*depthOffset ≈ depthOffset/zmax and the factors map
+ * across directly. Mirrors the enable logic in psh.c's uniform update. */
+static void get_polygon_offset(PGRAPHState *pg, float *constant, float *slope)
+{
+    *constant = 0.0f;
+    *slope = 0.0f;
+
+    if (pg->primitive_mode < PRIM_TYPE_TRIANGLES) {
+        return;
+    }
+
+    uint32_t raster = pgraph_vk_reg_r(pg, NV_PGRAPH_SETUPRASTER);
+    uint32_t polygon_mode =
+        GET_MASK(raster, NV_PGRAPH_SETUPRASTER_FRONTFACEMODE);
+
+    bool enabled =
+        (polygon_mode == NV_PGRAPH_SETUPRASTER_FRONTFACEMODE_FILL &&
+         (raster & NV_PGRAPH_SETUPRASTER_POFFSETFILLENABLE)) ||
+        (polygon_mode == NV_PGRAPH_SETUPRASTER_FRONTFACEMODE_LINE &&
+         (raster & NV_PGRAPH_SETUPRASTER_POFFSETLINEENABLE)) ||
+        (polygon_mode == NV_PGRAPH_SETUPRASTER_FRONTFACEMODE_POINT &&
+         (raster & NV_PGRAPH_SETUPRASTER_POFFSETPOINTENABLE));
+    if (!enabled) {
+        return;
+    }
+
+    uint32_t bias_u32 = pgraph_vk_reg_r(pg, NV_PGRAPH_ZOFFSETBIAS);
+    uint32_t factor_u32 = pgraph_vk_reg_r(pg, NV_PGRAPH_ZOFFSETFACTOR);
+    *constant = *(float *)&bias_u32;
+    *slope = *(float *)&factor_u32;
+}
+
 static int get_command_buffer_draw_limit(PGRAPHVkState *r)
 {
 #ifdef __ANDROID__
@@ -1439,6 +1477,11 @@ static void create_pipeline(PGRAPHState *pg)
         polygon_mode = VK_POLYGON_MODE_FILL;
     }
 
+    /* When the fragment shader stops writing gl_FragDepth, it also stops
+     * applying the guest polygon offset, so hand that to the hardware. */
+    snode->has_dynamic_depth_bias =
+        pgraph_vk_uses_fixed_function_depth(r, &r->shader_binding->state);
+
     VkPipelineRasterizationStateCreateInfo rasterizer = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .depthClampEnable =
@@ -1457,7 +1500,8 @@ static void create_pipeline(PGRAPHState *pg)
                  VK_FRONT_FACE_COUNTER_CLOCKWISE :
                  VK_FRONT_FACE_CLOCKWISE,
 #endif
-        .depthBiasEnable = VK_FALSE,
+        .depthBiasEnable =
+            snode->has_dynamic_depth_bias ? VK_TRUE : VK_FALSE,
         .pNext = rasterizer_next_struct,
     };
 
@@ -1628,6 +1672,10 @@ static void create_pipeline(PGRAPHState *pg)
         dynamic_states[num_dynamic_states++] = VK_DYNAMIC_STATE_LINE_WIDTH;
     }
 
+    if (snode->has_dynamic_depth_bias) {
+        dynamic_states[num_dynamic_states++] = VK_DYNAMIC_STATE_DEPTH_BIAS;
+    }
+
     VkPipelineDynamicStateCreateInfo dynamic_state = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .dynamicStateCount = num_dynamic_states,
@@ -1759,6 +1807,7 @@ static void create_pipeline(PGRAPHState *pg)
                num_dynamic_states * sizeof(VkDynamicState));
         p->num_dynamic_states = num_dynamic_states;
         p->has_dynamic_line_width = snode->has_dynamic_line_width;
+        p->has_dynamic_depth_bias = snode->has_dynamic_depth_bias;
         p->layout = layout;
         p->render_pass = render_pass;
 
@@ -2904,8 +2953,12 @@ static void begin_pre_draw(PGRAPHState *pg)
                         if (r->texture_bindings_changed) {
                             for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
                                 r->push_tex_infos[i] = (VkDescriptorImageInfo){
-                                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                    .imageView = r->texture_bindings[i]->image_view,
+                                    .imageLayout = r->tex_surface_direct[i]
+                                        ? r->tex_surface_direct_layout[i]
+                                        : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    .imageView = r->tex_surface_direct[i]
+                                        ? r->tex_surface_direct_views[i]
+                                        : r->texture_bindings[i]->image_view,
                                     .sampler = r->texture_bindings[i]->sampler,
                                 };
                             }
@@ -3168,8 +3221,12 @@ static void begin_pre_draw(PGRAPHState *pg)
             if (r->texture_bindings_changed) {
                 for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
                     r->push_tex_infos[i] = (VkDescriptorImageInfo){
-                        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        .imageView = r->texture_bindings[i]->image_view,
+                        .imageLayout = r->tex_surface_direct[i]
+                            ? r->tex_surface_direct_layout[i]
+                            : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .imageView = r->tex_surface_direct[i]
+                            ? r->tex_surface_direct_views[i]
+                            : r->texture_bindings[i]->image_view,
                         .sampler = r->texture_bindings[i]->sampler,
                     };
                 }
@@ -3317,6 +3374,18 @@ static void begin_draw(PGRAPHState *pg)
                           r->pipeline_binding->pipeline);
         r->pipeline_binding_changed = false;
         r->pipeline_binding->draw_time = pg->draw_time;
+#if OPT_BINDLESS_TEXTURES
+        /* Pipeline layouts can have different push-constant ranges. That makes
+         * otherwise identical descriptor-set layouts incompatible, so rebind
+         * the persistent bindless set for the new layout. */
+        r->bindless_set_bound = false;
+#endif
+        /* Push descriptors are likewise only valid for a compatible pipeline
+         * layout. Re-push set 0 after every pipeline bind; texture contents do
+         * not need to have changed for the old pushed set to be disturbed. */
+        if (r->push_descriptors_supported) {
+            r->push_tex_dirty = true;
+        }
 #if OPT_DYNAMIC_STATES
         r->dyn_state.valid = false;
 #endif
@@ -3359,6 +3428,13 @@ static void begin_draw(PGRAPHState *pg)
             float line_width =
                 clamp_line_width_to_device_limits(pg, pg->surface_scale_factor);
             vkCmdSetLineWidth(r->command_buffer, line_width);
+        }
+
+        if (r->pipeline_binding->has_dynamic_depth_bias) {
+            float bias_constant, bias_slope;
+            get_polygon_offset(pg, &bias_constant, &bias_slope);
+            vkCmdSetDepthBias(r->command_buffer, bias_constant, 0.0f,
+                              bias_slope);
         }
     }
 
@@ -4563,6 +4639,10 @@ static bool try_snapshot_draw_arrays(NV2AState *d, ReorderWindowEntry *e)
         e->line_width =
             clamp_line_width_to_device_limits(pg, pg->surface_scale_factor);
     }
+    e->has_dynamic_depth_bias = r->pipeline_binding->has_dynamic_depth_bias;
+    if (e->has_dynamic_depth_bias) {
+        get_polygon_offset(pg, &e->depth_bias_constant, &e->depth_bias_slope);
+    }
 
 #if OPT_BINDLESS_TEXTURES
     if (r->bindless_textures_supported) {
@@ -4706,6 +4786,10 @@ static bool try_snapshot_inline_elements(NV2AState *d, ReorderWindowEntry *e)
         e->line_width =
             clamp_line_width_to_device_limits(pg, pg->surface_scale_factor);
     }
+    e->has_dynamic_depth_bias = r->pipeline_binding->has_dynamic_depth_bias;
+    if (e->has_dynamic_depth_bias) {
+        get_polygon_offset(pg, &e->depth_bias_constant, &e->depth_bias_slope);
+    }
 
 #if OPT_BINDLESS_TEXTURES
     if (r->bindless_textures_supported) {
@@ -4781,6 +4865,10 @@ static void emit_reorder_entry(PGRAPHState *pg, ReorderWindowEntry *e,
         vkCmdSetScissor(r->command_buffer, 0, 1, &e->scissor);
         if (e->has_dynamic_line_width) {
             vkCmdSetLineWidth(r->command_buffer, e->line_width);
+        }
+        if (e->has_dynamic_depth_bias) {
+            vkCmdSetDepthBias(r->command_buffer, e->depth_bias_constant, 0.0f,
+                              e->depth_bias_slope);
         }
     }
 

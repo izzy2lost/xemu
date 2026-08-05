@@ -105,6 +105,14 @@ typedef struct GenPshGlslOptions {
     int tex_binding;
     bool bindless;
     int tex_push_offset;
+    /* Matches GenVshGlslOptions::depth_via_varying; the interpolation mode is
+     * taken from PshState::z_perspective. */
+    bool depth_via_varying;
+    /* Leave Z-buffer depth to the fixed-function pipeline instead of writing
+     * gl_FragDepth. Independent of depth_via_varying: the vertex stage already
+     * emits gl_FragCoord.z == guest depth / zmax, so this is valid however
+     * zvalue is derived. Keeps early-Z alive on tile-based GPUs. */
+    bool fixed_function_depth;
 } GenPshGlslOptions;
 
 MString *pgraph_glsl_gen_psh(const PshState *state, GenPshGlslOptions opts);

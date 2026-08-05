@@ -223,6 +223,16 @@ typedef struct DisasContext {
     bool jmp_opt; /* use direct block chaining for direct jumps */
     bool cc_op_dirty;
 
+    /*
+     * enter_mmx state tracking. gen_enter_mmx() is idempotent, so a run of
+     * directly consecutive MMX instructions only needs it emitted once.
+     * mmx_insn records that the instruction being translated entered MMX
+     * state; mmx_entered carries that over to the very next instruction and
+     * is cleared by anything else (x87 ops, emms, ...) in between.
+     */
+    bool mmx_insn;
+    bool mmx_entered;
+
     CCOp cc_op;  /* current CC operation */
     int mem_index; /* select memory access functions */
     uint32_t flags; /* all execution flags */
@@ -1919,6 +1929,17 @@ static void gen_fxchg_ST0_STN(DisasContext *s, int st_index)
 
 static void gen_enter_mmx(DisasContext *s)
 {
+    /*
+     * Idempotent: skip if the immediately preceding instruction already
+     * entered MMX state, or if this instruction reached here twice (an
+     * X86_SPECIAL_MMX entry whose emitter also calls us).
+     */
+    s->mmx_insn = true;
+    if (s->mmx_entered) {
+        return;
+    }
+    s->mmx_entered = true;
+
     GEN_HELPER_FALLBACK_v_v(enter_mmx, BISECT_GRP_STACK);
 
     gen_flush_fp((DisasContext *)tcg_ctx->disas_ctx);
@@ -4410,6 +4431,8 @@ static void i386_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     dc->cs_base = dc->base.tb->cs_base;
     dc->pc_save = dc->base.pc_next;
     dc->flags = flags;
+    dc->mmx_insn = false;
+    dc->mmx_entered = false;
 #ifndef CONFIG_USER_ONLY
     dc->cpl = cpl;
     dc->iopl = iopl;
@@ -4482,6 +4505,10 @@ static void i386_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     bool orig_cc_op_dirty = dc->cc_op_dirty;
     CCOp orig_cc_op = dc->cc_op;
     target_ulong orig_pc_save = dc->pc_save;
+
+    /* enter_mmx state survives only from the directly preceding instruction */
+    dc->mmx_entered = dc->mmx_insn;
+    dc->mmx_insn = false;
 
 #ifdef TARGET_VSYSCALL_PAGE
     /*
