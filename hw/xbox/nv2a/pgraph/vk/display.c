@@ -17,6 +17,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "ui/xemu-settings.h"
 #include "renderer.h"
 #include "qemu/error-report.h"
 #include <EGL/egl.h>
@@ -1397,9 +1398,43 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
         return false;
     }
 
-    uint32_t image_count = MAX(caps.minImageCount, 2u);
+    /*
+     * FIFO is the only mode guaranteed to exist and is what we want when the
+     * user asks for vsync. With vsync off, prefer MAILBOX so a frame finished
+     * mid-refresh replaces the queued one instead of stalling the render
+     * thread; fall back to IMMEDIATE, then FIFO.
+     */
+    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    if (!g_config.display.window.vsync) {
+        uint32_t mode_count = 0;
+        VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
+            r->physical_device, r->present_surface, &mode_count, NULL));
+        if (mode_count > 0) {
+            g_autofree VkPresentModeKHR *modes =
+                g_new(VkPresentModeKHR, mode_count);
+            VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(
+                r->physical_device, r->present_surface, &mode_count, modes));
+            for (uint32_t i = 0; i < mode_count; i++) {
+                if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+                    present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+                    break;
+                }
+                if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                    present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+                }
+            }
+        }
+    }
+
+    /* MAILBOX needs a third image to have anything to swap in. */
+    uint32_t min_images =
+        present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? 3u : 2u;
+    uint32_t image_count = MAX(caps.minImageCount, min_images);
     if (caps.maxImageCount && image_count > caps.maxImageCount) {
         image_count = caps.maxImageCount;
+        if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR && image_count < 3) {
+            present_mode = VK_PRESENT_MODE_FIFO_KHR;
+        }
     }
     if (image_count > NUM_DISPLAY_IMAGES) {
         __android_log_print(
@@ -1469,7 +1504,7 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = pre_transform,
         .compositeAlpha = composite_alpha,
-        .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        .presentMode = present_mode,
         .clipped = VK_TRUE,
     };
     result =
@@ -1579,10 +1614,10 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
 
     __android_log_print(
         ANDROID_LOG_INFO, "hakuX-vk",
-        "present: all-Vulkan swapchain %ux%u images=%u format=%d "
+        "present: all-Vulkan swapchain %ux%u images=%u format=%d present_mode=%d "
         "transform current=0x%x supported=0x%x chosen=0x%x mode=%d "
         "viewport=%d,%d %ux%u source=%dx%d",
-        extent.width, extent.height, image_count, selected.format,
+        extent.width, extent.height, image_count, selected.format, present_mode,
         caps.currentTransform, caps.supportedTransforms, pre_transform,
         display_mode, d->present_viewport.offset.x,
         d->present_viewport.offset.y, d->present_viewport.extent.width,
