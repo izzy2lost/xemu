@@ -97,6 +97,24 @@ typedef struct BetaState {
   uint32_t beta;
 } BetaState;
 
+/*
+ * Driver-dependent behaviour probed once at renderer init.
+ *
+ * geom_shader_winding: neither GL nor Vulkan guarantees which of a triangle's
+ * vertices lands at gl_in[0] in a geometry shader -- only the winding order is
+ * fixed, so a driver may hand us any of the three rotations. Flat shading and
+ * the vtxPos0/1/2 plane fit both assume vertex 0 is the provoking vertex, so we
+ * probe the rotation per GPU and compensate when generating the shader.
+ */
+typedef struct GPUProperties {
+    struct {
+        short tri;
+        short tri_strip0;
+        short tri_strip1;
+        short tri_fan;
+    } geom_shader_winding;
+} GPUProperties;
+
 typedef struct PGRAPHRenderer {
     CONFIG_DISPLAY_RENDERER type;
     const char *name;
@@ -123,6 +141,7 @@ typedef struct PGRAPHRenderer {
         void (*set_surface_scale_factor)(NV2AState *d, unsigned int scale);
         unsigned int (*get_surface_scale_factor)(NV2AState *d);
         int (*get_framebuffer_surface)(NV2AState *d);
+        GPUProperties *(*get_gpu_properties)(void);
     } ops;
 } PGRAPHRenderer;
 

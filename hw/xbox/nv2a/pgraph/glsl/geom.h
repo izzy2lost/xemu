@@ -31,6 +31,15 @@ typedef struct {
     enum ShaderPolygonMode polygon_back_mode;
     bool smooth_shading;
     bool z_perspective;
+    /*
+     * Rotation the driver applies to a triangle's vertices on the way into the
+     * geometry shader; see GPUProperties in pgraph.h. Upstream carries a pair
+     * of these because triangle strips alternate rotation, but prim_rewrite
+     * turns every strip, fan, quad and polygon into a plain triangle list
+     * before it reaches us, so a single value covers every case this fork can
+     * generate a geometry shader for.
+     */
+    short tri_rot;
 } GeomState;
 
 typedef struct GenGeomGlslOptions {

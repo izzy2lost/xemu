@@ -297,6 +297,8 @@ void pgraph_gl_surface_flush(NV2AState *d);
 void pgraph_gl_surface_update(NV2AState *d, bool upload, bool color_write, bool zeta_write);
 void pgraph_gl_sync(NV2AState *d);
 void pgraph_gl_update_entire_memory_buffer(NV2AState *d);
+void pgraph_gl_determine_gpu_properties(PGRAPHGLState *r);
+GPUProperties *pgraph_gl_get_gpu_properties(void);
 void pgraph_gl_init_display(NV2AState *d);
 void pgraph_gl_finalize_display(PGRAPHState *pg);
 void pgraph_gl_init_reports(NV2AState *d);

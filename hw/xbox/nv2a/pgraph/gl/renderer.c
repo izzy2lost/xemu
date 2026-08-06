@@ -163,6 +163,8 @@ static void pgraph_gl_init(NV2AState *d, Error **errp)
 #endif
     glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, r->supported_aliased_line_width_range);
 
+    pgraph_gl_determine_gpu_properties(r);
+
     pgraph_gl_init_surfaces(pg);
     pgraph_gl_init_reports(d);
     pgraph_gl_init_textures(d);
@@ -337,6 +339,7 @@ static PGRAPHRenderer pgraph_gl_renderer = {
         .set_surface_scale_factor = pgraph_gl_set_surface_scale_factor,
         .get_surface_scale_factor = pgraph_gl_get_surface_scale_factor,
         .get_framebuffer_surface = pgraph_gl_get_framebuffer_surface,
+        .get_gpu_properties = pgraph_gl_get_gpu_properties,
     }
 };
 

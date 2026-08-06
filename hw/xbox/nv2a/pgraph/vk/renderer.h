@@ -1456,6 +1456,10 @@ VkCommandBuffer pgraph_vk_begin_single_time_commands(PGRAPHState *pg);
 void pgraph_vk_end_single_time_commands(PGRAPHState *pg, VkCommandBuffer cmd);
 VkCommandBuffer pgraph_vk_ensure_nondraw_commands(PGRAPHState *pg);
 
+// gpuprops.c
+void pgraph_vk_determine_gpu_properties(NV2AState *d);
+GPUProperties *pgraph_vk_get_gpu_properties(void);
+
 // image.c
 void pgraph_vk_transition_image_layout(PGRAPHState *pg, VkCommandBuffer cmd,
                                        VkImage image, VkFormat format,

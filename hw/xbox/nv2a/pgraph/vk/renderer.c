@@ -48,7 +48,8 @@ typedef struct {
     uint8_t  pipeline_cache_uuid[VK_UUID_SIZE];
 } GpuDriverIdentity;
 
-#define XEMU_VK_SHADER_CACHE_ABI 12
+/* 13: GeomState gained tri_rot, changing generated geometry shader source. */
+#define XEMU_VK_SHADER_CACHE_ABI 13
 
 static void remove_directory_recursive(const char *path)
 {
@@ -259,6 +260,13 @@ static void pgraph_vk_init(NV2AState *d, Error **errp)
                                    memory_region_size(d->vram));
 
     pg->vk_renderer_state->frame_staging[0].vertex_ram_initialized = true;
+
+    /*
+     * Needs the glsl compiler (init_shaders) and the aux command buffer
+     * (init_command_buffers), so it has to come after both.
+     */
+    VK_LOG_ERROR("init: gpu_properties");
+    pgraph_vk_determine_gpu_properties(d);
 
     VK_LOG_ERROR("init: renderer_ready");
 
@@ -1567,6 +1575,7 @@ static PGRAPHRenderer pgraph_vk_renderer = {
         .set_surface_scale_factor = pgraph_vk_set_surface_scale_factor,
         .get_surface_scale_factor = pgraph_vk_get_surface_scale_factor,
         .get_framebuffer_surface = pgraph_vk_get_framebuffer_surface,
+        .get_gpu_properties = pgraph_vk_get_gpu_properties,
     }
 };
 
