@@ -111,7 +111,28 @@ static int get_command_buffer_draw_limit(PGRAPHVkState *r)
 static bool requires_strict_draw_serialization(PGRAPHVkState *r)
 {
 #ifdef __ANDROID__
-    return r->device_props.vendorID == 0x13B5u;
+    static int mode = -1;
+    if (mode < 0) {
+        char property[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.vk.strict_draws", property) > 0 &&
+            (property[0] == '0' || property[0] == '1') &&
+            property[1] == '\0') {
+            mode = property[0] - '0';
+        } else {
+            /*
+             * The per-draw render-pass break was added for the r38p1 Mali
+             * driver, which could lose the device when a large number of
+             * guest draws shared one render pass. Keep that workaround on
+             * the old driver family; modern Mali drivers can preserve the
+             * attachments across normal in-pass draws.
+             */
+            mode = r->device_props.vendorID == 0x13B5u &&
+                   VK_VERSION_MAJOR(r->device_props.driverVersion) < 54;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "strict per-draw serialization: %d", mode);
+    }
+    return mode == 1;
 #else
     return false;
 #endif
@@ -2026,6 +2047,30 @@ static void sync_staging_buffer(PGRAPHState *pg, VkCommandBuffer cmd,
     if (!b_src->buffer_offset) {
         return;
     }
+
+    /*
+     * These staging allocations are persistently mapped and are not
+     * guaranteed to use HOST_COHERENT memory. Make the CPU writes available
+     * before the transfer reads them. Texture and surface uploads already do
+     * the same; omitting it here leaves indices, inline vertices, and uniforms
+     * stale on non-coherent Android memory types (notably Mali r54).
+     */
+    VK_CHECK(vmaFlushAllocation(r->allocator, b_src->allocation, 0,
+                                b_src->buffer_offset));
+
+    VkBufferMemoryBarrier host_barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = b_src->buffer,
+        .offset = 0,
+        .size = b_src->buffer_offset,
+    };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
+                         &host_barrier, 0, NULL);
 
     VkBufferCopy copy_region = { .size = b_src->buffer_offset };
     vkCmdCopyBuffer(cmd, b_src->buffer, b_dst->buffer, 1, &copy_region);
