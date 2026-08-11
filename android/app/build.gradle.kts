@@ -98,6 +98,9 @@ android {
 
   buildTypes {
     debug {
+      // Keep locally signed development builds installable alongside the
+      // Play-signed release so device testing never requires clearing user data.
+      applicationIdSuffix = ".dev"
       ndk {
         debugSymbolLevel = "NONE"
       }
