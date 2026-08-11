@@ -491,6 +491,29 @@ static TranslationBlock *tb_htable_lookup(CPUState *cpu, TCGTBCPUState s)
     return tb_htable_lookup_common(cpu, s, &tb_ctx.htable, tb_lookup_cmp);
 }
 
+static inline bool tb_jmp_cache_entry_matches(const TBJumpCacheEntry *entry,
+                                               TranslationBlock *tb,
+                                               TCGTBCPUState s)
+{
+    return tb && entry->pc == s.pc && tb->cs_base == s.cs_base &&
+           tb->flags == s.flags && tb_cflags(tb) == s.cflags;
+}
+
+static inline void tb_jmp_cache_insert(CPUJumpCache *jc, uint32_t hash,
+                                       vaddr pc, TranslationBlock *tb)
+{
+    TBJumpCacheEntry *ways = jc->array[hash].ways;
+    TranslationBlock *primary = qatomic_read(&ways[0].tb);
+
+    /* Retain the displaced direct-map entry as a second way. */
+    if (primary && primary != tb) {
+        ways[1].pc = ways[0].pc;
+        qatomic_set(&ways[1].tb, primary);
+    }
+    ways[0].pc = pc;
+    qatomic_set(&ways[0].tb, tb);
+}
+
 static bool inv_tb_lookup_cmp(const void *p, const void *d)
 {
     const TranslationBlock *tb = p;
@@ -519,10 +542,12 @@ TranslationBlock *inv_tb_htable_lookup(CPUState *cpu, TCGTBCPUState s)
  *
  * Returns: an existing translation block or NULL.
  */
-static inline TranslationBlock *tb_lookup(CPUState *cpu, TCGTBCPUState s)
+static inline QEMU_ALWAYS_INLINE TranslationBlock *
+tb_lookup(CPUState *cpu, TCGTBCPUState s)
 {
-    TranslationBlock *tb;
+    TranslationBlock *tb, *tb0, *tb1;
     CPUJumpCache *jc;
+    TBJumpCacheEntry *ways;
     uint32_t hash;
 
     /* we should never be trying to look up an INVALID tb */
@@ -530,13 +555,17 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, TCGTBCPUState s)
 
     hash = tb_jmp_cache_hash_func(s.pc);
     jc = cpu->tb_jmp_cache;
+    ways = jc->array[hash].ways;
 
-    tb = qatomic_read(&jc->array[hash].tb);
-    if (likely(tb &&
-               jc->array[hash].pc == s.pc &&
-               tb->cs_base == s.cs_base &&
-               tb->flags == s.flags &&
-               tb_cflags(tb) == s.cflags)) {
+    tb0 = qatomic_read(&ways[0].tb);
+    if (likely(tb_jmp_cache_entry_matches(&ways[0], tb0, s))) {
+        tb = tb0;
+        goto hit;
+    }
+
+    tb1 = qatomic_read(&ways[1].tb);
+    if (tb_jmp_cache_entry_matches(&ways[1], tb1, s)) {
+        tb = tb1;
         goto hit;
     }
 
@@ -545,8 +574,7 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, TCGTBCPUState s)
         return NULL;
     }
 
-    jc->array[hash].pc = s.pc;
-    qatomic_set(&jc->array[hash].tb, tb);
+    tb_jmp_cache_insert(jc, hash, s.pc, tb);
 
 hit:
     /*
@@ -1285,8 +1313,7 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  */
                 h = tb_jmp_cache_hash_func(s.pc);
                 jc = cpu->tb_jmp_cache;
-                jc->array[h].pc = s.pc;
-                qatomic_set(&jc->array[h].tb, tb);
+                tb_jmp_cache_insert(jc, h, s.pc, tb);
             } else {
                 tb_cache_notify_lookup_hit();
             }

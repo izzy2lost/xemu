@@ -14,6 +14,7 @@
 
 #define TB_JMP_CACHE_BITS 12
 #define TB_JMP_CACHE_SIZE (1 << TB_JMP_CACHE_BITS)
+#define TB_JMP_CACHE_WAYS 2
 
 /*
  * Invalidated in parallel; all accesses to 'tb' must be atomic.
@@ -22,11 +23,15 @@
  * non-NULL value of 'tb'.  Strictly speaking pc is only needed for
  * CF_PCREL, but it's used always for simplicity.
  */
+typedef struct TBJumpCacheEntry {
+    TranslationBlock *tb;
+    vaddr pc;
+} TBJumpCacheEntry;
+
 typedef struct CPUJumpCache {
     struct rcu_head rcu;
     struct {
-        TranslationBlock *tb;
-        vaddr pc;
+        TBJumpCacheEntry ways[TB_JMP_CACHE_WAYS];
     } array[TB_JMP_CACHE_SIZE];
 } CPUJumpCache;
 

@@ -935,8 +935,10 @@ static void tb_jmp_cache_inval_tb(TranslationBlock *tb)
         CPU_FOREACH(cpu) {
             CPUJumpCache *jc = cpu->tb_jmp_cache;
 
-            if (qatomic_read(&jc->array[h].tb) == tb) {
-                qatomic_set(&jc->array[h].tb, NULL);
+            for (int way = 0; way < TB_JMP_CACHE_WAYS; way++) {
+                if (qatomic_read(&jc->array[h].ways[way].tb) == tb) {
+                    qatomic_set(&jc->array[h].ways[way].tb, NULL);
+                }
             }
         }
     }

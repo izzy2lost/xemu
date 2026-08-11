@@ -157,7 +157,9 @@ static void tb_jmp_cache_clear_page(CPUState *cpu, vaddr page_addr)
 
     i0 = tb_jmp_cache_hash_page(page_addr);
     for (i = 0; i < TB_JMP_PAGE_SIZE; i++) {
-        qatomic_set(&jc->array[i0 + i].tb, NULL);
+        for (int way = 0; way < TB_JMP_CACHE_WAYS; way++) {
+            qatomic_set(&jc->array[i0 + i].ways[way].tb, NULL);
+        }
     }
 }
 

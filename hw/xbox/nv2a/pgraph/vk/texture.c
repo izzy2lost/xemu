@@ -664,6 +664,135 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
     NV2A_PHASE_TIMER_END(texture_upload);
 }
 
+/* D16 depth images and R16 textures have the same two-byte texel
+ * representation, but Vulkan cannot copy directly between depth and color
+ * aspects. Route the copy through a buffer when direct surface descriptors
+ * are disabled for a mobile driver. */
+static void copy_depth_surface_to_texture(PGRAPHState *pg,
+                                          SurfaceBinding *surface,
+                                          TextureBinding *texture)
+{
+    assert(!surface->color);
+    assert(surface->host_fmt.vk_format == VK_FORMAT_D16_UNORM);
+    assert(!(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT));
+
+    PGRAPHVkState *r = pg->vk_renderer_state;
+    TextureShape *state = &texture->key.state;
+    VkColorFormatInfo vkf = kelvin_color_format_vk_map[state->color_format];
+    assert(vkf.vk_format == VK_FORMAT_R16_UNORM);
+
+    if (r->reorder_window.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_reorder_window(d);
+    }
+    if (r->draw_queue.count > 0) {
+        NV2AState *d = container_of(pg, NV2AState, pgraph);
+        pgraph_vk_flush_draw_queue(d);
+    }
+
+    if (pgraph_vk_compute_needs_finish(r)) {
+        OPT_STAT_INC(buf_compute_full);
+        pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
+        pgraph_vk_flush_all_frames(pg);
+        pgraph_vk_compute_finish_complete(r);
+    }
+
+    nv2a_profile_inc_counter(NV2A_PROF_SURF_TO_TEX);
+    trace_nv2a_pgraph_surface_render_to_texture(
+        surface->vram_addr, surface->width, surface->height);
+
+#if OPT_SURF_TO_TEX_INLINE
+    VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
+#else
+    pgraph_vk_finish(pg, VK_FINISH_REASON_SURFACE_DOWN);
+    VkCommandBuffer cmd = pgraph_vk_begin_single_time_commands(pg);
+#endif
+    pgraph_vk_begin_debug_marker(r, cmd, RGBA_GREEN, __func__);
+
+    unsigned int scaled_width = surface->width;
+    unsigned int scaled_height = surface->height;
+    pgraph_apply_scaling_factor(pg, &scaled_width, &scaled_height);
+
+    size_t copy_size = scaled_width * scaled_height *
+                       surface->host_fmt.host_bytes_per_pixel;
+    StorageBuffer *copy_buffer = &r->storage_buffers[BUFFER_COMPUTE_DST];
+    assert(copy_size <= copy_buffer->buffer_size);
+
+    VkImageLayout original_surface_layout = surface->image_layout;
+    pgraph_vk_transition_image_layout(
+        pg, cmd, surface->image, surface->host_fmt.vk_format,
+        original_surface_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    VkBufferMemoryBarrier prepare_buffer = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                         VK_ACCESS_SHADER_WRITE_BIT |
+                         VK_ACCESS_TRANSFER_READ_BIT |
+                         VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = copy_buffer->buffer,
+        .offset = 0,
+        .size = copy_size,
+    };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
+                         &prepare_buffer, 0, NULL);
+
+    VkBufferImageCopy region = {
+        .bufferOffset = 0,
+        .imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layerCount = 1,
+        },
+        .imageExtent = { scaled_width, scaled_height, 1 },
+    };
+    vkCmdCopyImageToBuffer(cmd, surface->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           copy_buffer->buffer, 1, &region);
+
+    VkBufferMemoryBarrier copy_barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = copy_buffer->buffer,
+        .offset = 0,
+        .size = copy_size,
+    };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1,
+                         &copy_barrier, 0, NULL);
+
+    pgraph_vk_transition_image_layout(pg, cmd, texture->image, vkf.vk_format,
+                                      texture->current_layout,
+                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    texture->current_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vkCmdCopyBufferToImage(cmd, copy_buffer->buffer, texture->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    pgraph_vk_transition_image_layout(
+        pg, cmd, surface->image, surface->host_fmt.vk_format,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, original_surface_layout);
+    pgraph_vk_transition_image_layout(pg, cmd, texture->image, vkf.vk_format,
+                                      texture->current_layout,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    texture->current_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    pgraph_vk_end_debug_marker(r, cmd);
+#if OPT_SURF_TO_TEX_INLINE
+    pgraph_vk_end_nondraw_commands(pg, cmd);
+#else
+    pgraph_vk_end_single_time_commands(pg, cmd);
+#endif
+
+    texture->draw_time = surface->draw_time;
+}
+
 // Direct depth-stencil to texture: samples depth from the surface image
 // directly in a compute shader (eliminating the depth image→buffer copy),
 // copies only the stencil aspect to a buffer, and packs the result.
@@ -671,6 +800,10 @@ static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surfac
                                          TextureBinding *texture)
 {
     assert(!surface->color);
+    if (!(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) {
+        copy_depth_surface_to_texture(pg, surface, texture);
+        return;
+    }
     assert(surface->host_fmt.aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
 
     PGRAPHVkState *r = pg->vk_renderer_state;
