@@ -1647,11 +1647,10 @@ static MString* psh_convert(struct PixelShader *ps)
         }
     }
 
-    /* The vertex stage already emits gl_FragCoord.z == guest depth / zmax for
-     * Z-buffer draws, so fixed-function depth is correct and writing
-     * gl_FragDepth would only cost early-Z. */
-    if (ps->state->depth_needed &&
-        !(ps->opts.fixed_function_depth && !ps->state->z_perspective)) {
+    /* On tile GPUs the fixed-function-depth fallback also covers perspective
+     * depth: an approximate hardware W-depth is preferable to losing the GPU
+     * when gl_FragDepth disables early-Z under heavy overdraw. */
+    if (ps->state->depth_needed && !ps->opts.fixed_function_depth) {
         switch (ps->state->depth_format) {
         case DEPTH_FORMAT_D16:
             mstring_append(

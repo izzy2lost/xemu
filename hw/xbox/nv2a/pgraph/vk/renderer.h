@@ -1572,8 +1572,8 @@ void pgraph_vk_init_shaders(PGRAPHState *pg);
 void pgraph_vk_finalize_shaders(PGRAPHState *pg);
 void pgraph_vk_update_descriptor_sets(PGRAPHState *pg);
 void pgraph_vk_bind_shaders(PGRAPHState *pg);
-/* True when Z-buffer depth is left to the fixed-function pipeline, so polygon
- * offset must come from vkCmdSetDepthBias rather than the fragment shader. */
+/* True when depth is left to the fixed-function pipeline, so polygon offset
+ * must come from vkCmdSetDepthBias rather than the fragment shader. */
 bool pgraph_vk_uses_fixed_function_depth(PGRAPHVkState *r,
                                          const ShaderState *state);
 void pgraph_vk_reclaim_descriptor_overflow(PGRAPHVkState *r);

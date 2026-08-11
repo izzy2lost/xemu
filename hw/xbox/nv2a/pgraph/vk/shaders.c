@@ -916,8 +916,7 @@ bool pgraph_vk_uses_fixed_function_depth(PGRAPHVkState *r,
                                          const ShaderState *state)
 {
 #ifdef __ANDROID__
-    return use_fixed_function_depth(r) && state->psh.depth_needed &&
-           !state->geom.z_perspective;
+    return use_fixed_function_depth(r) && state->psh.depth_needed;
 #else
     return false;
 #endif

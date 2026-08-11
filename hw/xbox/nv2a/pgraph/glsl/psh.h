@@ -108,10 +108,10 @@ typedef struct GenPshGlslOptions {
     /* Matches GenVshGlslOptions::depth_via_varying; the interpolation mode is
      * taken from PshState::z_perspective. */
     bool depth_via_varying;
-    /* Leave Z-buffer depth to the fixed-function pipeline instead of writing
-     * gl_FragDepth. Independent of depth_via_varying: the vertex stage already
-     * emits gl_FragCoord.z == guest depth / zmax, so this is valid however
-     * zvalue is derived. Keeps early-Z alive on tile-based GPUs. */
+    /* Leave depth to the fixed-function pipeline instead of writing
+     * gl_FragDepth. This is exact for Z-buffer draws. Mali also uses it as an
+     * approximate W-buffer fallback so heavy overdraw retains early-Z instead
+     * of triggering a GPU watchdog reset. */
     bool fixed_function_depth;
 } GenPshGlslOptions;
 
