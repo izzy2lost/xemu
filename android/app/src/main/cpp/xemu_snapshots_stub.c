@@ -318,7 +318,27 @@ char *xemu_get_currently_loaded_disc_path(void)
 
 void xemu_snapshots_save(const char *vm_name, Error **err)
 {
+    RunState saved_state = runstate_get();
+
+    /*
+     * The Android in-game menu pauses the VM before dispatching this request.
+     * save_snapshot() normally enters RUN_STATE_SAVE_VM, which is what tells
+     * threaded devices such as NV2A and the MCPX APU to quiesce and copy their
+     * live state into the migration structs.  vm_stop() deliberately does
+     * nothing when the VM is already paused, so saving directly from the menu
+     * skipped those callbacks and wrote stale (often zeroed) DSP state.
+     *
+     * Briefly return to RUNNING while the BQL is held so save_snapshot() can
+     * make the normal RUNNING -> SAVE_VM transition, then restore the menu's
+     * paused state after the snapshot completes.
+     */
+    if (!runstate_is_running()) {
+        vm_start();
+    }
     save_snapshot(vm_name, true, NULL, false, NULL, err);
+    if (saved_state != RUN_STATE_RUNNING) {
+        vm_stop(saved_state);
+    }
     xemu_snapshots_dirty = true;
 }
 
