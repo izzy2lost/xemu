@@ -869,11 +869,17 @@ static bool can_bind_surface_direct(PGRAPHVkState *r,
                                     const SurfaceBinding *surface)
 {
 #ifdef __ANDROID__
-    /* Mali-G715 r54 eventually segfaults in both push_descriptor_set and
-     * vkUpdateDescriptorSets when a transient render-surface view is used as
-     * a combined image sampler.  Use the existing surface-to-texture copy on
-     * Mali so descriptors always reference cache-owned texture views. */
-    if (r->device_props.vendorID == 0x13B5u) {
+    extern bool xemu_android_vulkan_custom_driver_zip_loaded(void);
+
+    /* Some stock mobile drivers dereference transient render-surface views
+     * while processing combined-image-sampler descriptor writes.  Mali-G715
+     * r54 and Qualcomm's Adreno 710 driver both eventually segfault inside
+     * push_descriptor_set/vkUpdateDescriptorSets.  Use the existing
+     * surface-to-texture copy so descriptors reference cache-owned views.
+     * Custom Qualcomm drivers do not need the stock-driver workaround. */
+    if (r->device_props.vendorID == 0x13B5u ||
+        (r->device_props.vendorID == 0x5143u &&
+         !xemu_android_vulkan_custom_driver_zip_loaded())) {
         return false;
     }
 #endif
