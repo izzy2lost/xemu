@@ -1939,6 +1939,8 @@ static void migrate_surface_image(SurfaceBinding *dst, SurfaceBinding *src)
 
 static void destroy_surface_image(PGRAPHVkState *r, SurfaceBinding *surface)
 {
+    pgraph_vk_invalidate_framebuffers_for_view(&g_nv2a->pgraph,
+                                               surface->image_view);
     vkDestroyImageView(r->device, surface->image_view, NULL);
     surface->image_view = VK_NULL_HANDLE;
 

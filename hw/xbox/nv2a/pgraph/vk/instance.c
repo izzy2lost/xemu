@@ -1098,6 +1098,27 @@ static bool create_logical_device(PGRAPHState *pg, Error **errp)
     PATCH_EDS1(vkCmdSetStencilOp,              vkCmdSetStencilOpEXT);
 #undef PATCH_EDS1
 
+    /* Do not advertise EDS1 to the renderer unless every command it emits is
+     * callable. Some Android Vulkan loaders expose the feature/extension but
+     * return NULL for one or both names, especially with injected drivers. */
+    if (r->extended_dynamic_state_supported &&
+        (!vkCmdSetCullMode || !vkCmdSetFrontFace ||
+         !vkCmdSetDepthTestEnable || !vkCmdSetDepthWriteEnable ||
+         !vkCmdSetDepthCompareOp || !vkCmdSetStencilTestEnable ||
+         !vkCmdSetStencilOp)) {
+        r->extended_dynamic_state_supported = false;
+#ifdef __ANDROID__
+        __android_log_print(
+            ANDROID_LOG_WARN, "hakuX",
+            "extended dynamic state disabled: required command unavailable "
+            "(cull=%d front=%d depth=%d/%d/%d stencil=%d/%d)",
+            vkCmdSetCullMode != NULL, vkCmdSetFrontFace != NULL,
+            vkCmdSetDepthTestEnable != NULL, vkCmdSetDepthWriteEnable != NULL,
+            vkCmdSetDepthCompareOp != NULL,
+            vkCmdSetStencilTestEnable != NULL, vkCmdSetStencilOp != NULL);
+#endif
+    }
+
     pgraph_init_reg_dynamic_masks(
         r->extended_dynamic_state_supported,
         OPT_DYNAMIC_BLEND && r->eds3_blend_supported);

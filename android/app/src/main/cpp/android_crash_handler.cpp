@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <ucontext.h>
 #include <unistd.h>
 #include <unwind.h>
 
@@ -57,6 +58,58 @@ static void LogBacktrace() {
   }
 }
 
+static void LogAddress(const char* label, uintptr_t address) {
+  void* ptr = reinterpret_cast<void*>(address);
+  Dl_info info;
+  memset(&info, 0, sizeof(info));
+  if (address != 0 && dladdr(ptr, &info) && info.dli_fname) {
+    uintptr_t base = reinterpret_cast<uintptr_t>(info.dli_fbase);
+    uintptr_t relative = (base != 0 && address >= base) ? address - base : 0;
+    const char* symbol = info.dli_sname ? info.dli_sname : "?";
+    __android_log_print(ANDROID_LOG_ERROR, kCrashTag,
+                        "  %s pc=%p module=%s symbol=%s relative=0x%zx",
+                        label, ptr, info.dli_fname, symbol,
+                        static_cast<size_t>(relative));
+  } else {
+    __android_log_print(ANDROID_LOG_ERROR, kCrashTag,
+                        "  %s pc=%p (module unresolved)", label, ptr);
+  }
+}
+
+static void LogInterruptedContext(void* raw_context) {
+#if defined(__aarch64__)
+  if (!raw_context) {
+    __android_log_print(ANDROID_LOG_ERROR, kCrashTag,
+                        "  interrupted context unavailable");
+    return;
+  }
+
+  const ucontext_t* context = static_cast<const ucontext_t*>(raw_context);
+  const mcontext_t& machine = context->uc_mcontext;
+  const uintptr_t pc = static_cast<uintptr_t>(machine.pc);
+  const uintptr_t sp = static_cast<uintptr_t>(machine.sp);
+  const uintptr_t fp = static_cast<uintptr_t>(machine.regs[29]);
+  const uintptr_t lr = static_cast<uintptr_t>(machine.regs[30]);
+
+  LogAddress("fault", pc);
+  LogAddress("link ", lr);
+  __android_log_print(ANDROID_LOG_ERROR, kCrashTag,
+                      "  context sp=%p fp=%p pstate=0x%llx",
+                      reinterpret_cast<void*>(sp),
+                      reinterpret_cast<void*>(fp),
+                      static_cast<unsigned long long>(machine.pstate));
+  for (int i = 0; i < 31; ++i) {
+    __android_log_print(
+        ANDROID_LOG_ERROR, kCrashTag, "  register x%02d=%p", i,
+        reinterpret_cast<void*>(static_cast<uintptr_t>(machine.regs[i])));
+  }
+#else
+  (void)raw_context;
+  __android_log_print(ANDROID_LOG_ERROR, kCrashTag,
+                      "  interrupted register logging unsupported on this ABI");
+#endif
+}
+
 static void MarkInlineAioRequired() {
   if (g_inline_aio_flag_path[0] == '\0') {
     return;
@@ -74,13 +127,14 @@ static void MarkInlineAioRequired() {
 }
 
 static void CrashHandler(int sig, siginfo_t* info, void* ucontext) {
-  (void)info;
-  (void)ucontext;
   if (sig == SIGILL) {
     MarkInlineAioRequired();
   }
   __android_log_print(ANDROID_LOG_ERROR, kCrashTag,
-                      "Caught signal %d in tid %d", sig, GetTid());
+                      "Caught signal %d code=%d fault_addr=%p in tid %d",
+                      sig, info ? info->si_code : 0,
+                      info ? info->si_addr : nullptr, GetTid());
+  LogInterruptedContext(ucontext);
   LogBacktrace();
   signal(sig, SIG_DFL);
   raise(sig);

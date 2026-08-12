@@ -1094,6 +1094,7 @@ typedef struct PGRAPHVkState {
     } fb_cache[FB_CACHE_MAX];
     int fb_cache_count;
     VkFramebuffer current_framebuffer;
+    VkImageView current_framebuffer_views[2];
 
     VkFramebuffer deferred_framebuffers[NUM_SUBMIT_FRAMES][MAX_FRAMEBUFFERS];
     int deferred_framebuffer_count[NUM_SUBMIT_FRAMES];
@@ -1601,6 +1602,8 @@ void pgraph_vk_flush_reorder_window(NV2AState *d);
 void pgraph_vk_begin_command_buffer(PGRAPHState *pg);
 void pgraph_vk_ensure_command_buffer(PGRAPHState *pg);
 void pgraph_vk_ensure_not_in_render_pass(PGRAPHState *pg);
+void pgraph_vk_invalidate_framebuffers_for_view(PGRAPHState *pg,
+                                                VkImageView view);
 
 VkCommandBuffer pgraph_vk_begin_nondraw_commands(PGRAPHState *pg);
 void pgraph_vk_end_nondraw_commands(PGRAPHState *pg, VkCommandBuffer cmd);

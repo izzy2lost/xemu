@@ -904,6 +904,8 @@ static void create_frame_buffer(PGRAPHState *pg)
             r->fb_cache[i].width == w &&
             r->fb_cache[i].height == h) {
             r->current_framebuffer = r->fb_cache[i].framebuffer;
+            r->current_framebuffer_views[0] = color_view;
+            r->current_framebuffer_views[1] = zeta_view;
             return;
         }
     }
@@ -936,6 +938,8 @@ static void create_frame_buffer(PGRAPHState *pg)
 
     VkFramebuffer fb = r->framebuffers[r->framebuffer_index - 1];
     r->current_framebuffer = fb;
+    r->current_framebuffer_views[0] = color_view;
+    r->current_framebuffer_views[1] = zeta_view;
 
     if (r->fb_cache_count < FB_CACHE_MAX) {
         r->fb_cache[r->fb_cache_count++] = (typeof(r->fb_cache[0])){
@@ -961,6 +965,8 @@ static void destroy_framebuffers(PGRAPHState *pg)
     r->framebuffer_index = 0;
     r->fb_cache_count = 0;
     r->current_framebuffer = VK_NULL_HANDLE;
+    r->current_framebuffer_views[0] = VK_NULL_HANDLE;
+    r->current_framebuffer_views[1] = VK_NULL_HANDLE;
 }
 
 static void create_clear_pipeline(PGRAPHState *pg)
@@ -1270,14 +1276,19 @@ static void init_pipeline_key(PGRAPHState *pg, PipelineKey *key)
                            NV_PGRAPH_CONTROL_0_ALPHA_WRITE_ENABLE);
     }
 #endif
-    key->regs[4] &= ~(NV_PGRAPH_SETUPRASTER_CULLENABLE |
-                       NV_PGRAPH_SETUPRASTER_CULLCTRL |
-                       NV_PGRAPH_SETUPRASTER_FRONTFACE |
-                       NV_PGRAPH_SETUPRASTER_POFFSETPOINTENABLE |
-                       NV_PGRAPH_SETUPRASTER_POFFSETLINEENABLE |
-                       NV_PGRAPH_SETUPRASTER_POFFSETFILLENABLE |
-                       NV_PGRAPH_SETUPRASTER_LINESMOOTHENABLE |
-                       NV_PGRAPH_SETUPRASTER_POLYSMOOTHENABLE);
+    uint32_t dynamic_setupraster_mask =
+        NV_PGRAPH_SETUPRASTER_POFFSETPOINTENABLE |
+        NV_PGRAPH_SETUPRASTER_POFFSETLINEENABLE |
+        NV_PGRAPH_SETUPRASTER_POFFSETFILLENABLE |
+        NV_PGRAPH_SETUPRASTER_LINESMOOTHENABLE |
+        NV_PGRAPH_SETUPRASTER_POLYSMOOTHENABLE;
+    if (use_dyn_ds) {
+        dynamic_setupraster_mask |=
+            NV_PGRAPH_SETUPRASTER_CULLENABLE |
+            NV_PGRAPH_SETUPRASTER_CULLCTRL |
+            NV_PGRAPH_SETUPRASTER_FRONTFACE;
+    }
+    key->regs[4] &= ~dynamic_setupraster_mask;
     if (use_dyn_ds) {
         key->regs[5] &= ~(NV_PGRAPH_CONTROL_1_STENCIL_TEST_ENABLE |
                            NV_PGRAPH_CONTROL_1_STENCIL_FUNC |
@@ -1511,31 +1522,27 @@ static void create_pipeline(PGRAPHState *pg)
         .rasterizerDiscardEnable = VK_FALSE,
         .polygonMode = polygon_mode,
         .lineWidth = 1.0f,
-        .frontFace =
-#if OPT_DYNAMIC_STATES
-            VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
         .cullMode = VK_CULL_MODE_NONE,
-#else
-            (pgraph_vk_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
-             NV_PGRAPH_SETUPRASTER_FRONTFACE) ?
-                 VK_FRONT_FACE_COUNTER_CLOCKWISE :
-                 VK_FRONT_FACE_CLOCKWISE,
-#endif
         .depthBiasEnable =
             snode->has_dynamic_depth_bias ? VK_TRUE : VK_FALSE,
         .pNext = rasterizer_next_struct,
     };
 
-#if !OPT_DYNAMIC_STATES
-    if (pgraph_vk_reg_r(pg, NV_PGRAPH_SETUPRASTER) & NV_PGRAPH_SETUPRASTER_CULLENABLE) {
-        uint32_t cull_face = GET_MASK(pgraph_vk_reg_r(pg, NV_PGRAPH_SETUPRASTER),
+    if (!use_dyn_ds) {
+        uint32_t setupraster =
+            pgraph_vk_reg_r(pg, NV_PGRAPH_SETUPRASTER);
+        rasterizer.frontFace =
+            (setupraster & NV_PGRAPH_SETUPRASTER_FRONTFACE)
+                ? VK_FRONT_FACE_COUNTER_CLOCKWISE
+                : VK_FRONT_FACE_CLOCKWISE;
+        uint32_t cull_face = GET_MASK(setupraster,
                                       NV_PGRAPH_SETUPRASTER_CULLCTRL);
         assert(cull_face < ARRAY_SIZE(pgraph_cull_face_vk_map));
-        rasterizer.cullMode = pgraph_cull_face_vk_map[cull_face];
-    } else {
-        rasterizer.cullMode = VK_CULL_MODE_NONE;
+        if (setupraster & NV_PGRAPH_SETUPRASTER_CULLENABLE) {
+            rasterizer.cullMode = pgraph_cull_face_vk_map[cull_face];
+        }
     }
-#endif
 
     VkPipelineMultisampleStateCreateInfo multisampling = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -1665,12 +1672,12 @@ static void create_pipeline(PGRAPHState *pg)
         VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
         VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
         VK_DYNAMIC_STATE_STENCIL_REFERENCE,
-        VK_DYNAMIC_STATE_CULL_MODE,
-        VK_DYNAMIC_STATE_FRONT_FACE,
 #endif
     };
-    int num_dynamic_states = OPT_DYNAMIC_STATES ? 8 : 2;
+    int num_dynamic_states = OPT_DYNAMIC_STATES ? 6 : 2;
     if (use_dyn_ds) {
+        dynamic_states[num_dynamic_states++] = VK_DYNAMIC_STATE_CULL_MODE;
+        dynamic_states[num_dynamic_states++] = VK_DYNAMIC_STATE_FRONT_FACE;
         dynamic_states[num_dynamic_states++] = VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE;
         dynamic_states[num_dynamic_states++] = VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE;
         dynamic_states[num_dynamic_states++] = VK_DYNAMIC_STATE_DEPTH_COMPARE_OP;
@@ -2189,6 +2196,38 @@ static void begin_render_pass(PGRAPHState *pg)
     unsigned int vp_width = pg->surface_binding_dim.width,
                  vp_height = pg->surface_binding_dim.height;
     pgraph_apply_scaling_factor(pg, &vp_width, &vp_height);
+
+    /*
+     * The framebuffer has to stay compatible with the pass we are about to
+     * begin. create_render_pass() derives its attachment count from the live
+     * color/zeta bindings, but current_framebuffer was built from whatever was
+     * bound the last time create_frame_buffer() ran. The fast paths in
+     * begin_pre_draw() can return before rebuilding it, and
+     * flush_draw_queue_internal() clears framebuffer_dirty on the way in, so
+     * that flag cannot be trusted here. Beginning a 2-attachment pass on a
+     * 1-attachment framebuffer makes the driver walk off the end of the
+     * attachment array, so re-derive it whenever the bindings have moved.
+     */
+    {
+        VkImageView color_view = r->color_binding ? r->color_binding->image_view
+                                                  : VK_NULL_HANDLE;
+        VkImageView zeta_view = r->zeta_binding ? r->zeta_binding->image_view
+                                                : VK_NULL_HANDLE;
+        if (r->current_framebuffer == VK_NULL_HANDLE ||
+            r->current_framebuffer_views[0] != color_view ||
+            r->current_framebuffer_views[1] != zeta_view) {
+            RenderPassState fb_state;
+            init_render_pass_state(pg, &fb_state);
+            fb_state.color_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+            fb_state.zeta_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+            fb_state.stencil_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+            r->render_pass = get_render_pass(r, &fb_state);
+            create_frame_buffer(pg);
+            /* create_frame_buffer() can finish the frame to reclaim slots,
+             * which retires the command buffer we are recording into. */
+            pgraph_vk_ensure_command_buffer(pg);
+        }
+    }
 
     assert(r->current_framebuffer != VK_NULL_HANDLE);
 
@@ -2883,6 +2922,44 @@ void pgraph_vk_ensure_not_in_render_pass(PGRAPHState *pg)
     }
 }
 
+/*
+ * Drop every cached framebuffer built on `view` before the view is destroyed.
+ *
+ * The framebuffer objects themselves are left in r->framebuffers[] so that
+ * already-recorded command buffers keep a live handle until the frame rotates.
+ * They must not be handed out again though: surface images and their views are
+ * recycled through the surface pool, so a freshly created view can land on the
+ * same handle value and hit a stale cache entry, leaving vkCmdBeginRenderPass
+ * to walk a framebuffer whose attachments have been freed.
+ */
+void pgraph_vk_invalidate_framebuffers_for_view(PGRAPHState *pg,
+                                                VkImageView view)
+{
+    PGRAPHVkState *r = pg->vk_renderer_state;
+
+    if (view == VK_NULL_HANDLE) {
+        return;
+    }
+
+    if (r->current_framebuffer_views[0] == view ||
+        r->current_framebuffer_views[1] == view) {
+        pgraph_vk_ensure_not_in_render_pass(pg);
+        r->current_framebuffer = VK_NULL_HANDLE;
+        r->current_framebuffer_views[0] = VK_NULL_HANDLE;
+        r->current_framebuffer_views[1] = VK_NULL_HANDLE;
+        r->framebuffer_dirty = true;
+    }
+
+    for (int i = 0; i < r->fb_cache_count;) {
+        if (r->fb_cache[i].color_view == view ||
+            r->fb_cache[i].zeta_view == view) {
+            r->fb_cache[i] = r->fb_cache[--r->fb_cache_count];
+        } else {
+            i++;
+        }
+    }
+}
+
 VkCommandBuffer pgraph_vk_begin_nondraw_commands(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -3485,7 +3562,7 @@ static void begin_draw(PGRAPHState *pg)
 
     if (!pg->clearing) {
 #if OPT_DYNAMIC_STATES
-        {
+        if (r->extended_dynamic_state_supported) {
             uint32_t setupraster = pgraph_vk_reg_r(pg, NV_PGRAPH_SETUPRASTER);
             if (!r->dyn_state.valid ||
                 setupraster != r->dyn_state.setupraster) {
@@ -4918,8 +4995,9 @@ static void emit_reorder_entry(PGRAPHState *pg, ReorderWindowEntry *e,
     }
 
 #if OPT_DYNAMIC_STATES
-    if (pipeline_changed ||
-        e->dyn_setupraster != prev->dyn_setupraster) {
+    if (r->extended_dynamic_state_supported &&
+        (pipeline_changed ||
+         e->dyn_setupraster != prev->dyn_setupraster)) {
         VkCullModeFlags cull = VK_CULL_MODE_NONE;
         if (e->dyn_setupraster & NV_PGRAPH_SETUPRASTER_CULLENABLE) {
             uint32_t cull_face = GET_MASK(e->dyn_setupraster,
