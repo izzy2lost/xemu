@@ -1101,7 +1101,39 @@ extern "C" int  tb_cache_load(const char *path, uint32_t game_hash);
 extern "C" uint32_t tb_cache_compute_game_hash(const char *bootrom_path,
                                                const char *flashrom_path);
 extern "C" void tb_cache_cleanup(void);
+
+/*
+ * Remembered from the load path so the cache can also be written when the app
+ * is backgrounded. The save below qemu_main() only runs on a clean return,
+ * which on Android effectively never happens -- the user hits Home and the
+ * process is killed later -- so without this the file is never written and
+ * every launch starts from an empty cache.
+ */
+static char     g_tb_cache_path[PATH_MAX];
+static uint32_t g_tb_cache_hash;
+
+static void xemu_android_save_tb_cache(void)
+{
+  if (!g_tb_cache_path[0]) {
+    return;
+  }
+  tb_cache_save(g_tb_cache_path, g_tb_cache_hash);
+}
 #endif
+
+/*
+ * Called from the render loop once the VM has actually stopped (see
+ * ui/xemu.c). The pause request from JNI is only a flag, so this is the first
+ * point at which no vCPU can be translating -- and therefore the first point
+ * at which the hint array is quiescent enough to serialise without racing
+ * tb_cache_record_hint()'s realloc.
+ */
+extern "C" void xemu_android_persist_tb_cache(void)
+{
+#if XEMU_OPT_TB_CACHE_HINTS
+  xemu_android_save_tb_cache();
+#endif
+}
 
 extern "C" int xemu_android_main(int argc, char** argv) {
   if (!qemu_main) {
@@ -1137,8 +1169,12 @@ extern "C" int xemu_android_main(int argc, char** argv) {
 
   /* Load translation block cache hints for pre-warming */
   if (storage_load) {
+    char dir_path[PATH_MAX];
+    snprintf(dir_path, sizeof(dir_path), "%s/x1box", storage_load);
+    mkdir(dir_path, 0755);
+
     char cache_path[PATH_MAX];
-    snprintf(cache_path, sizeof(cache_path), "%s/x1box/tb_cache.bin", storage_load);
+    snprintf(cache_path, sizeof(cache_path), "%s/tb_cache.bin", dir_path);
     uint32_t game_hash = tb_cache_compute_game_hash(
         g_config.sys.files.bootrom_path, g_config.sys.files.flashrom_path);
     /* Fold code-generation-affecting settings into the hash so that a
@@ -1147,6 +1183,10 @@ extern "C" int xemu_android_main(int argc, char** argv) {
     int nhints = tb_cache_load(cache_path, game_hash);
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                         "TB cache: loaded %d hints from %s", nhints, cache_path);
+
+    /* Enable saving on pause (see xemu_android_save_tb_cache). */
+    snprintf(g_tb_cache_path, sizeof(g_tb_cache_path), "%s", cache_path);
+    g_tb_cache_hash = game_hash;
   }
 #endif
 
@@ -1155,19 +1195,8 @@ extern "C" int xemu_android_main(int argc, char** argv) {
   LogErrorInt("xemu_android_main: qemu_main returned %d", rc);
 
 #if XEMU_OPT_TB_CACHE_HINTS
-  /* Save translation block cache hints for next launch */
-  const char *storage = SDL_AndroidGetInternalStoragePath();
-  if (storage) {
-    char dir_path[PATH_MAX];
-    snprintf(dir_path, sizeof(dir_path), "%s/x1box", storage);
-    mkdir(dir_path, 0755);
-    char cache_path[PATH_MAX];
-    snprintf(cache_path, sizeof(cache_path), "%s/tb_cache.bin", dir_path);
-    uint32_t game_hash = tb_cache_compute_game_hash(
-        g_config.sys.files.bootrom_path, g_config.sys.files.flashrom_path);
-    game_hash ^= (xemu_get_fp_safe() ? 0x1u : 0) | (xemu_get_fp_jit() ? 0x2u : 0);
-    tb_cache_save(cache_path, game_hash);
-  }
+  /* Save translation block cache hints for next launch (clean-exit path). */
+  xemu_android_save_tb_cache();
   tb_cache_cleanup();
 #endif
 

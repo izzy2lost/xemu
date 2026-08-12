@@ -209,7 +209,7 @@ static void snapshot_surf_timing(void)
     SMOOTH_CNT(p->evict_count, w->evict_count);
     SMOOTH_CNT(p->upload_count, w->upload_count);
     SMOOTH_CNT(p->download_count, w->download_count);
-    SMOOTH_CNT(p->miss_count, w->miss_count);
+    SMOOTH_CNT(p->nop_count, w->nop_count);
 
 #undef SMOOTH_MS
 #undef SMOOTH_CNT
@@ -376,7 +376,7 @@ void nv2a_profile_get_surf_timing_str(char *buf, int bufsize)
              "lkH:%.1f lkE:%.1f lkN:%.1f "
              "cr:%.1f put:%.1f bnd:%.1f upl:%.1f dl:%.1f exp:%.1f "
              "dfF:%.1f dfR:%.1f "
-             "| #cr:%.0f #hit:%.0f #ev:%.0f #upl:%.0f #dl:%.0f #miss:%.0f",
+             "| #cr:%.0f #hit:%.0f #ev:%.0f #upl:%.0f #dl:%.0f #nop:%.0f",
              p->update_calls,
              p->populate_ms, p->dirty_ms, p->enrp_ms,
              p->lk_hit_ms, p->lk_evict_ms, p->lk_nosurf_ms,
@@ -384,7 +384,7 @@ void nv2a_profile_get_surf_timing_str(char *buf, int bufsize)
              p->upload_ms, p->download_ms, p->expire_ms,
              p->df_flush_ms, p->df_read_ms,
              p->create_count, p->hit_count, p->evict_count,
-             p->upload_count, p->download_count, p->miss_count);
+             p->upload_count, p->download_count, p->nop_count);
 }
 
 void nv2a_profile_get_shader_stats_str(char *buf, int bufsize)

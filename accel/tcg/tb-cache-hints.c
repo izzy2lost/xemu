@@ -114,6 +114,17 @@ static uint64_t stats_prev_hits;
 static uint64_t stats_prev_misses;
 static int      stats_prewarmed_count;
 
+/*
+ * Why tb_cache_record_hint() returns without appending. Recording has been
+ * observed to stall at a handful of hints for a whole session while the guest
+ * executes billions of blocks; these break down which early-out is responsible.
+ */
+static uint64_t rec_calls;
+static uint64_t rec_skip_noaddr;
+static uint64_t rec_skip_invalid;
+static uint64_t rec_skip_cap;
+static uint64_t rec_dedup_hit;
+
 /* ------------------------------------------------------------------ */
 /*  Dedup helpers                                                      */
 /* ------------------------------------------------------------------ */
@@ -172,11 +183,15 @@ void tb_cache_set_save_target(const char *path, uint32_t game_hash)
 
 void tb_cache_record_hint(const TranslationBlock *tb)
 {
+    rec_calls++;
+
     /* Skip one-shot TBs and invalid entries. */
     if (tb_page_addr0(tb) == (tb_page_addr_t)-1) {
+        rec_skip_noaddr++;
         return;
     }
     if (tb->cflags & CF_INVALID) {
+        rec_skip_invalid++;
         return;
     }
 
@@ -194,6 +209,7 @@ void tb_cache_record_hint(const TranslationBlock *tb)
     }
 
     if (recorded_count >= TB_CACHE_MAX_HINTS) {
+        rec_skip_cap++;
         return;  /* cap reached */
     }
 
@@ -214,6 +230,7 @@ void tb_cache_record_hint(const TranslationBlock *tb)
      * observation is preserved across re-translations.
      */
     if (dedup_contains_or_insert(&h, recorded_count)) {
+        rec_dedup_hit++;
         /* Find the existing hint and update its hotness data. */
         uint32_t bucket = hint_hash(h.pc, h.flags);
         for (int probe = 0; probe < 16; probe++) {
@@ -536,18 +553,26 @@ void tb_cache_do_log_stats(void)
     __android_log_print(ANDROID_LOG_INFO, "hakuX-tb",
                         "hits=%" PRIu64 " misses=%" PRIu64
                         " rate=%d%%  |  total: recorded=%d"
-                        " prewarmed=%d lookups=%" PRIu64,
+                        " prewarmed=%d lookups=%" PRIu64
+                        " | rec: calls=%" PRIu64 " noaddr=%" PRIu64
+                        " invalid=%" PRIu64 " cap=%" PRIu64 " dedup=%" PRIu64,
                         delta_hits, delta_misses, hit_pct,
                         recorded_count, stats_prewarmed_count,
-                        tb_cache_stats_lookup_hits + tb_cache_stats_lookup_misses);
+                        tb_cache_stats_lookup_hits + tb_cache_stats_lookup_misses,
+                        rec_calls, rec_skip_noaddr, rec_skip_invalid,
+                        rec_skip_cap, rec_dedup_hit);
 #else
     fprintf(stderr,
             "[tb-cache] hits=%" PRIu64 " misses=%" PRIu64
             " rate=%d%%  |  total: hints_recorded=%d"
-            " hints_prewarmed=%d lookups=%" PRIu64 "\n",
+            " hints_prewarmed=%d lookups=%" PRIu64
+            " | rec: calls=%" PRIu64 " noaddr=%" PRIu64
+            " invalid=%" PRIu64 " cap=%" PRIu64 " dedup=%" PRIu64 "\n",
             delta_hits, delta_misses, hit_pct,
             recorded_count, stats_prewarmed_count,
-            tb_cache_stats_lookup_hits + tb_cache_stats_lookup_misses);
+            tb_cache_stats_lookup_hits + tb_cache_stats_lookup_misses,
+            rec_calls, rec_skip_noaddr, rec_skip_invalid,
+            rec_skip_cap, rec_dedup_hit);
 #endif
 
     stats_prev_hits   = tb_cache_stats_lookup_hits;

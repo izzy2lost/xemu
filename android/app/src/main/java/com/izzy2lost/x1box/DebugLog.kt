@@ -21,6 +21,7 @@ object DebugLog {
   private const val NATIVE_LOG_FILE_NAME = "xemu-debug.log"
   private const val UI_LOGCAT_FILE_NAME = "ui-logcat.log"
   private const val XEMU_LOGCAT_FILE_NAME = "xemu-logcat.log"
+  private const val CRASH_TAIL_FILE_NAME = "crash-tail.log"
   private const val MAX_LOG_BYTES = 16L * 1024L * 1024L
 
   @Volatile private var appContext: Context? = null
@@ -30,6 +31,7 @@ object DebugLog {
   @Volatile private var logcatProcess: java.lang.Process? = null
   @Volatile private var logcatThread: Thread? = null
   @Volatile private var activeLogcatPath: String? = null
+  @Volatile private var crashTailCaptured = false
 
   private val writerExecutor = Executors.newSingleThreadExecutor { runnable ->
     Thread(runnable, "x1box-debug-log-writer").apply {
@@ -43,6 +45,7 @@ object DebugLog {
     enabled = applicationContext
       .getSharedPreferences("x1box_prefs", Context.MODE_PRIVATE)
       .getBoolean(PREF_ENABLED, false)
+    captureCrashTail(applicationContext)
     ensureLogcatCaptureState(applicationContext)
   }
 
@@ -56,6 +59,10 @@ object DebugLog {
     }
     enabled = value
     if (value) {
+      // initialize() above ran while `enabled` still held the old (possibly
+      // false) value, so the crash drain would have been skipped on the
+      // transition into enabled. Retry now that the flag is set.
+      captureCrashTail(context.applicationContext)
       ensureLogcatCaptureState(context.applicationContext)
     }
     if (value) {
@@ -69,7 +76,8 @@ object DebugLog {
     return uiLogFile(context).isFile ||
       nativeLogFile(context).isFile ||
       uiLogcatFile(context).isFile ||
-      xemuLogcatFile(context).isFile
+      xemuLogcatFile(context).isFile ||
+      crashTailFile(context).isFile
   }
 
   fun exportDefaultFileName(): String {
@@ -86,6 +94,25 @@ object DebugLog {
     }
 
     outputStream.bufferedWriter().use { writer ->
+      // Leads, because this is the only section that can contain a fatal
+      // signal or tombstone. Read fresh here rather than reusing the
+      // launch-time snapshot: the emulator runs in its own process, so a crash
+      // in it does not restart the UI process, and a snapshot taken at UI
+      // launch would predate the very crash being reported.
+      writer.appendLine("=== Crash Buffer (read at export) ===")
+      writer.appendLine(readCrashBufferDump())
+
+      // The buffer is small and rolls over, so also include the snapshot taken
+      // at launch in case the crash of interest has since been evicted.
+      val crashTail = crashTailFile(context)
+      if (crashTail.isFile) {
+        writer.appendLine("=== Crash Buffer (snapshot at launch) ===")
+        crashTail.bufferedReader().useLines { lines ->
+          lines.forEach(writer::appendLine)
+        }
+        writer.appendLine()
+      }
+
       if (uiLog.isFile) {
         writer.appendLine("=== UI Debug Log ===")
         uiLog.bufferedReader().useLines { lines ->
@@ -130,6 +157,11 @@ object DebugLog {
     nativeLogFile(context).delete()
     uiLogcatFile(context).delete()
     xemuLogcatFile(context).delete()
+    crashTailFile(context).delete()
+    // Allow the next initialize()/setEnabled() to re-drain the crash buffer;
+    // otherwise clearing logs would permanently suppress the crash section for
+    // the life of the process.
+    crashTailCaptured = false
   }
 
   fun resetLogs(context: Context? = appContext) {
@@ -229,6 +261,10 @@ object DebugLog {
     return File(logDir(context), XEMU_LOGCAT_FILE_NAME)
   }
 
+  private fun crashTailFile(context: Context): File {
+    return File(logDir(context), CRASH_TAIL_FILE_NAME)
+  }
+
   private fun currentProcessLogcatFile(context: Context): File {
     val processName = runCatching {
       File("/proc/self/cmdline").readText().trim('\u0000', ' ', '\n')
@@ -260,6 +296,74 @@ object DebugLog {
         throwable.printStackTrace(printer)
       }
     }.toString().trimEnd()
+  }
+
+  /**
+   * Drain the crash buffer into a file at process start.
+   *
+   * The live capture in [startLogcatCapture] runs `logcat --pid=<self>` from a
+   * thread inside this process, so it can never record this process dying: on a
+   * fatal signal every thread stops before the reader can drain the pipe, and a
+   * native tombstone is emitted by `crash_dump64` under a different pid anyway.
+   * The crash buffer outlives the process, so the only place a crash can be
+   * observed is here -- on the next launch, before anything else runs.
+   *
+   * logd only returns entries matching our own uid unless the app holds
+   * READ_LOGS, which a normal build does not. The tombstone is written by
+   * crash_dump64 running as the crashed process' uid, so it comes through; the
+   * ActivityManager/lowmemorykiller lines (which is where an OOM kill would
+   * show up, as opposed to a segfault) belong to system_server and will only
+   * appear on a rooted or userdebug device. Absence of both is therefore not
+   * evidence of a clean exit.
+   */
+  private fun captureCrashTail(context: Context) {
+    if (!enabled || crashTailCaptured) {
+      return
+    }
+    crashTailCaptured = true
+    writerExecutor.execute {
+      try {
+        val file = crashTailFile(context)
+        file.parentFile?.mkdirs()
+        // Overwrite rather than append: the buffer is cumulative, so each launch
+        // already re-reads everything still retained, including the last crash.
+        file.writeText(readCrashBufferDump(), Charsets.UTF_8)
+      } catch (_: Exception) {
+      }
+    }
+  }
+
+  /** Snapshot of the crash buffer, plus kill records where readable. */
+  private fun readCrashBufferDump(): String {
+    return buildString {
+      appendLine("--- read at ${timestamp()} (pid ${android.os.Process.myPid()})")
+      // Whole buffer, unfiltered: a tombstone's backtrace and register dump
+      // lines do not mention the package name, so filtering would shred it.
+      appendLine("--- logcat -b crash")
+      append(dumpLogBuffer(listOf("-b", "crash", "-t", "500")))
+      appendLine("--- logcat -b system (ActivityManager/lowmemorykiller; needs READ_LOGS)")
+      append(
+        dumpLogBuffer(
+          listOf(
+            "-b", "system", "-t", "300",
+            "-s", "ActivityManager:I", "lowmemorykiller:I", "libc:I", "DEBUG:I",
+          )
+        )
+      )
+    }
+  }
+
+  private fun dumpLogBuffer(args: List<String>): String {
+    return try {
+      val process = ProcessBuilder(listOf("logcat", "-d", "-v", "threadtime") + args)
+        .redirectErrorStream(true)
+        .start()
+      val output = process.inputStream.bufferedReader().use { it.readText() }
+      process.waitFor()
+      if (output.isBlank()) "(empty)\n" else output
+    } catch (error: Exception) {
+      "(failed: ${error.message})\n"
+    }
   }
 
   private fun ensureLogcatCaptureState(context: Context) {

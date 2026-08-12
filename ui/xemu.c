@@ -129,6 +129,9 @@ static QemuSemaphore display_init_sem;
 static void toggle_full_screen(struct sdl2_console *scon);
 
 #ifdef __ANDROID__
+/* Defined in the Android front-end (xemu_android.cpp). */
+void xemu_android_persist_tb_cache(void);
+
 static bool g_android_gl_bgra_supported = true;
 static bool g_android_force_finish_before_swap = false;
 static bool g_android_paused = false;
@@ -1485,6 +1488,16 @@ void xemu_android_display_loop(void)
             bql_lock();
             if (runstate_is_running()) {
                 vm_stop(RUN_STATE_PAUSED);
+#ifdef __ANDROID__
+                /*
+                 * Backgrounding is the last moment we are reliably still
+                 * alive; Android may kill the process at any point after
+                 * this without ever unwinding qemu_main(). Persist the TB
+                 * hint cache here, with the VM stopped so no vCPU is
+                 * translating into the array we are about to write out.
+                 */
+                xemu_android_persist_tb_cache();
+#endif
             }
             g_android_vm_pause_requested = false;
             bql_unlock();

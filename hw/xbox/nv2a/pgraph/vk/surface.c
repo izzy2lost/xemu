@@ -2091,6 +2091,14 @@ void pgraph_vk_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
         return;
     }
 
+    /*
+     * Counted here rather than at the call sites so it reflects uploads that
+     * actually transfer, not calls that early-out above. (It previously sat at
+     * the update_surface call sites, where it counted one per bound
+     * color/zeta surface per frame regardless of whether anything moved.)
+     */
+    g_nv2a_stats.surf_working.upload_count++;
+
     VK_LOG("upload_surface: %s addr=0x%x %ux%u pitch=%d bpp=%d swizzle=%d",
            surface->color ? "COLOR" : "ZETA", surface->vram_addr,
            surface->width, surface->height, surface->pitch,
@@ -2887,7 +2895,8 @@ static void update_surface_part(NV2AState *d, bool upload, bool color)
             g_nv2a_stats.surf_working.hit_count++;
         }
     } else {
-        g_nv2a_stats.surf_working.miss_count++;
+        /* Already bound and nothing dirty -- no rebind needed (fast path). */
+        g_nv2a_stats.surf_working.nop_count++;
     }
 
     if (!upload && pg_surface->draw_dirty) {
@@ -2980,7 +2989,6 @@ void pgraph_vk_surface_update(NV2AState *d, bool upload, bool color_write,
                 pgraph_vk_upload_surface_data(d, r->color_binding, false);
                 r->color_binding->draw_time = pg->draw_time;
                 r->color_binding->swizzle = swizzle;
-                g_nv2a_stats.surf_working.upload_count++;
             }
         }
 
@@ -2990,7 +2998,6 @@ void pgraph_vk_surface_update(NV2AState *d, bool upload, bool color_write,
                 pgraph_vk_upload_surface_data(d, r->zeta_binding, false);
                 r->zeta_binding->draw_time = pg->draw_time;
                 r->zeta_binding->swizzle = swizzle;
-                g_nv2a_stats.surf_working.upload_count++;
             }
         }
         g_nv2a_stats.surf_working.upload_ns += nv2a_clock_ns() - _su0;

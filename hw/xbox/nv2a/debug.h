@@ -291,7 +291,13 @@ typedef struct SurfTimingWork {
     uint32_t evict_count;
     uint32_t upload_count;
     uint32_t download_count;
-    uint32_t miss_count;
+    /*
+     * Surface updates that needed no rebind at all: the requested surface was
+     * already bound and neither the pgraph state nor the backing VRAM was
+     * dirty, so the whole lookup/bind path was skipped. This is the fast path,
+     * NOT a cache miss -- a high count here is good.
+     */
+    uint32_t nop_count;
 } SurfTimingWork;
 
 typedef struct SurfTimingStats {
@@ -315,7 +321,7 @@ typedef struct SurfTimingStats {
     float evict_count;
     float upload_count;
     float download_count;
-    float miss_count;
+    float nop_count;
 } SurfTimingStats;
 
 typedef struct NV2AStats {
