@@ -376,7 +376,10 @@ if(NOT CARGO_EXECUTABLE)
   message(FATAL_ERROR "cargo not found in PATH; required to build DSP56300 JIT backend for Android")
 endif()
 
-set(DSP56300_GIT_REV "v0.1.1")
+# Matches the version upstream xemu pins in subprojects/dsp56300/meson.build.
+# v0.1.3 is API-compatible with dsp_jit.c (all 14 dsp56300_* entry points we
+# call are unchanged) and cross-compiles cleanly for aarch64-linux-android.
+set(DSP56300_GIT_REV "v0.1.3")
 FetchContent_Declare(
   dsp56300_src
   GIT_REPOSITORY "https://github.com/mborgerson/dsp56300.git"
@@ -410,10 +413,25 @@ if(CMAKE_HOST_WIN32)
     )
   endif()
 else()
-  set(DSP56300_RUSTUP_TOOLCHAIN
-    ""
-    CACHE STRING "Rustup host toolchain for DSP56300 Android build"
-  )
+  # Must be non-empty. dsp56300 >= v0.1.3 ships a rust-toolchain.toml pinning a
+  # specific channel; with no RUSTUP_TOOLCHAIN override rustup honours it and
+  # auto-installs that channel *without* the aarch64-linux-android target
+  # (targets are per-toolchain), so the build fails with
+  # "can't find crate for `core`". Pinning to the host's stable toolchain --
+  # the one that actually has the Android target added -- avoids that.
+  if(NOT DEFINED DSP56300_RUSTUP_TOOLCHAIN OR
+     DSP56300_RUSTUP_TOOLCHAIN STREQUAL "")
+    set(DSP56300_RUSTUP_TOOLCHAIN
+      "stable"
+      CACHE STRING "Rustup host toolchain for DSP56300 Android build"
+      FORCE
+    )
+  else()
+    set(DSP56300_RUSTUP_TOOLCHAIN
+      "${DSP56300_RUSTUP_TOOLCHAIN}"
+      CACHE STRING "Rustup host toolchain for DSP56300 Android build"
+    )
+  endif()
 endif()
 
 set(DSP56300_CARGO_ENV_VARS "")
