@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <SDL_system.h>
+#include <SDL3/SDL_system.h>
 #include <jni.h>
 
 static void xemu_android_show_toast(const char *msg, int duration)
@@ -10,8 +10,8 @@ static void xemu_android_show_toast(const char *msg, int duration)
         return;
     }
 
-    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
-    jobject activity = (jobject)SDL_AndroidGetActivity();
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
     if (!env || !activity) {
         return;
     }

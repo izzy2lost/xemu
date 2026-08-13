@@ -29,8 +29,7 @@
 
 #include "gloffscreen.h"
 
-#include <SDL.h>
-#include <SDL_syswm.h>
+#include <SDL3/SDL.h>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -299,8 +298,6 @@ GloContext *glo_context_create(void)
     SDL_Window *current = SDL_GL_GetCurrentWindow();
     context->window = SDL_CreateWindow(
         "SDL Offscreen Window",
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
         640, 480,
         SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
 
@@ -324,8 +321,6 @@ GloContext *glo_context_create(void)
     // Create a dedicated window for the offscreen context.
     context->window = SDL_CreateWindow(
         "SDL Offscreen Window",
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
         640, 480,
         SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
     if (context->window == NULL) {
@@ -344,7 +339,7 @@ GloContext *glo_context_create(void)
     }
 #ifdef __ANDROID__
     // Unbind any current context before making the new one current.
-    if (SDL_GL_MakeCurrent(NULL, NULL) != 0) {
+    if (!SDL_GL_MakeCurrent(NULL, NULL)) {
         __android_log_print(ANDROID_LOG_ERROR, "hakuX",
                             "%s: SDL_GL_MakeCurrent(NULL) failed: %s",
                             __func__, SDL_GetError());
@@ -419,7 +414,7 @@ void glo_set_current(GloContext *context)
             return;
         }
 #endif
-        if (SDL_GL_MakeCurrent(NULL, NULL) != 0) {
+        if (!SDL_GL_MakeCurrent(NULL, NULL)) {
             fprintf(stderr, "glo_set_current(NULL) failed: %s\n",
                     SDL_GetError());
 #ifdef __ANDROID__
@@ -439,7 +434,7 @@ void glo_set_current(GloContext *context)
             return;
         }
 #endif
-        if (SDL_GL_MakeCurrent(context->window, context->gl_context) != 0) {
+        if (!SDL_GL_MakeCurrent(context->window, context->gl_context)) {
             fprintf(stderr, "glo_set_current(%p,%p) failed: %s\n",
                     (void *)context->window, (void *)context->gl_context,
                     SDL_GetError());

@@ -110,35 +110,35 @@ static ControllerState *xemu_input_find_sdl_controller(SDL_JoystickID id)
 static int xemu_input_sdl_button_to_button_id(uint8_t button)
 {
     switch (button) {
-    case SDL_CONTROLLER_BUTTON_A:
+    case SDL_GAMEPAD_BUTTON_SOUTH:
         return 0;
-    case SDL_CONTROLLER_BUTTON_B:
+    case SDL_GAMEPAD_BUTTON_EAST:
         return 1;
-    case SDL_CONTROLLER_BUTTON_X:
+    case SDL_GAMEPAD_BUTTON_WEST:
         return 2;
-    case SDL_CONTROLLER_BUTTON_Y:
+    case SDL_GAMEPAD_BUTTON_NORTH:
         return 3;
-    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
         return 4;
-    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+    case SDL_GAMEPAD_BUTTON_DPAD_UP:
         return 5;
-    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
         return 6;
-    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
         return 7;
-    case SDL_CONTROLLER_BUTTON_BACK:
+    case SDL_GAMEPAD_BUTTON_BACK:
         return 8;
-    case SDL_CONTROLLER_BUTTON_START:
+    case SDL_GAMEPAD_BUTTON_START:
         return 9;
-    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
         return 10;
-    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
         return 11;
-    case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK:
         return 12;
-    case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK:
         return 13;
-    case SDL_CONTROLLER_BUTTON_GUIDE:
+    case SDL_GAMEPAD_BUTTON_GUIDE:
         return 14;
     default:
         return -1;
@@ -226,8 +226,8 @@ static void xemu_input_bindings_set_in_range(ControllerState *con)
 
 #define CHECK_RESET_BUTTON(btn)                                            \
     check_and_reset_in_range(&con->controller_map->controller_mapping.btn, \
-                             SDL_CONTROLLER_BUTTON_INVALID,                \
-                             SDL_CONTROLLER_BUTTON_MAX,                    \
+                             SDL_GAMEPAD_BUTTON_INVALID,                \
+                             SDL_GAMEPAD_BUTTON_COUNT,                    \
                              "Invalid entry for button " #btn ", resetting")
 
     CHECK_RESET_BUTTON(a);
@@ -250,8 +250,8 @@ static void xemu_input_bindings_set_in_range(ControllerState *con)
 
 #define CHECK_RESET_AXIS(axis)                                              \
     check_and_reset_in_range(&con->controller_map->controller_mapping.axis, \
-                             SDL_CONTROLLER_AXIS_INVALID,                   \
-                             SDL_CONTROLLER_AXIS_MAX,                       \
+                             SDL_GAMEPAD_AXIS_INVALID,                   \
+                             SDL_GAMEPAD_AXIS_COUNT,                       \
                              "Invalid entry for button " #axis ", resetting")
 
     CHECK_RESET_AXIS(axis_trigger_left);
@@ -269,7 +269,7 @@ static void xemu_input_bindings_reload_map(ControllerState *con)
     assert(con->type == INPUT_DEVICE_SDL_GAMECONTROLLER);
 
     char guid[35] = { 0 };
-    SDL_JoystickGetGUIDString(con->sdl_joystick_guid, guid, sizeof(guid));
+    SDL_GUIDToString(con->sdl_joystick_guid, guid, sizeof(guid));
     bool added_mapping =
         xemu_settings_load_gamepad_mapping(guid, &con->controller_map);
     if (!con->controller_map) {
@@ -292,7 +292,7 @@ static void xemu_input_bindings_reload_map(ControllerState *con)
         }
 
         memset(guid, 0, sizeof(guid));
-        SDL_JoystickGetGUIDString(iter->sdl_joystick_guid, guid, sizeof(guid));
+        SDL_GUIDToString(iter->sdl_joystick_guid, guid, sizeof(guid));
 
         iter_is_new_mapping =
             xemu_settings_load_gamepad_mapping(guid, &iter->controller_map);
@@ -330,7 +330,7 @@ void xemu_input_init(void)
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     }
 
-    if (SDL_Init(SDL_INIT_GAMECONTROLLER) < 0) {
+    if (!SDL_Init(SDL_INIT_GAMEPAD)) {
         fprintf(stderr, "Failed to initialize SDL gamecontroller subsystem: %s\n", SDL_GetError());
         exit(1);
     }
@@ -353,7 +353,7 @@ void xemu_input_init(void)
         char buf[128];
         snprintf(buf, sizeof(buf), format_str, i);
         check_and_reset_in_range(g_keyboard_scancode_map[i],
-                                 SDL_SCANCODE_UNKNOWN, SDL_NUM_SCANCODES, buf);
+                                 SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_COUNT, buf);
     }
 
     bound_drivers[0] = get_bound_driver(0);
@@ -378,7 +378,7 @@ int xemu_input_get_controller_default_bind_port(ControllerState *state, int star
 {
     char guid[35] = { 0 };
     if (state->type == INPUT_DEVICE_SDL_GAMECONTROLLER) {
-        SDL_JoystickGetGUIDString(state->sdl_joystick_guid, guid, sizeof(guid));
+        SDL_GUIDToString(state->sdl_joystick_guid, guid, sizeof(guid));
     } else if (state->type == INPUT_DEVICE_SDL_KEYBOARD) {
         snprintf(guid, sizeof(guid), "keyboard");
     }
@@ -416,14 +416,14 @@ void xemu_save_peripheral_settings(int player_index, int peripheral_index,
 
 void xemu_input_process_sdl_events(const SDL_Event *event)
 {
-    if (event->type == SDL_CONTROLLERDEVICEADDED) {
-        DPRINTF("Controller Added: %d\n", event->cdevice.which);
+    if (event->type == SDL_EVENT_GAMEPAD_ADDED) {
+        DPRINTF("Controller Added: %d\n", event->gdevice.which);
 
         // Attempt to open the added controller
-        SDL_GameController *sdl_con;
-        sdl_con = SDL_GameControllerOpen(event->cdevice.which);
+        SDL_Gamepad *sdl_con;
+        sdl_con = SDL_OpenGamepad(event->gdevice.which);
         if (sdl_con == NULL) {
-            DPRINTF("Could not open joystick %d as a game controller\n", event->cdevice.which);
+            DPRINTF("Could not open joystick %d as a game controller\n", event->gdevice.which);
             return;
         }
 
@@ -431,11 +431,11 @@ void xemu_input_process_sdl_events(const SDL_Event *event)
         ControllerState *new_con = malloc(sizeof(ControllerState));
         memset(new_con, 0, sizeof(ControllerState));
         new_con->type                 = INPUT_DEVICE_SDL_GAMECONTROLLER;
-        new_con->name                 = SDL_GameControllerName(sdl_con);
+        new_con->name                 = SDL_GetGamepadName(sdl_con);
         new_con->sdl_gamecontroller   = sdl_con;
-        new_con->sdl_joystick         = SDL_GameControllerGetJoystick(new_con->sdl_gamecontroller);
-        new_con->sdl_joystick_id      = SDL_JoystickInstanceID(new_con->sdl_joystick);
-        new_con->sdl_joystick_guid    = SDL_JoystickGetGUID(new_con->sdl_joystick);
+        new_con->sdl_joystick         = SDL_GetGamepadJoystick(new_con->sdl_gamecontroller);
+        new_con->sdl_joystick_id      = SDL_GetJoystickID(new_con->sdl_joystick);
+        new_con->sdl_joystick_guid    = SDL_GetJoystickGUID(new_con->sdl_joystick);
         new_con->bound                = -1;
         new_con->peripheral_types[0] = PERIPHERAL_NONE;
         new_con->peripheral_types[1] = PERIPHERAL_NONE;
@@ -443,7 +443,7 @@ void xemu_input_process_sdl_events(const SDL_Event *event)
         new_con->peripherals[1] = NULL;
 
         char guid_buf[35] = { 0 };
-        SDL_JoystickGetGUIDString(new_con->sdl_joystick_guid, guid_buf, sizeof(guid_buf));
+        SDL_GUIDToString(new_con->sdl_joystick_guid, guid_buf, sizeof(guid_buf));
         DPRINTF("Opened %s (%s)\n", new_con->name, guid_buf);
 
         QTAILQ_INSERT_TAIL(&available_controllers, new_con, entry);
@@ -497,25 +497,25 @@ void xemu_input_process_sdl_events(const SDL_Event *event)
             xemu_queue_notification(buf);
             xemu_input_rebind_xmu(port);
         }
-    } else if (event->type == SDL_CONTROLLERBUTTONDOWN) {
+    } else if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
         ControllerState *state =
-            xemu_input_find_sdl_controller(event->cbutton.which);
+            xemu_input_find_sdl_controller(event->gbutton.which);
         int button_id =
-            xemu_input_sdl_button_to_button_id(event->cbutton.button);
+            xemu_input_sdl_button_to_button_id(event->gbutton.button);
 
         if (state && button_id >= 0) {
             state->button_hold_until_us[button_id] =
                 qemu_clock_get_us(QEMU_CLOCK_REALTIME) +
                 XEMU_INPUT_MIN_BUTTON_HOLD_US;
         }
-    } else if (event->type == SDL_CONTROLLERDEVICEREMOVED) {
-        DPRINTF("Controller Removed: %d\n", event->cdevice.which);
+    } else if (event->type == SDL_EVENT_GAMEPAD_REMOVED) {
+        DPRINTF("Controller Removed: %d\n", event->gdevice.which);
         int handled = 0;
         ControllerState *iter, *next;
         QTAILQ_FOREACH_SAFE(iter, &available_controllers, entry, next) {
             if (iter->type != INPUT_DEVICE_SDL_GAMECONTROLLER) continue;
 
-            if (iter->sdl_joystick_id == event->cdevice.which) {
+            if (iter->sdl_joystick_id == event->gdevice.which) {
                 DPRINTF("Device removed: %s\n", iter->name);
 
                 // Disconnect
@@ -537,7 +537,7 @@ void xemu_input_process_sdl_events(const SDL_Event *event)
 
                 // Deallocate
                 if (iter->sdl_gamecontroller) {
-                    SDL_GameControllerClose(iter->sdl_gamecontroller);
+                    SDL_CloseGamepad(iter->sdl_gamecontroller);
                 }
 
                 for (int i = 0; i < 2; i++) {
@@ -553,8 +553,8 @@ void xemu_input_process_sdl_events(const SDL_Event *event)
         if (!handled) {
             DPRINTF("Could not find handle for joystick instance\n");
         }
-    } else if (event->type == SDL_CONTROLLERDEVICEREMAPPED) {
-        DPRINTF("Controller Remapped: %d\n", event->cdevice.which);
+    } else if (event->type == SDL_EVENT_GAMEPAD_REMAPPED) {
+        DPRINTF("Controller Remapped: %d\n", event->gdevice.which);
     }
 }
 
@@ -591,7 +591,7 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
     state->buttons = 0;
     memset(state->axis, 0, sizeof(state->axis));
 
-    const uint8_t *kbd = SDL_GetKeyboardState(NULL);
+    const bool *kbd = SDL_GetKeyboardState(NULL);
 
 #define KBD_STATE(btn) \
     (kbd[g_config.input.keyboard_controller_scancode_map.btn])
@@ -647,32 +647,32 @@ void xemu_input_update_sdl_controller_state(ControllerState *state)
         return;
     }
 
-#define SDL_MASK_BUTTON(state, btn, idx)                  \
-    (SDL_GameControllerGetButton(                         \
+#define XEMU_MASK_BUTTON(state, btn, idx)                  \
+    (SDL_GetGamepadButton(                         \
          (state)->sdl_gamecontroller,                     \
          (state)->controller_map->controller_mapping.btn) \
      << idx)
 
-    state->buttons |= SDL_MASK_BUTTON(state, a, 0);
-    state->buttons |= SDL_MASK_BUTTON(state, b, 1);
-    state->buttons |= SDL_MASK_BUTTON(state, x, 2);
-    state->buttons |= SDL_MASK_BUTTON(state, y, 3);
-    state->buttons |= SDL_MASK_BUTTON(state, dpad_left, 4);
-    state->buttons |= SDL_MASK_BUTTON(state, dpad_up, 5);
-    state->buttons |= SDL_MASK_BUTTON(state, dpad_right, 6);
-    state->buttons |= SDL_MASK_BUTTON(state, dpad_down, 7);
-    state->buttons |= SDL_MASK_BUTTON(state, back, 8);
-    state->buttons |= SDL_MASK_BUTTON(state, start, 9);
-    state->buttons |= SDL_MASK_BUTTON(state, lshoulder, 10);
-    state->buttons |= SDL_MASK_BUTTON(state, rshoulder, 11);
-    state->buttons |= SDL_MASK_BUTTON(state, lstick_btn, 12);
-    state->buttons |= SDL_MASK_BUTTON(state, rstick_btn, 13);
-    state->buttons |= SDL_MASK_BUTTON(state, guide, 14);
+    state->buttons |= XEMU_MASK_BUTTON(state, a, 0);
+    state->buttons |= XEMU_MASK_BUTTON(state, b, 1);
+    state->buttons |= XEMU_MASK_BUTTON(state, x, 2);
+    state->buttons |= XEMU_MASK_BUTTON(state, y, 3);
+    state->buttons |= XEMU_MASK_BUTTON(state, dpad_left, 4);
+    state->buttons |= XEMU_MASK_BUTTON(state, dpad_up, 5);
+    state->buttons |= XEMU_MASK_BUTTON(state, dpad_right, 6);
+    state->buttons |= XEMU_MASK_BUTTON(state, dpad_down, 7);
+    state->buttons |= XEMU_MASK_BUTTON(state, back, 8);
+    state->buttons |= XEMU_MASK_BUTTON(state, start, 9);
+    state->buttons |= XEMU_MASK_BUTTON(state, lshoulder, 10);
+    state->buttons |= XEMU_MASK_BUTTON(state, rshoulder, 11);
+    state->buttons |= XEMU_MASK_BUTTON(state, lstick_btn, 12);
+    state->buttons |= XEMU_MASK_BUTTON(state, rstick_btn, 13);
+    state->buttons |= XEMU_MASK_BUTTON(state, guide, 14);
 
-#undef SDL_MASK_BUTTON
+#undef XEMU_MASK_BUTTON
 
 #define SDL_GET_AXIS(state, axis)    \
-    SDL_GameControllerGetAxis(       \
+    SDL_GetGamepadAxis(       \
         (state)->sdl_gamecontroller, \
         (state)->controller_map->controller_mapping.axis)
 
@@ -738,7 +738,7 @@ void xemu_input_update_rumble(ControllerState *state)
         return;
     }
 
-    SDL_GameControllerRumble(state->sdl_gamecontroller, state->rumble_l, state->rumble_r, 250);
+    SDL_RumbleGamepad(state->sdl_gamecontroller, state->rumble_l, state->rumble_r, 250);
     state->last_rumble_updated_ts = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 }
 
@@ -785,7 +785,7 @@ void xemu_input_bind(int index, ControllerState *state, int save)
         char guid_buf[35] = { 0 };
         if (state) {
             if (state->type == INPUT_DEVICE_SDL_GAMECONTROLLER) {
-                SDL_JoystickGetGUIDString(state->sdl_joystick_guid, guid_buf, sizeof(guid_buf));
+                SDL_GUIDToString(state->sdl_joystick_guid, guid_buf, sizeof(guid_buf));
             } else if (state->type == INPUT_DEVICE_SDL_KEYBOARD) {
                 snprintf(guid_buf, sizeof(guid_buf), "keyboard");
             }
@@ -1037,7 +1037,7 @@ void xemu_input_reset_input_mapping(ControllerState *state)
 {
     if (state->type == INPUT_DEVICE_SDL_GAMECONTROLLER) {
         char guid[35] = { 0 };
-        SDL_JoystickGetGUIDString(state->sdl_joystick_guid, guid, sizeof(guid));
+        SDL_GUIDToString(state->sdl_joystick_guid, guid, sizeof(guid));
         xemu_settings_reset_controller_mapping(guid);
     } else if (state->type == INPUT_DEVICE_SDL_KEYBOARD) {
         xemu_settings_reset_keyboard_mapping();

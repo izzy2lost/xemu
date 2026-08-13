@@ -110,7 +110,7 @@ class ControllerInputBridge : OnScreenController.ControllerListener {
         OnScreenController.Stick.LEFT -> KeyEvent.KEYCODE_BUTTON_THUMBL
         OnScreenController.Stick.RIGHT -> KeyEvent.KEYCODE_BUTTON_THUMBR
       }
-      SDLControllerManager.onNativePadDown(VIRTUAL_DEVICE_ID, keyCode)
+      SDLControllerManager.onNativePadDown(VIRTUAL_DEVICE_ID, keyCode, 0)
     } catch (e: Exception) {
       DebugLog.e("ControllerBridge", e) { "Error on stick press: ${e.message}" }
     }
@@ -122,7 +122,7 @@ class ControllerInputBridge : OnScreenController.ControllerListener {
         OnScreenController.Stick.LEFT -> KeyEvent.KEYCODE_BUTTON_THUMBL
         OnScreenController.Stick.RIGHT -> KeyEvent.KEYCODE_BUTTON_THUMBR
       }
-      SDLControllerManager.onNativePadUp(VIRTUAL_DEVICE_ID, keyCode)
+      SDLControllerManager.onNativePadUp(VIRTUAL_DEVICE_ID, keyCode, 0)
     } catch (e: Exception) {
       DebugLog.e("ControllerBridge", e) { "Error on stick release: ${e.message}" }
     }
@@ -152,9 +152,9 @@ class ControllerInputBridge : OnScreenController.ControllerListener {
       else -> {
         val keyCode = getKeyCodeForButton(button)
         if (pressed) {
-          SDLControllerManager.onNativePadDown(VIRTUAL_DEVICE_ID, keyCode)
+          SDLControllerManager.onNativePadDown(VIRTUAL_DEVICE_ID, keyCode, 0)
         } else {
-          SDLControllerManager.onNativePadUp(VIRTUAL_DEVICE_ID, keyCode)
+          SDLControllerManager.onNativePadUp(VIRTUAL_DEVICE_ID, keyCode, 0)
         }
       }
     }
@@ -174,9 +174,9 @@ class ControllerInputBridge : OnScreenController.ControllerListener {
 
     try {
       if (pressed) {
-        SDLControllerManager.onNativePadDown(VIRTUAL_DEVICE_ID, keyCode)
+        SDLControllerManager.onNativePadDown(VIRTUAL_DEVICE_ID, keyCode, 0)
       } else {
-        SDLControllerManager.onNativePadUp(VIRTUAL_DEVICE_ID, keyCode)
+        SDLControllerManager.onNativePadUp(VIRTUAL_DEVICE_ID, keyCode, 0)
       }
     } catch (e: Exception) {
       DebugLog.e("ControllerBridge", e) { "SDL pad event failed for $button: ${e.message}" }

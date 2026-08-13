@@ -1,6 +1,6 @@
-#include <SDL.h>
-#include <SDL_main.h>
-#include <SDL_system.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+#include <SDL3/SDL_system.h>
 
 #include <GLES3/gl3.h>
 #include <toml++/toml.h>
@@ -264,13 +264,13 @@ static void LoadGameControllerMappingsFromAssets() {
   }
   data.resize(total);
 
-  SDL_RWops* rw = SDL_RWFromConstMem(data.data(), static_cast<int>(data.size()));
+  SDL_IOStream* rw = SDL_IOFromConstMem(data.data(), static_cast<int>(data.size()));
   if (!rw) {
-    LogErrorFmt("Controller mappings: SDL_RWFromConstMem failed: %s", SDL_GetError());
+    LogErrorFmt("Controller mappings: SDL_IOFromConstMem failed: %s", SDL_GetError());
     return;
   }
 
-  const int added = SDL_GameControllerAddMappingsFromRW(rw, 1);
+  const int added = SDL_AddGamepadMappingsFromIO(rw, true);
   if (added < 0) {
     LogErrorFmt("Controller mappings: failed to parse gamecontrollerdb.txt: %s", SDL_GetError());
     return;
@@ -311,12 +311,12 @@ static int GetTcgTbSizeFromEnv() {
 }
 
 static JNIEnv* GetEnv() {
-  return static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+  return static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
 }
 
 static jobject GetActivity(JNIEnv* env) {
   (void)env;
-  return reinterpret_cast<jobject>(SDL_AndroidGetActivity());
+  return reinterpret_cast<jobject>(SDL_GetAndroidActivity());
 }
 
 static bool HasException(JNIEnv* env, const char* context) {
@@ -740,10 +740,10 @@ static SetupFiles SyncSetupFiles() {
   }
 
   LogInfo("SyncSetupFiles: start");
-  const char* basePath = SDL_AndroidGetInternalStoragePath();
-  int extState = SDL_AndroidGetExternalStorageState();
+  const char* basePath = SDL_GetAndroidInternalStoragePath();
+  int extState = SDL_GetAndroidExternalStorageState();
   if (extState & SDL_ANDROID_EXTERNAL_STORAGE_WRITE) {
-    const char* external = SDL_AndroidGetExternalStoragePath();
+    const char* external = SDL_GetAndroidExternalStoragePath();
     if (external && external[0] != '\0') {
       basePath = external;
     }
@@ -1145,18 +1145,19 @@ extern "C" int xemu_android_main(int argc, char** argv) {
   qemu_init(argc, argv);
   auto t_init_end = SDL_GetTicks();
   __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                      "qemu_init took %u ms", t_init_end - t_init_start);
+                      "qemu_init took %llu ms",
+                      (unsigned long long)(t_init_end - t_init_start));
 
   /* qemu_init's cleanup_add_fd already closed the original fd */
   g_dvd_fd = -1;
 
 #if XEMU_OPT_TB_CACHE_HINTS
   /* Load translation block cache hints for pre-warming */
-  const char *storage_load = SDL_AndroidGetInternalStoragePath();
+  const char *storage_load = SDL_GetAndroidInternalStoragePath();
 
   const char *dump_storage = NULL;
-  if (SDL_AndroidGetExternalStorageState() & SDL_ANDROID_EXTERNAL_STORAGE_WRITE) {
-    dump_storage = SDL_AndroidGetExternalStoragePath();
+  if (SDL_GetAndroidExternalStorageState() & SDL_ANDROID_EXTERNAL_STORAGE_WRITE) {
+    dump_storage = SDL_GetAndroidExternalStoragePath();
   }
   if (!dump_storage || !dump_storage[0]) {
     dump_storage = storage_load;
@@ -1213,29 +1214,30 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   (void)argv;
 
   LogInfo("SDL_main: start");
-  SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, "openslES",
+  SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "aaudio,openslES",
                           SDL_HINT_OVERRIDE);
   SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
   SDL_DisableScreenSaver();
 
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
+  if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
     __android_log_print(ANDROID_LOG_ERROR, kLogTag, "SDL_Init failed: %s", SDL_GetError());
     return 1;
   }
-  SDL_GameControllerEventState(SDL_ENABLE);
+  SDL_SetGamepadEventsEnabled(true);
   LoadGameControllerMappingsFromAssets();
 
   auto t_sync_start = SDL_GetTicks();
   SetupFiles setup = SyncSetupFiles();
   auto t_sync_end = SDL_GetTicks();
   __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                      "SyncSetupFiles took %u ms", t_sync_end - t_sync_start);
+                      "SyncSetupFiles took %llu ms",
+                      (unsigned long long)(t_sync_end - t_sync_start));
 
   // Apply user's audio driver preference (overrides the default set above)
   if (!setup.audio_driver.empty()) {
     std::string hint = setup.audio_driver;
     if (hint == "aaudio") hint = "aaudio,openslES";
-    SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER, hint.c_str(), SDL_HINT_OVERRIDE);
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, hint.c_str(), SDL_HINT_OVERRIDE);
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                         "audio driver hint: %s", hint.c_str());
   }
@@ -1404,11 +1406,9 @@ extern "C" int SDL_main(int argc, char* argv[]) {
 
   SDL_Window* window = SDL_CreateWindow(
     "xemu (Android bootstrap)",
-    SDL_WINDOWPOS_CENTERED,
-    SDL_WINDOWPOS_CENTERED,
     1280,
     720,
-    SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
+    SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE
   );
 
   if (!window) {
@@ -1434,16 +1434,16 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   while (running) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
-      if (ev.type == SDL_QUIT) {
+      if (ev.type == SDL_EVENT_QUIT) {
         running = false;
-      } else if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_AC_BACK) {
+      } else if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_AC_BACK) {
         running = false;
       }
     }
 
     int w = 0;
     int h = 0;
-    SDL_GL_GetDrawableSize(window, &w, &h);
+    SDL_GetWindowSizeInPixels(window, &w, &h);
     if (w <= 0) w = 1;
     if (h <= 0) h = 1;
 
@@ -1454,7 +1454,7 @@ extern "C" int SDL_main(int argc, char* argv[]) {
     SDL_GL_SwapWindow(window);
   }
 
-  SDL_GL_DeleteContext(gl);
+  SDL_GL_DestroyContext(gl);
   SDL_DestroyWindow(window);
   SDL_Quit();
   return 0;
@@ -1518,7 +1518,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_izzy2lost_x1box_SettingsActivity_nativeSetFpSafe(JNIEnv *, jobject, jboolean enable)
 {
     xemu_set_fp_safe(enable == JNI_TRUE);
-    const char *storage = SDL_AndroidGetInternalStoragePath();
+    const char *storage = SDL_GetAndroidInternalStoragePath();
     if (storage) {
         char path[PATH_MAX];
         snprintf(path, sizeof(path), "%s/x1box/tb_cache.bin", storage);
@@ -1632,7 +1632,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_izzy2lost_x1box_SettingsActivity_nativeSetFpJit(JNIEnv *, jobject, jboolean enable)
 {
     xemu_set_fp_jit(enable == JNI_TRUE);
-    const char *storage = SDL_AndroidGetInternalStoragePath();
+    const char *storage = SDL_GetAndroidInternalStoragePath();
     if (storage) {
         char path[PATH_MAX];
         snprintf(path, sizeof(path), "%s/x1box/tb_cache.bin", storage);

@@ -438,12 +438,14 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
         "Virtual touchscreen controller", // desc
         0x045e, // vendor_id (Microsoft)
         0x028e, // product_id (Xbox 360 Controller)
-        false, // is_accelerometer
         0xFFFF, // button_mask (all buttons)
         6, // naxes (left X/Y, right X/Y, left trigger, right trigger)
         0x3F, // axis_mask (6 axes)
         0, // nhats
-        0  // nballs
+        false, // can_rumble
+        false, // has_rgb_led
+        false, // has_accelerometer
+        false  // has_gyroscope
       )
       DebugLog.d("MainActivity") { "Virtual controller registered successfully" }
     } catch (e: Exception) {
@@ -1113,7 +1115,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   override fun getLibraries(): Array<String> = arrayOf(
-    "SDL2",
+    "SDL3",
     "xemu",
   )
 }

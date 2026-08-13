@@ -58,35 +58,47 @@ if(XEMU_XISO_CONVERTER_BUILD_ENABLED AND NOT CARGO_EXECUTABLE)
   set(XEMU_XISO_CONVERTER_BUILD_ENABLED OFF)
 endif()
 
-# --- SDL2 ---
-option(XEMU_FETCH_SDL2 "Download and build SDL2 for Android" ON)
-set(SDL2_VERSION "2.32.10")
-set(SDL2_LOCAL_DEFAULT "${REPO_ROOT}/thirdparty/SDL2")
-if(NOT DEFINED SDL2_LOCAL_DIR AND EXISTS "${SDL2_LOCAL_DEFAULT}/CMakeLists.txt")
-  set(SDL2_LOCAL_DIR "${SDL2_LOCAL_DEFAULT}")
+# --- SDL3 ---
+#
+# NOTE: the Java glue under android/app/src/main/java/org/libsdl/app/ is a
+# vendored copy of this exact SDL release's android-project sources (with a few
+# xemu-specific edits, each marked "xemu:"). If you bump SDL3_VERSION you must
+# re-sync those files from the new release, or the JNI signatures between
+# libSDL3.so and the Java layer will drift and the app will crash on startup.
+option(XEMU_FETCH_SDL3 "Download and build SDL3 for Android" ON)
+set(SDL3_VERSION "3.4.14")
+set(SDL3_LOCAL_DEFAULT "${REPO_ROOT}/thirdparty/SDL3")
+if(NOT DEFINED SDL3_LOCAL_DIR AND EXISTS "${SDL3_LOCAL_DEFAULT}/CMakeLists.txt")
+  set(SDL3_LOCAL_DIR "${SDL3_LOCAL_DEFAULT}")
 endif()
 
-if(DEFINED SDL2_LOCAL_DIR)
-  message(STATUS "Using local SDL2 at ${SDL2_LOCAL_DIR}")
-  add_subdirectory("${SDL2_LOCAL_DIR}" "${CMAKE_BINARY_DIR}/sdl2-local")
-elseif(XEMU_FETCH_SDL2)
-  set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
-  set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-  set(SDL_STATIC ON CACHE BOOL "" FORCE)
-  set(SDL_RENDER_D3D OFF CACHE BOOL "" FORCE)
-  set(SDL_RENDER_D3D11 OFF CACHE BOOL "" FORCE)
-  set(SDL_RENDER_D3D12 OFF CACHE BOOL "" FORCE)
-  set(SDL_RENDER_METAL OFF CACHE BOOL "" FORCE)
-  set(SDL_RENDER_PS2 OFF CACHE BOOL "" FORCE)
-  set(SDL_VIDEO_OPENGL OFF CACHE BOOL "" FORCE)
-  set(SDL_VIDEO_VULKAN ON CACHE BOOL "" FORCE)
-  set(SDL_VIDEO_OPENGL_ES ON CACHE BOOL "" FORCE)
-  set(SDL_VIDEO_OPENGL_ES2 ON CACHE BOOL "" FORCE)
+# SDL3 is loaded as a shared library by SDLActivity.getLibraries() before
+# libxemu.so, so it must stay SHARED here.
+set(SDL_SHARED ON CACHE BOOL "" FORCE)
+set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+# We vendor the Java sources ourselves; do not let SDL build its own SDL3.jar.
+set(SDL_ANDROID_JAR OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER_D3D OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER_D3D11 OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER_D3D12 OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER_METAL OFF CACHE BOOL "" FORCE)
+set(SDL_OPENGL OFF CACHE BOOL "" FORCE)
+set(SDL_OPENGLES ON CACHE BOOL "" FORCE)
+set(SDL_VULKAN ON CACHE BOOL "" FORCE)
+
+if(DEFINED SDL3_LOCAL_DIR)
+  message(STATUS "Using local SDL3 at ${SDL3_LOCAL_DIR}")
+  add_subdirectory("${SDL3_LOCAL_DIR}" "${CMAKE_BINARY_DIR}/sdl3-local")
+elseif(XEMU_FETCH_SDL3)
   FetchContent_Declare(
-    SDL2
-    URL "https://github.com/libsdl-org/SDL/archive/refs/tags/release-${SDL2_VERSION}.zip"
+    SDL3
+    URL "https://github.com/libsdl-org/SDL/archive/refs/tags/release-${SDL3_VERSION}.zip"
   )
-  FetchContent_MakeAvailable(SDL2)
+  FetchContent_MakeAvailable(SDL3)
 endif()
 
 # --- toml++ ---
@@ -1162,8 +1174,8 @@ target_link_libraries(xemu_core PRIVATE
   nv2a_vsh_disassembler
 )
 
-if(TARGET SDL2::SDL2)
-  target_link_libraries(xemu_core PRIVATE SDL2::SDL2)
+if(TARGET SDL3::SDL3)
+  target_link_libraries(xemu_core PRIVATE SDL3::SDL3)
 endif()
 
 add_library(glib-2.0 STATIC IMPORTED)
@@ -1278,8 +1290,8 @@ if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
   )
 endif()
 
-if(TARGET SDL2::SDL2)
-  target_link_libraries(xemu PRIVATE SDL2::SDL2)
+if(TARGET SDL3::SDL3)
+  target_link_libraries(xemu PRIVATE SDL3::SDL3)
 endif()
 
 target_link_libraries(xemu PRIVATE

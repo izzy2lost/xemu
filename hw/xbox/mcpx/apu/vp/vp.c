@@ -1861,7 +1861,7 @@ voice_work_dispatch(MCPXAPUState *d,
 
 static int mcpx_apu_default_vp_worker_count(void)
 {
-    int cpu_count = MAX(1, SDL_GetCPUCount());
+    int cpu_count = MAX(1, SDL_GetNumLogicalCPUCores());
 
 #ifdef __ANDROID__
     /*

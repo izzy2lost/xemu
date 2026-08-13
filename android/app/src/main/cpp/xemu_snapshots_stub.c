@@ -7,9 +7,9 @@
 #include "xemu-xbe.h"
 #include "hw/xbox/nv2a/nv2a.h"
 
-#include <SDL.h>
-#include <SDL_atomic.h>
-#include <SDL_system.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_atomic.h>
+#include <SDL3/SDL_system.h>
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <glib/gstdio.h>
@@ -23,8 +23,8 @@ const char **g_snapshot_shortcut_index_key_map[] = { NULL };
 static bool xemu_snapshots_dirty = true;
 static GLuint g_snapshot_display_tex = 0;
 static bool g_snapshot_display_flip = false;
-static SDL_atomic_t g_snapshot_pending = { 0 };
-static SDL_atomic_t g_reboot_pending = { 0 };
+static SDL_AtomicInt g_snapshot_pending = { 0 };
+static SDL_AtomicInt g_reboot_pending = { 0 };
 
 #define SNAPSHOT_PREVIEW_WIDTH  320
 #define SNAPSHOT_PREVIEW_HEIGHT 240
@@ -72,7 +72,7 @@ static void sanitize_snapshot_name(const char *in, char *out, size_t out_len)
 
 static char *get_snapshot_preview_dir(void)
 {
-    const char *base = SDL_AndroidGetInternalStoragePath();
+    const char *base = SDL_GetAndroidInternalStoragePath();
     char *dir;
 
     if (!base || !base[0]) {
@@ -490,7 +490,7 @@ static void request_snapshot_preview_capture(void)
 
 void xemu_android_process_snapshot_request(void)
 {
-    if (SDL_AtomicCAS(&g_reboot_pending, 1, 0)) {
+    if (SDL_CompareAndSwapAtomicInt(&g_reboot_pending, 1, 0)) {
         /* The in-game menu pauses the VM via vm_stop(RUN_STATE_PAUSED), which
          * disables CPU ticks. qemu_system_reset_request goes through
          * pause_all_vcpus+qemu_system_reset+resume_all_vcpus but never calls
@@ -506,7 +506,7 @@ void xemu_android_process_snapshot_request(void)
         return;
     }
 
-    if (SDL_AtomicGet(&g_snapshot_pending) == 0) {
+    if (SDL_GetAtomicInt(&g_snapshot_pending) == 0) {
         return;
     }
 
@@ -515,7 +515,7 @@ void xemu_android_process_snapshot_request(void)
     }
 
     if (!g_snap_req.pending) {
-        SDL_AtomicSet(&g_snapshot_pending, 0);
+        SDL_SetAtomicInt(&g_snapshot_pending, 0);
         pthread_mutex_unlock(&g_snap_req.lock);
         return;
     }
@@ -556,7 +556,7 @@ void xemu_android_process_snapshot_request(void)
     }
 
     g_snap_req.pending = false;
-    SDL_AtomicSet(&g_snapshot_pending, 0);
+    SDL_SetAtomicInt(&g_snapshot_pending, 0);
     g_snap_req.done = true;
     pthread_cond_signal(&g_snap_req.cond);
     pthread_mutex_unlock(&g_snap_req.lock);
@@ -569,7 +569,7 @@ static jboolean dispatch_snapshot(JNIEnv *env, jstring jname, SnapOpType type)
     pthread_mutex_lock(&g_snap_req.lock);
     g_snap_req.type = type;
     g_snap_req.pending = true;
-    SDL_AtomicSet(&g_snapshot_pending, 1);
+    SDL_SetAtomicInt(&g_snapshot_pending, 1);
     g_snap_req.done = false;
     strncpy(g_snap_req.name, name, sizeof(g_snap_req.name) - 1);
     g_snap_req.name[sizeof(g_snap_req.name) - 1] = '\0';
@@ -607,5 +607,5 @@ Java_com_izzy2lost_x1box_MainActivity_nativeRebootSystem(
 {
     (void)env;
     (void)obj;
-    SDL_AtomicSet(&g_reboot_pending, 1);
+    SDL_SetAtomicInt(&g_reboot_pending, 1);
 }

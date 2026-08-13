@@ -41,10 +41,6 @@
       android:hardwareAccelerated="true"
       android:process=":xemu"
       android:exported="false">
-
-      <meta-data
-        android:name="SDL_MAIN_LIBRARY"
-        android:value="xemu" />
     </activity>
 
     <activity

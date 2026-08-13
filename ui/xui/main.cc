@@ -17,7 +17,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <epoxy/gl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -207,7 +207,7 @@ void xemu_hud_render(void)
 
     if (!first_boot_window.is_open) {
         int ww, wh;
-        SDL_GL_GetDrawableSize(g_sdl_window, &ww, &wh);
+        SDL_GetWindowSizeInPixels(g_sdl_window, &ww, &wh);
         RenderFramebuffer(g_tex, ww, wh, g_flip_req);
     }
 

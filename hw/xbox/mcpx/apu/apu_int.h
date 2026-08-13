@@ -23,7 +23,7 @@
 
 #include "qemu/osdep.h"
 #include <math.h>
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include "hw/hw.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
@@ -110,6 +110,9 @@ typedef struct MCPXAPUState {
         int fifo_capacity_bytes;
         int device_buffer_bytes;
         int queued_bytes_low, queued_bytes_high;
+        SDL_AudioStream *stream;
+        uint8_t *sink_buf;
+        int sink_buf_size;
     } monitor;
 } MCPXAPUState;
 

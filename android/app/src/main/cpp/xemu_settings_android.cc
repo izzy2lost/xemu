@@ -1,7 +1,7 @@
 #include "qemu/osdep.h"
 
-#include <SDL_filesystem.h>
-#include <SDL_gamecontroller.h>
+#include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_gamepad.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -250,12 +250,11 @@ const char *xemu_settings_get_base_path(void)
         return base_path;
     }
 
-    char *base = SDL_GetPrefPath("xemu", "xemu");
-    if (!base) {
-        base = SDL_GetBasePath();
-    }
+    /* SDL3: GetPrefPath is caller-owned, GetBasePath is owned by SDL. */
+    char *pref = SDL_GetPrefPath("xemu", "xemu");
+    const char *base = pref ? pref : SDL_GetBasePath();
     base_path = base ? strdup(base) : strdup("");
-    SDL_free(base);
+    SDL_free(pref);
     __android_log_print(ANDROID_LOG_INFO, "xemu-config",
                         "xemu_settings_get_base_path: %s", base_path);
     return base_path;
@@ -706,31 +705,31 @@ bool xemu_settings_load_gamepad_mapping(const char *guid,
     }
 
     auto apply_default_controller_mapping = [](GamepadMappings *entry) {
-        entry->controller_mapping.a = SDL_CONTROLLER_BUTTON_A;
-        entry->controller_mapping.b = SDL_CONTROLLER_BUTTON_B;
-        entry->controller_mapping.x = SDL_CONTROLLER_BUTTON_X;
-        entry->controller_mapping.y = SDL_CONTROLLER_BUTTON_Y;
-        entry->controller_mapping.back = SDL_CONTROLLER_BUTTON_BACK;
-        entry->controller_mapping.guide = SDL_CONTROLLER_BUTTON_GUIDE;
-        entry->controller_mapping.start = SDL_CONTROLLER_BUTTON_START;
-        entry->controller_mapping.lstick_btn = SDL_CONTROLLER_BUTTON_LEFTSTICK;
-        entry->controller_mapping.rstick_btn = SDL_CONTROLLER_BUTTON_RIGHTSTICK;
-        entry->controller_mapping.lshoulder = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+        entry->controller_mapping.a = SDL_GAMEPAD_BUTTON_SOUTH;
+        entry->controller_mapping.b = SDL_GAMEPAD_BUTTON_EAST;
+        entry->controller_mapping.x = SDL_GAMEPAD_BUTTON_WEST;
+        entry->controller_mapping.y = SDL_GAMEPAD_BUTTON_NORTH;
+        entry->controller_mapping.back = SDL_GAMEPAD_BUTTON_BACK;
+        entry->controller_mapping.guide = SDL_GAMEPAD_BUTTON_GUIDE;
+        entry->controller_mapping.start = SDL_GAMEPAD_BUTTON_START;
+        entry->controller_mapping.lstick_btn = SDL_GAMEPAD_BUTTON_LEFT_STICK;
+        entry->controller_mapping.rstick_btn = SDL_GAMEPAD_BUTTON_RIGHT_STICK;
+        entry->controller_mapping.lshoulder = SDL_GAMEPAD_BUTTON_LEFT_SHOULDER;
         entry->controller_mapping.rshoulder =
-            SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
-        entry->controller_mapping.dpad_up = SDL_CONTROLLER_BUTTON_DPAD_UP;
-        entry->controller_mapping.dpad_down = SDL_CONTROLLER_BUTTON_DPAD_DOWN;
-        entry->controller_mapping.dpad_left = SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+            SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
+        entry->controller_mapping.dpad_up = SDL_GAMEPAD_BUTTON_DPAD_UP;
+        entry->controller_mapping.dpad_down = SDL_GAMEPAD_BUTTON_DPAD_DOWN;
+        entry->controller_mapping.dpad_left = SDL_GAMEPAD_BUTTON_DPAD_LEFT;
         entry->controller_mapping.dpad_right =
-            SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
-        entry->controller_mapping.axis_left_x = SDL_CONTROLLER_AXIS_LEFTX;
-        entry->controller_mapping.axis_left_y = SDL_CONTROLLER_AXIS_LEFTY;
-        entry->controller_mapping.axis_right_x = SDL_CONTROLLER_AXIS_RIGHTX;
-        entry->controller_mapping.axis_right_y = SDL_CONTROLLER_AXIS_RIGHTY;
+            SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
+        entry->controller_mapping.axis_left_x = SDL_GAMEPAD_AXIS_LEFTX;
+        entry->controller_mapping.axis_left_y = SDL_GAMEPAD_AXIS_LEFTY;
+        entry->controller_mapping.axis_right_x = SDL_GAMEPAD_AXIS_RIGHTX;
+        entry->controller_mapping.axis_right_y = SDL_GAMEPAD_AXIS_RIGHTY;
         entry->controller_mapping.axis_trigger_left =
-            SDL_CONTROLLER_AXIS_TRIGGERLEFT;
+            SDL_GAMEPAD_AXIS_LEFT_TRIGGER;
         entry->controller_mapping.axis_trigger_right =
-            SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
+            SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
         entry->controller_mapping.invert_axis_left_x = false;
         entry->controller_mapping.invert_axis_left_y = false;
         entry->controller_mapping.invert_axis_right_x = false;
@@ -774,27 +773,27 @@ void xemu_settings_reset_controller_mapping(const char *guid)
         }
 
         entry->enable_rumble = g_config.input.allow_vibration;
-        entry->controller_mapping.a = SDL_CONTROLLER_BUTTON_A;
-        entry->controller_mapping.b = SDL_CONTROLLER_BUTTON_B;
-        entry->controller_mapping.x = SDL_CONTROLLER_BUTTON_X;
-        entry->controller_mapping.y = SDL_CONTROLLER_BUTTON_Y;
-        entry->controller_mapping.back = SDL_CONTROLLER_BUTTON_BACK;
-        entry->controller_mapping.guide = SDL_CONTROLLER_BUTTON_GUIDE;
-        entry->controller_mapping.start = SDL_CONTROLLER_BUTTON_START;
-        entry->controller_mapping.lstick_btn = SDL_CONTROLLER_BUTTON_LEFTSTICK;
-        entry->controller_mapping.rstick_btn = SDL_CONTROLLER_BUTTON_RIGHTSTICK;
-        entry->controller_mapping.lshoulder = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
-        entry->controller_mapping.rshoulder = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
-        entry->controller_mapping.dpad_up = SDL_CONTROLLER_BUTTON_DPAD_UP;
-        entry->controller_mapping.dpad_down = SDL_CONTROLLER_BUTTON_DPAD_DOWN;
-        entry->controller_mapping.dpad_left = SDL_CONTROLLER_BUTTON_DPAD_LEFT;
-        entry->controller_mapping.dpad_right = SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
-        entry->controller_mapping.axis_left_x = SDL_CONTROLLER_AXIS_LEFTX;
-        entry->controller_mapping.axis_left_y = SDL_CONTROLLER_AXIS_LEFTY;
-        entry->controller_mapping.axis_right_x = SDL_CONTROLLER_AXIS_RIGHTX;
-        entry->controller_mapping.axis_right_y = SDL_CONTROLLER_AXIS_RIGHTY;
-        entry->controller_mapping.axis_trigger_left = SDL_CONTROLLER_AXIS_TRIGGERLEFT;
-        entry->controller_mapping.axis_trigger_right = SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
+        entry->controller_mapping.a = SDL_GAMEPAD_BUTTON_SOUTH;
+        entry->controller_mapping.b = SDL_GAMEPAD_BUTTON_EAST;
+        entry->controller_mapping.x = SDL_GAMEPAD_BUTTON_WEST;
+        entry->controller_mapping.y = SDL_GAMEPAD_BUTTON_NORTH;
+        entry->controller_mapping.back = SDL_GAMEPAD_BUTTON_BACK;
+        entry->controller_mapping.guide = SDL_GAMEPAD_BUTTON_GUIDE;
+        entry->controller_mapping.start = SDL_GAMEPAD_BUTTON_START;
+        entry->controller_mapping.lstick_btn = SDL_GAMEPAD_BUTTON_LEFT_STICK;
+        entry->controller_mapping.rstick_btn = SDL_GAMEPAD_BUTTON_RIGHT_STICK;
+        entry->controller_mapping.lshoulder = SDL_GAMEPAD_BUTTON_LEFT_SHOULDER;
+        entry->controller_mapping.rshoulder = SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
+        entry->controller_mapping.dpad_up = SDL_GAMEPAD_BUTTON_DPAD_UP;
+        entry->controller_mapping.dpad_down = SDL_GAMEPAD_BUTTON_DPAD_DOWN;
+        entry->controller_mapping.dpad_left = SDL_GAMEPAD_BUTTON_DPAD_LEFT;
+        entry->controller_mapping.dpad_right = SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
+        entry->controller_mapping.axis_left_x = SDL_GAMEPAD_AXIS_LEFTX;
+        entry->controller_mapping.axis_left_y = SDL_GAMEPAD_AXIS_LEFTY;
+        entry->controller_mapping.axis_right_x = SDL_GAMEPAD_AXIS_RIGHTX;
+        entry->controller_mapping.axis_right_y = SDL_GAMEPAD_AXIS_RIGHTY;
+        entry->controller_mapping.axis_trigger_left = SDL_GAMEPAD_AXIS_LEFT_TRIGGER;
+        entry->controller_mapping.axis_trigger_right = SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
         entry->controller_mapping.invert_axis_left_x = false;
         entry->controller_mapping.invert_axis_left_y = false;
         entry->controller_mapping.invert_axis_right_x = false;

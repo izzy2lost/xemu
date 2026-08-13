@@ -28,6 +28,7 @@
 /* Ported SDL 1.2 code to 2.0 by Dave Airlie. */
 
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/module.h"
 #include "qemu/thread.h"
 #include "qemu/main-loop.h"
@@ -63,7 +64,7 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
-#include <SDL_vulkan.h>
+#include <SDL3/SDL_vulkan.h>
 #endif
 #ifdef _WIN32
 #include "nvapi.h"
@@ -111,7 +112,7 @@ static bool alt_grab;
 static bool ctrl_grab;
 static int gui_saved_grab;
 static int gui_fullscreen;
-static int gui_grab_code = KMOD_LALT | KMOD_LCTRL;
+static int gui_grab_code = SDL_KMOD_LALT | SDL_KMOD_LCTRL;
 static SDL_Cursor *sdl_cursor_normal;
 static SDL_Cursor *sdl_cursor_hidden;
 static int absolute_enabled;
@@ -121,7 +122,7 @@ static SDL_Cursor *guest_sprite;
 static Notifier mouse_mode_notifier;
 static SDL_Window *m_window;
 static SDL_GLContext m_context;
-static SDL_threadID sdl_render_thread_id;
+static SDL_ThreadID sdl_render_thread_id;
 // struct decal_shader *blit;
 
 static QemuSemaphore display_init_sem;
@@ -159,13 +160,13 @@ bool xemu_android_vulkan_create_surface(VkInstance instance,
     if (!g_android_direct_vulkan || !m_window || !surface) {
         return false;
     }
-    return SDL_Vulkan_CreateSurface(m_window, instance, surface) == SDL_TRUE;
+    return SDL_Vulkan_CreateSurface(m_window, instance, NULL, surface);
 }
 
 void xemu_android_vulkan_get_drawable_size(int *width, int *height)
 {
     if (g_android_direct_vulkan && m_window) {
-        SDL_Vulkan_GetDrawableSize(m_window, width, height);
+        SDL_GetWindowSizeInPixels(m_window, width, height);
         return;
     }
     if (width) {
@@ -178,7 +179,7 @@ void xemu_android_vulkan_get_drawable_size(int *width, int *height)
 
 static bool sdl2_is_render_thread(void)
 {
-    return sdl_render_thread_id != 0 && SDL_ThreadID() == sdl_render_thread_id;
+    return sdl_render_thread_id != 0 && SDL_GetCurrentThreadID() == sdl_render_thread_id;
 }
 
 static bool sdl2_gl_has_extension(const char *ext_list, const char *ext)
@@ -295,7 +296,7 @@ static void sdl2_gl_render_texture(struct sdl2_console *scon,
 
     android_log_gl_error("blit-start");
 
-    SDL_GL_GetDrawableSize(scon->real_window, &w, &h);
+    SDL_GetWindowSizeInPixels(scon->real_window, &w, &h);
     SDL_GetWindowSize(scon->real_window, &ww, &wh);
     if (w <= 0) {
         w = 1;
@@ -408,11 +409,11 @@ static void sdl_hide_cursor(struct sdl2_console *scon)
         return;
     }
 
-    SDL_ShowCursor(SDL_DISABLE);
+    SDL_HideCursor();
     SDL_SetCursor(sdl_cursor_hidden);
 
     if (!qemu_input_is_absolute(scon->dcl.con)) {
-        SDL_SetRelativeMouseMode(SDL_TRUE);
+        SDL_SetWindowRelativeMouseMode(scon->real_window, true);
     }
 }
 
@@ -423,7 +424,7 @@ static void sdl_show_cursor(struct sdl2_console *scon)
     }
 
     if (!qemu_input_is_absolute(scon->dcl.con)) {
-        SDL_SetRelativeMouseMode(SDL_FALSE);
+        SDL_SetWindowRelativeMouseMode(scon->real_window, false);
     }
 
     if (guest_cursor &&
@@ -433,7 +434,7 @@ static void sdl_show_cursor(struct sdl2_console *scon)
         SDL_SetCursor(sdl_cursor_normal);
     }
 
-    SDL_ShowCursor(SDL_ENABLE);
+    SDL_ShowCursor();
 }
 
 static void sdl_grab_start(struct sdl2_console *scon)
@@ -442,7 +443,7 @@ static void sdl_grab_start(struct sdl2_console *scon)
 
 static void sdl_grab_end(struct sdl2_console *scon)
 {
-    SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
+    SDL_SetWindowMouseGrab(scon->real_window, false);
     gui_grab = 0;
     sdl_show_cursor(scon);
     sdl_update_caption(scon);
@@ -450,7 +451,7 @@ static void sdl_grab_end(struct sdl2_console *scon)
 
 static void absolute_mouse_grab(struct sdl2_console *scon)
 {
-    int mouse_x, mouse_y;
+    float mouse_x, mouse_y;
     int scr_w, scr_h;
     SDL_GetMouseState(&mouse_x, &mouse_y);
     SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
@@ -465,7 +466,7 @@ static void sdl_mouse_mode_change(Notifier *notify, void *data)
     if (qemu_input_is_absolute(sdl2_console[0].dcl.con)) {
         if (!absolute_enabled) {
             absolute_enabled = 1;
-            SDL_SetRelativeMouseMode(SDL_FALSE);
+            SDL_SetWindowRelativeMouseMode(sdl2_console[0].real_window, false);
             absolute_mouse_grab(&sdl2_console[0]);
         }
     } else if (absolute_enabled) {
@@ -480,9 +481,9 @@ static void sdl_send_mouse_event(struct sdl2_console *scon, int dx, int dy,
                                  int x, int y, int state)
 {
     static uint32_t bmap[INPUT_BUTTON__MAX] = {
-        [INPUT_BUTTON_LEFT]       = SDL_BUTTON(SDL_BUTTON_LEFT),
-        [INPUT_BUTTON_MIDDLE]     = SDL_BUTTON(SDL_BUTTON_MIDDLE),
-        [INPUT_BUTTON_RIGHT]      = SDL_BUTTON(SDL_BUTTON_RIGHT),
+        [INPUT_BUTTON_LEFT]       = SDL_BUTTON_MASK(SDL_BUTTON_LEFT),
+        [INPUT_BUTTON_MIDDLE]     = SDL_BUTTON_MASK(SDL_BUTTON_MIDDLE),
+        [INPUT_BUTTON_RIGHT]      = SDL_BUTTON_MASK(SDL_BUTTON_RIGHT),
     };
     static uint32_t prev_state;
 
@@ -516,17 +517,29 @@ static void set_full_screen(struct sdl2_console *scon, bool set)
     gui_fullscreen = set;
 
     if (gui_fullscreen) {
-        SDL_SetWindowFullscreen(scon->real_window,
-                                (g_config.display.window.fullscreen_exclusive ?
-                                SDL_WINDOW_FULLSCREEN :
-                                SDL_WINDOW_FULLSCREEN_DESKTOP));
+        const SDL_DisplayMode *mode = NULL;
+        SDL_DisplayMode **modes = NULL;
+        if (g_config.display.window.fullscreen_exclusive) {
+            SDL_DisplayID display = SDL_GetDisplayForWindow(scon->real_window);
+            if (display) {
+                int num_modes = 0;
+                modes = SDL_GetFullscreenDisplayModes(display, &num_modes);
+                if (modes && num_modes > 0) {
+                    /* Highest resolution first, i.e. typically native. */
+                    mode = modes[0];
+                }
+            }
+        }
+        SDL_SetWindowFullscreenMode(scon->real_window, mode);
+        SDL_free(modes);
+        SDL_SetWindowFullscreen(scon->real_window, true);
         gui_saved_grab = gui_grab;
         sdl_grab_start(scon);
     } else {
         if (!gui_saved_grab) {
             sdl_grab_end(scon);
         }
-        SDL_SetWindowFullscreen(scon->real_window, 0);
+        SDL_SetWindowFullscreen(scon->real_window, false);
     }
 }
 
@@ -540,10 +553,10 @@ static int get_mod_state(void)
     SDL_Keymod mod = SDL_GetModState();
 
     if (alt_grab) {
-        return (mod & (gui_grab_code | KMOD_LSHIFT)) ==
-            (gui_grab_code | KMOD_LSHIFT);
+        return (mod & (gui_grab_code | SDL_KMOD_LSHIFT)) ==
+            (gui_grab_code | SDL_KMOD_LSHIFT);
     } else if (ctrl_grab) {
-        return (mod & KMOD_RCTRL) == KMOD_RCTRL;
+        return (mod & SDL_KMOD_RCTRL) == SDL_KMOD_RCTRL;
     } else {
         return (mod & gui_grab_code) == gui_grab_code;
     }
@@ -558,7 +571,7 @@ static void handle_keydown(SDL_Event *ev)
     int gui_keysym = 0;
 
     if (!scon->ignore_hotkeys && gui_key_modifier_pressed && !ev->key.repeat) {
-        switch (ev->key.keysym.scancode) {
+        switch (ev->key.scancode) {
         case SDL_SCANCODE_2:
         case SDL_SCANCODE_3:
         case SDL_SCANCODE_4:
@@ -571,7 +584,7 @@ static void handle_keydown(SDL_Event *ev)
                 sdl_grab_end(scon);
             }
 
-            win = ev->key.keysym.scancode - SDL_SCANCODE_1;
+            win = ev->key.scancode - SDL_SCANCODE_1;
             if (win < sdl2_num_outputs) {
                 sdl2_console[win].hidden = !sdl2_console[win].hidden;
                 if (sdl2_console[win].real_window) {
@@ -665,15 +678,15 @@ static void handle_mousebutton(SDL_Event *ev)
 
     bev = &ev->button;
     if (!gui_grab && !qemu_input_is_absolute(scon->dcl.con)) {
-        if (ev->type == SDL_MOUSEBUTTONUP && bev->button == SDL_BUTTON_LEFT) {
+        if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && bev->button == SDL_BUTTON_LEFT) {
             /* start grabbing all events */
             sdl_grab_start(scon);
         }
     } else {
-        if (ev->type == SDL_MOUSEBUTTONDOWN) {
-            buttonstate |= SDL_BUTTON(bev->button);
+        if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+            buttonstate |= SDL_BUTTON_MASK(bev->button);
         } else {
-            buttonstate &= ~SDL_BUTTON(bev->button);
+            buttonstate &= ~SDL_BUTTON_MASK(bev->button);
         }
         sdl_send_mouse_event(scon, 0, 0, bev->x, bev->y, buttonstate);
     }
@@ -712,8 +725,8 @@ static void handle_windowevent(SDL_Event *ev)
         return;
     }
 
-    switch (ev->window.event) {
-    case SDL_WINDOWEVENT_RESIZED:
+    switch (ev->type) {
+    case SDL_EVENT_WINDOW_RESIZED:
         {
             QemuUIInfo info;
             memset(&info, 0, sizeof(info));
@@ -728,11 +741,11 @@ static void handle_windowevent(SDL_Event *ev)
         }
         sdl2_redraw(scon);
         break;
-    case SDL_WINDOWEVENT_EXPOSED:
+    case SDL_EVENT_WINDOW_EXPOSED:
         sdl2_redraw(scon);
         break;
-    case SDL_WINDOWEVENT_FOCUS_GAINED:
-    case SDL_WINDOWEVENT_ENTER:
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+    case SDL_EVENT_WINDOW_MOUSE_ENTER:
         if (!gui_grab && (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {
             absolute_mouse_grab(scon);
         }
@@ -745,26 +758,26 @@ static void handle_windowevent(SDL_Event *ev)
          */
         scon->ignore_hotkeys = get_mod_state();
         break;
-    case SDL_WINDOWEVENT_FOCUS_LOST:
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
         if (gui_grab && !gui_fullscreen) {
             sdl_grab_end(scon);
         }
         break;
-    case SDL_WINDOWEVENT_RESTORED:
+    case SDL_EVENT_WINDOW_RESTORED:
 #ifdef __ANDROID__
         g_android_paused = false;
         __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                             "android: window restored");
 #endif
         break;
-    case SDL_WINDOWEVENT_MINIMIZED:
+    case SDL_EVENT_WINDOW_MINIMIZED:
 #ifdef __ANDROID__
         g_android_paused = true;
         __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                             "android: window minimized");
 #endif
         break;
-    case SDL_WINDOWEVENT_CLOSE:
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
         if (qemu_console_is_graphic(scon->dcl.con)) {
             if (scon->opts->has_window_close && !scon->opts->window_close) {
                 allow_close = false;
@@ -783,7 +796,7 @@ static void handle_windowevent(SDL_Event *ev)
             scon->hidden = true;
         }
         break;
-    case SDL_WINDOWEVENT_SHOWN:
+    case SDL_EVENT_WINDOW_SHOWN:
         scon->hidden = false;
 #ifdef __ANDROID__
         g_android_paused = false;
@@ -791,7 +804,7 @@ static void handle_windowevent(SDL_Event *ev)
                             "android: window shown");
 #endif
         break;
-    case SDL_WINDOWEVENT_HIDDEN:
+    case SDL_EVENT_WINDOW_HIDDEN:
         scon->hidden = true;
 #ifdef __ANDROID__
         g_android_paused = true;
@@ -822,19 +835,19 @@ void sdl2_poll_events(struct sdl2_console *scon)
         xemu_input_process_sdl_events(ev);
 
         switch (ev->type) {
-        case SDL_KEYDOWN:
+        case SDL_EVENT_KEY_DOWN:
             if (kbd) break;
             handle_keydown(ev);
             break;
-        case SDL_KEYUP:
+        case SDL_EVENT_KEY_UP:
             if (kbd) break;
             handle_keyup(ev);
             break;
-        case SDL_TEXTINPUT:
+        case SDL_EVENT_TEXT_INPUT:
             if (kbd) break;
             handle_textinput(ev);
             break;
-        case SDL_QUIT:
+        case SDL_EVENT_QUIT:
             if (scon->opts->has_window_close && !scon->opts->window_close) {
                 allow_close = false;
             }
@@ -844,48 +857,49 @@ void sdl2_poll_events(struct sdl2_console *scon)
 #ifdef __ANDROID__
                 g_android_should_quit = true;
                 __android_log_print(ANDROID_LOG_INFO, "xemu-android",
-                                    "android: SDL_QUIT");
+                                    "android: SDL_EVENT_QUIT");
 #endif
             }
             break;
 #ifdef __ANDROID__
-        case SDL_APP_TERMINATING:
+        case SDL_EVENT_TERMINATING:
             g_android_should_quit = true;
             bdrv_flush_all();
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                 "android: app terminating, flushed");
             break;
-        case SDL_APP_WILLENTERBACKGROUND:
+        case SDL_EVENT_WILL_ENTER_BACKGROUND:
             g_android_paused = true;
             bdrv_flush_all();
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                 "android: app background, flushed");
             break;
-        case SDL_APP_DIDENTERBACKGROUND:
-        case SDL_APP_WILLENTERFOREGROUND:
-        case SDL_APP_DIDENTERFOREGROUND:
+        case SDL_EVENT_DID_ENTER_BACKGROUND:
+        case SDL_EVENT_WILL_ENTER_FOREGROUND:
+        case SDL_EVENT_DID_ENTER_FOREGROUND:
             g_android_paused = false;
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                 "android: app foreground");
             break;
 #endif
-        case SDL_MOUSEMOTION:
+        case SDL_EVENT_MOUSE_MOTION:
             if (mouse) break;
             handle_mousemotion(ev);
             break;
-        case SDL_MOUSEBUTTONDOWN:
-        case SDL_MOUSEBUTTONUP:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
             if (mouse) break;
             handle_mousebutton(ev);
             break;
-        case SDL_MOUSEWHEEL:
+        case SDL_EVENT_MOUSE_WHEEL:
             if (mouse) break;
             handle_mousewheel(ev);
             break;
-        case SDL_WINDOWEVENT:
-            handle_windowevent(ev);
-            break;
         default:
+            if (ev->type >= SDL_EVENT_WINDOW_FIRST &&
+                ev->type <= SDL_EVENT_WINDOW_LAST) {
+                handle_windowevent(ev);
+            }
             break;
         }
     }
@@ -927,16 +941,16 @@ static void sdl_mouse_define(DisplayChangeListener *dcl,
 {
 
     if (guest_sprite) {
-        SDL_FreeCursor(guest_sprite);
+        SDL_DestroyCursor(guest_sprite);
     }
 
     if (guest_sprite_surface) {
-        SDL_FreeSurface(guest_sprite_surface);
+        SDL_DestroySurface(guest_sprite_surface);
     }
 
     guest_sprite_surface =
-        SDL_CreateRGBSurfaceFrom(c->data, c->width, c->height, 32, c->width * 4,
-                                 0xff0000, 0x00ff00, 0xff, 0xff000000);
+        SDL_CreateSurfaceFrom(c->width, c->height, SDL_PIXELFORMAT_ARGB8888,
+                              c->data, c->width * 4);
 
     if (!guest_sprite_surface) {
         fprintf(stderr, "Failed to make rgb surface from %p\n", c);
@@ -980,18 +994,20 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
      * This is a bit hackish but saves us from bigger problem.
      * Maybe it's a good idea to fix this in SDL instead.
      */
-    setenv("SDL_VIDEODRIVER", "x11", 0);
+    setenv("SDL_VIDEO_DRIVER", "x11", 0);
 #endif
 
 #ifdef __ANDROID__
-    const char *audio_env = SDL_getenv("SDL_AUDIODRIVER");
-    const char *audio_hint = SDL_GetHint(SDL_HINT_AUDIODRIVER);
+    const char *audio_env = SDL_getenv("SDL_AUDIO_DRIVER");
+    const char *audio_hint = SDL_GetHint(SDL_HINT_AUDIO_DRIVER);
     if ((!audio_env || !audio_env[0]) &&
         (!audio_hint || !audio_hint[0])) {
-        SDL_SetHintWithPriority(SDL_HINT_AUDIODRIVER,
-                                "openslES,android,dummy",
+        /* SDL3 dropped the Java "android" backend; AAudio is the fast path
+         * and OpenSL ES is the fallback for old/odd devices. */
+        SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER,
+                                "aaudio,openslES,dummy",
                                 SDL_HINT_DEFAULT);
-        audio_hint = SDL_GetHint(SDL_HINT_AUDIODRIVER);
+        audio_hint = SDL_GetHint(SDL_HINT_AUDIO_DRIVER);
     }
     __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                         "SDL audio env=%s hint=%s",
@@ -999,7 +1015,7 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
                         (audio_hint && audio_hint[0]) ? audio_hint : "(unset)");
 #endif
 
-    if (SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "Failed to initialize SDL video subsystem: %s\n",
                 SDL_GetError());
         exit(1);
@@ -1008,7 +1024,6 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR /* only available since SDL 2.0.8 */
     SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
 #endif
-    SDL_SetHint(SDL_HINT_GRAB_KEYBOARD, "1");
     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
 
     // Initialize rendering context
@@ -1045,7 +1060,6 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     int min_window_height = 480;
     int window_width = min_window_width;
     int window_height = min_window_height;
-    SDL_DisplayMode disp_mode;
 
     const int res_table[][2] = {
         {640,  480},
@@ -1081,12 +1095,14 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
      * into the "display smaller than requested window" path and clamps the SDL
      * window to 640x480, which is exactly the bottom-left tiny box symptom.
      */
-    if (SDL_GetCurrentDisplayMode(0, &disp_mode) == 0) {
-        if (disp_mode.w > 0) {
-            window_width = disp_mode.w;
+    const SDL_DisplayMode *primary_mode =
+        SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+    if (primary_mode) {
+        if (primary_mode->w > 0) {
+            window_width = primary_mode->w;
         }
-        if (disp_mode.h > 0) {
-            window_height = disp_mode.h;
+        if (primary_mode->h > 0) {
+            window_height = primary_mode->h;
         }
     }
 #endif
@@ -1106,18 +1122,17 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     }
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(
         (g_android_direct_vulkan ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) |
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 #else
     bool use_vulkan = (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN);
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(
         (use_vulkan ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) | 
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 #endif
 
     // Create main window
-    m_window = SDL_CreateWindow(
-        title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width, window_height,
-        window_flags);
+    m_window = SDL_CreateWindow(title, window_width, window_height,
+                                window_flags);
     if (m_window == NULL) {
         fprintf(stderr, "Failed to create main window\n");
         SDL_Quit();
@@ -1126,11 +1141,14 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     g_free(title);
     SDL_SetWindowMinimumSize(m_window, min_window_width, min_window_height);
 
-    SDL_GetCurrentDisplayMode(SDL_GetWindowDisplayIndex(m_window), &disp_mode);
 #ifndef __ANDROID__
-    if (disp_mode.w < window_width || disp_mode.h < window_height) {
+    const SDL_DisplayMode *disp_mode =
+        SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(m_window));
+    if (disp_mode && (disp_mode->w < window_width ||
+                      disp_mode->h < window_height)) {
         SDL_SetWindowSize(m_window, min_window_width, min_window_height);
-        SDL_SetWindowPosition(m_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        SDL_SetWindowPosition(m_window, SDL_WINDOWPOS_CENTERED,
+                              SDL_WINDOWPOS_CENTERED);
     }
 #endif
 
@@ -1144,7 +1162,7 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 #ifndef __ANDROID__
         if (m_context != NULL && epoxy_gl_version() < 40) {
             SDL_GL_MakeCurrent(NULL, NULL);
-            SDL_GL_DeleteContext(m_context);
+            SDL_GL_DestroyContext(m_context);
             m_context = NULL;
         }
 #endif
@@ -1172,7 +1190,7 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
             exit(1);
         }
 
-        if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+        if (!SDL_GL_MakeCurrent(m_window, m_context)) {
             fprintf(stderr, "Failed to make GL context current: %s\n", SDL_GetError());
             SDL_DestroyWindow(m_window);
             SDL_Quit();
@@ -1194,8 +1212,8 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
     stbi_set_flip_vertically_on_load(0);
     unsigned char *icon_data = stbi_load_from_memory(xemu_64x64_data, xemu_64x64_size, &width, &height, &channels, 4);
     if (icon_data) {
-        SDL_Surface *icon = SDL_CreateRGBSurfaceFrom(icon_data, width, height, 32, width*4,
-            0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+        SDL_Surface *icon = SDL_CreateSurfaceFrom(
+            width, height, SDL_PIXELFORMAT_ABGR8888, icon_data, width * 4);
         if (icon) {
             SDL_SetWindowIcon(m_window, icon);
         }
@@ -1280,7 +1298,6 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
 {
     uint8_t data = 0;
     int i;
-    SDL_SysWMinfo info;
 
     assert(o->type == DISPLAY_TYPE_XEMU);
 #ifdef __ANDROID__
@@ -1289,9 +1306,6 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
 #else
     SDL_GL_MakeCurrent(m_window, m_context);
 #endif
-
-    memset(&info, 0, sizeof(info));
-    SDL_VERSION(&info.version);
 
     gui_fullscreen = o->has_full_screen && o->full_screen;
 
@@ -1331,13 +1345,19 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
         sdl2_console[i].kbd = qkbd_state_init(con);
         register_displaychangelistener(&sdl2_console[i].dcl);
 
-#if defined(SDL_VIDEO_DRIVER_WINDOWS) || defined(SDL_VIDEO_DRIVER_X11)
-        if (SDL_GetWindowWMInfo(sdl2_console[i].real_window, &info)) {
 #if defined(SDL_VIDEO_DRIVER_WINDOWS)
-            qemu_console_set_window_id(con, (uintptr_t)info.info.win.window);
+        HWND hwnd = (HWND)SDL_GetPointerProperty(
+            SDL_GetWindowProperties(sdl2_console[i].real_window),
+            SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+        if (hwnd) {
+            qemu_console_set_window_id(con, (uintptr_t)hwnd);
+        }
 #elif defined(SDL_VIDEO_DRIVER_X11)
-            qemu_console_set_window_id(con, info.info.x11.window);
-#endif
+        Window xwindow = (Window)SDL_GetNumberProperty(
+            SDL_GetWindowProperties(sdl2_console[i].real_window),
+            SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+        if (xwindow) {
+            qemu_console_set_window_id(con, xwindow);
         }
 #endif
     }
@@ -1391,10 +1411,10 @@ void xemu_android_display_preinit(void)
         return;
     }
     initialized = true;
-    sdl_render_thread_id = SDL_ThreadID();
+    sdl_render_thread_id = SDL_GetCurrentThreadID();
     sdl2_display_very_early_init(NULL);
     if (!g_android_direct_vulkan &&
-        SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+        !SDL_GL_MakeCurrent(m_window, m_context)) {
 #ifdef __ANDROID__
         __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
                             "xemu_android_display_preinit: make current failed: %s",
@@ -1435,11 +1455,11 @@ void xemu_android_display_loop(void)
                         "xemu_android_display_loop: start");
 #endif
     if (sdl_render_thread_id == 0) {
-        sdl_render_thread_id = SDL_ThreadID();
+        sdl_render_thread_id = SDL_GetCurrentThreadID();
     }
     if (!g_android_direct_vulkan &&
         SDL_GL_GetCurrentContext() != m_context) {
-        if (SDL_GL_MakeCurrent(m_window, m_context) != 0) {
+        if (!SDL_GL_MakeCurrent(m_window, m_context)) {
 #ifdef __ANDROID__
             __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
                                 "xemu_android_display_loop: make current failed: %s",
@@ -1735,7 +1755,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
         return;
     }
 #endif
-    if (SDL_GL_MakeCurrent(scon->real_window, scon->winctx) != 0 ||
+    if (!SDL_GL_MakeCurrent(scon->real_window, scon->winctx) ||
         SDL_GL_GetCurrentContext() == NULL) {
 #ifdef __ANDROID__
         __android_log_print(ANDROID_LOG_ERROR, "xemu-android",
@@ -2004,7 +2024,7 @@ void sdl2_gl_destroy_context(DisplayChangeListener *dcl, QEMUGLContext ctx)
 {
     SDL_GLContext sdlctx = (SDL_GLContext)ctx;
 
-    SDL_GL_DeleteContext(sdlctx);
+    SDL_GL_DestroyContext(sdlctx);
 }
 
 int sdl2_gl_make_context_current(DisplayChangeListener *dcl,
@@ -2059,11 +2079,11 @@ void sdl2_process_key(struct sdl2_console *scon,
 {
     int qcode;
 
-    if (ev->keysym.scancode >= qemu_input_map_usb_to_qcode_len) {
+    if (ev->scancode >= qemu_input_map_usb_to_qcode_len) {
         return;
     }
-    qcode = qemu_input_map_usb_to_qcode[ev->keysym.scancode];
-    qkbd_state_key_event(scon->kbd, qcode, ev->type == SDL_KEYDOWN);
+    qcode = qemu_input_map_usb_to_qcode[ev->scancode];
+    qkbd_state_key_event(scon->kbd, qcode, ev->type == SDL_EVENT_KEY_DOWN);
 }
 
 int gArgc;

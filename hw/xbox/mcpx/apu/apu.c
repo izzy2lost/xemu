@@ -320,10 +320,13 @@ static void monitor_fill_underrun(const int16_t start_sample[2], uint8_t *stream
     }
 }
 
-static void monitor_sink_cb(void *opaque, uint8_t *stream, int free_b)
+/*
+ * Fill @stream with @free_b bytes of audio, exactly as the SDL2 push callback
+ * used to. SDL3 hands us a stream to feed rather than a buffer to fill, so
+ * monitor_sink_cb() below stages into a scratch buffer and hands that over.
+ */
+static void monitor_sink_fill(MCPXAPUState *s, uint8_t *stream, int free_b)
 {
-    MCPXAPUState *s = MCPX_APU_DEVICE(opaque);
-
     if (!runstate_is_running()) {
         memset(stream, 0, free_b);
         return;
@@ -388,6 +391,29 @@ static void monitor_sink_cb(void *opaque, uint8_t *stream, int free_b)
     qemu_cond_broadcast(&s->cond);
 }
 
+static void monitor_sink_cb(void *userdata, SDL_AudioStream *stream,
+                            int additional_amount, int total_amount)
+{
+    MCPXAPUState *s = MCPX_APU_DEVICE(userdata);
+
+    if (additional_amount <= 0) {
+        return;
+    }
+
+    /*
+     * Grown on demand and kept between callbacks. SDL only ever runs this
+     * callback from the single audio thread that owns the stream, so no
+     * locking is needed around the scratch buffer.
+     */
+    if (additional_amount > s->monitor.sink_buf_size) {
+        s->monitor.sink_buf = g_realloc(s->monitor.sink_buf, additional_amount);
+        s->monitor.sink_buf_size = additional_amount;
+    }
+
+    monitor_sink_fill(s, s->monitor.sink_buf, additional_amount);
+    SDL_PutAudioStreamData(stream, s->monitor.sink_buf, additional_amount);
+}
+
 static void monitor_init(MCPXAPUState *d)
 {
     qemu_spin_init(&d->monitor.fifo_lock);
@@ -398,6 +424,9 @@ static void monitor_init(MCPXAPUState *d)
     d->monitor.last_output_sample[0] = 0;
     d->monitor.last_output_sample[1] = 0;
     d->monitor.resume_fade_pending = false;
+    d->monitor.stream = NULL;
+    d->monitor.sink_buf = NULL;
+    d->monitor.sink_buf_size = 0;
 
     int fifo_frames = 3;
     int audio_samples = 512;
@@ -413,44 +442,64 @@ static void monitor_init(MCPXAPUState *d)
     int fifo_capacity_bytes = fifo_frames * sizeof(d->monitor.frame_buf);
     fifo8_create(&d->monitor.fifo, fifo_capacity_bytes);
 
-    struct SDL_AudioSpec sdl_audio_spec = {
+    SDL_AudioSpec sdl_audio_spec = {
         .freq = 48000,
-        .format = AUDIO_S16LSB,
+        .format = SDL_AUDIO_S16LE,
         .channels = 2,
-        .samples = audio_samples,
-        .callback = monitor_sink_cb,
-        .userdata = d,
     };
 
-    if (SDL_Init(SDL_INIT_AUDIO) < 0)  {
+    if (!SDL_Init(SDL_INIT_AUDIO))  {
         fprintf(stderr, "WARNING: Failed to initialize SDL audio subsystem: %s\n",
                 SDL_GetError());
         return;
     }
 
-    SDL_AudioDeviceID sdl_audio_dev;
-    SDL_AudioSpec obtained_audio_spec;
-    sdl_audio_dev = SDL_OpenAudioDevice(NULL, 0, &sdl_audio_spec,
-                                        &obtained_audio_spec, 0);
-    if (sdl_audio_dev == 0) {
-        fprintf(stderr, "WARNING: SDL_OpenAudioDevice failed: %s\n",
+    /*
+     * SDL3 chooses the device period itself; the SDL2 `samples` request is
+     * gone. Ask for the buffer size we want via the hint that the AAudio and
+     * OpenSL ES backends both honour, then read back what we actually got.
+     */
+    char samples_hint[16];
+    snprintf(samples_hint, sizeof(samples_hint), "%d", audio_samples);
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, samples_hint);
+
+    d->monitor.stream = SDL_OpenAudioDeviceStream(
+        SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &sdl_audio_spec, monitor_sink_cb, d);
+    if (d->monitor.stream == NULL) {
+        fprintf(stderr, "WARNING: SDL_OpenAudioDeviceStream failed: %s\n",
                 SDL_GetError());
         return;
     }
 
-    int bytes_per_sample = SDL_AUDIO_BITSIZE(obtained_audio_spec.format) / 8;
-    if (bytes_per_sample <= 0) {
-        bytes_per_sample = SDL_AUDIO_BITSIZE(sdl_audio_spec.format) / 8;
+    SDL_AudioDeviceID sdl_audio_dev = SDL_GetAudioStreamDevice(d->monitor.stream);
+
+    SDL_AudioSpec obtained_audio_spec = sdl_audio_spec;
+    int obtained_frames = audio_samples;
+    if (!SDL_GetAudioDeviceFormat(sdl_audio_dev, &obtained_audio_spec,
+                                  &obtained_frames)) {
+        obtained_audio_spec = sdl_audio_spec;
+        obtained_frames = audio_samples;
     }
-    if (bytes_per_sample <= 0) {
-        bytes_per_sample = 2;
+
+    /*
+     * The FIFO and the callback both work in *our* stream format (48 kHz S16
+     * stereo); SDL3 converts to whatever the device wants behind the stream.
+     * So express the device period in stream frames before turning it into
+     * bytes, otherwise a device running at e.g. 44.1 kHz float32 would give
+     * watermarks in the wrong units.
+     */
+    int stream_bytes_per_frame =
+        sdl_audio_spec.channels * (SDL_AUDIO_BITSIZE(sdl_audio_spec.format) / 8);
+
+    int period_frames = audio_samples;
+    if (obtained_frames > 0 && obtained_audio_spec.freq > 0) {
+        period_frames = (int)((int64_t)obtained_frames * sdl_audio_spec.freq /
+                              obtained_audio_spec.freq);
     }
-    int device_buffer_bytes = obtained_audio_spec.samples *
-                              obtained_audio_spec.channels *
-                              bytes_per_sample;
+
+    int device_buffer_bytes = period_frames * stream_bytes_per_frame;
     if (device_buffer_bytes <= 0) {
-        device_buffer_bytes = audio_samples * sdl_audio_spec.channels *
-                              bytes_per_sample;
+        device_buffer_bytes = audio_samples * stream_bytes_per_frame;
     }
 
     int frame_bytes = sizeof(d->monitor.frame_buf);
@@ -466,7 +515,8 @@ static void monitor_init(MCPXAPUState *d)
     d->monitor.queued_bytes_low = MIN(drain_bytes, d->monitor.queued_bytes_high);
 #endif
 
-    SDL_PauseAudioDevice(sdl_audio_dev, 0);
+    /* SDL3 opens device streams paused. */
+    SDL_ResumeAudioDevice(sdl_audio_dev);
 }
 
 static void mcpx_apu_realize(PCIDevice *dev, Error **errp)
@@ -500,6 +550,11 @@ static void mcpx_apu_exitfn(PCIDevice *dev)
     qemu_cond_broadcast(&d->cond);
     qemu_thread_join(&d->apu_thread);
     mcpx_apu_vp_finalize(d);
+    SDL_DestroyAudioStream(d->monitor.stream);
+    d->monitor.stream = NULL;
+    g_free(d->monitor.sink_buf);
+    d->monitor.sink_buf = NULL;
+    d->monitor.sink_buf_size = 0;
 }
 
 static void mcpx_apu_reset(MCPXAPUState *d)
