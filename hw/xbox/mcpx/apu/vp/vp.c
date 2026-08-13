@@ -1669,6 +1669,9 @@ static void get_voice_bin_src_dst(MCPXAPUState *d, int v,
     }
 }
 
+static bool voice_try_begin_processing(MCPXAPUState *d, int v);
+static void voice_finish_processing(MCPXAPUState *d, int v);
+
 static void *voice_worker_thread(void *arg)
 {
     MCPXAPUState *d = arg;
@@ -1694,8 +1697,13 @@ static void *voice_worker_thread(void *arg)
                 memset(self->sample_buf, 0, sizeof(self->sample_buf));
             }
             for (int i = 0; i < self->queue_len; i++) {
-                voice_process(d, self->mixbins, self->sample_buf,
-                              self->queue[i].voice, self->queue[i].list);
+                int v = self->queue[i].voice;
+                if (!voice_try_begin_processing(d, v)) {
+                    continue;
+                }
+                voice_process(d, self->mixbins, self->sample_buf, v,
+                              self->queue[i].list);
+                voice_finish_processing(d, v);
             }
 
             qemu_mutex_lock(&vwd->lock);
@@ -1731,15 +1739,43 @@ static void *voice_worker_thread(void *arg)
     return NULL;
 }
 
-static void voice_work_acquire_voice_lock_for_processing(MCPXAPUState *d, int v)
+/*
+ * Take exclusive access to one voice for the duration of voice_process().
+ *
+ * Previously every queued voice's spinlock was acquired at *enqueue* time and
+ * held until the whole frame's processing finished. The guest hits the same
+ * spinlocks from its MMIO handler (NV1BA0_PIO_VOICE_LOCK / VOICE_ON /
+ * VOICE_RELEASE via fe_method), so it was busy-waiting on a spinlock held
+ * across milliseconds of DSP work -- 9.8% of the guest CPU thread, spent
+ * spinning, while holding the BQL and therefore stalling the whole emulator.
+ *
+ * Now the lock is only held around the one voice actually being processed, so
+ * the guest blocks only if it touches the exact voice a worker has in hand
+ * right now, for as long as that single voice takes.
+ *
+ * Returns false if the guest currently owns the voice, in which case it is
+ * skipped for this frame. That matches the hardware: the lock exists so the
+ * guest can reconfigure a voice without the DSP reading half-written state,
+ * and real hardware runs in real time rather than stalling its audio frame
+ * waiting for the CPU to let go.
+ */
+static bool voice_try_begin_processing(MCPXAPUState *d, int v)
 {
-    qemu_spin_lock(&d->vp.voice_spinlocks[v]);
-    while (is_voice_locked(d, v)) {
-        /* Stall until voice is available */
-        qemu_spin_unlock(&d->vp.voice_spinlocks[v]);
-        qemu_cond_wait(&d->cond, &d->lock);
-        qemu_spin_lock(&d->vp.voice_spinlocks[v]);
+    if (is_voice_locked(d, v)) {
+        return false;
     }
+    qemu_spin_lock(&d->vp.voice_spinlocks[v]);
+    /* Re-check under the lock: the guest may have claimed it in between. */
+    if (is_voice_locked(d, v)) {
+        qemu_spin_unlock(&d->vp.voice_spinlocks[v]);
+        return false;
+    }
+    return true;
+}
+
+static void voice_finish_processing(MCPXAPUState *d, int v)
+{
+    qemu_spin_unlock(&d->vp.voice_spinlocks[v]);
 }
 
 static void voice_work_enqueue(MCPXAPUState *d, int v, int list)
@@ -1751,17 +1787,6 @@ static void voice_work_enqueue(MCPXAPUState *d, int v, int list)
         .voice = v,
         .list = list,
     };
-
-    voice_work_acquire_voice_lock_for_processing(d, v);
-}
-
-static void voice_work_release_voice_locks(MCPXAPUState *d)
-{
-    VoiceWorkDispatch *vwd = &d->vp.voice_work_dispatch;
-
-    for (int i = 0; i < vwd->queue_len; i++) {
-        qemu_spin_unlock(&d->vp.voice_spinlocks[vwd->queue[i].voice]);
-    }
 }
 
 static void voice_work_schedule(MCPXAPUState *d)
@@ -1834,11 +1859,15 @@ voice_work_dispatch(MCPXAPUState *d,
             }
 
             for (int i = 0; i < vwd->queue_len; i++) {
-                voice_process(d, worker->mixbins, worker->sample_buf,
-                              vwd->queue[i].voice, vwd->queue[i].list);
+                int v = vwd->queue[i].voice;
+                if (!voice_try_begin_processing(d, v)) {
+                    continue;
+                }
+                voice_process(d, worker->mixbins, worker->sample_buf, v,
+                              vwd->queue[i].list);
+                voice_finish_processing(d, v);
             }
 
-            voice_work_release_voice_locks(d);
             vwd->queue_len = 0;
 
             for (int b = 0; b < NUM_MIXBINS; b++) {
@@ -1868,7 +1897,6 @@ voice_work_dispatch(MCPXAPUState *d,
         qemu_cond_broadcast(&vwd->work_pending);
         qemu_cond_wait(&vwd->work_finished, &vwd->lock);
         assert(!vwd->workers_pending);
-        voice_work_release_voice_locks(d);
         vwd->queue_len = 0;
 
         // Add voice contributions
