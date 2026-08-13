@@ -109,9 +109,35 @@ static void voice_set_mask(MCPXAPUState *d, uint16_t voice_handle,
 {
     hwaddr voice = d->regs[NV_PAPU_VPVADDR]
                     + voice_handle * NV_PAVS_SIZE;
-    uint32_t v = apu_ldl_le(d, voice + offset) & ~mask;
-    stl_le_phys(&address_space_memory, voice + offset,
-                v | ((val << ctz32(mask)) & mask));
+    uint32_t old = apu_ldl_le(d, voice + offset);
+    uint32_t new_val = (old & ~mask) | ((val << ctz32(mask)) & mask);
+
+    /*
+     * Skip the store when nothing actually changes. voice_step_envelope()
+     * runs twice per voice per frame and re-writes the same bits every frame
+     * for any voice sitting in a steady envelope state -- OFF rewrites
+     * ECNT=0 / level=0xFF, DELAY rewrites level=0x00, HOLD rewrites
+     * level=0xFF, and so on.
+     *
+     * That matters because the store is expensive out of all proportion to
+     * its size: call-graph profiling of a Forza race attributed 69-79% of all
+     * APU guest-memory writes to voice_step_envelope, and ~64% of each write's
+     * cost was invalidate_and_set_dirty() -> physical_memory_range_includes_clean()
+     * -> physical_memory_all_dirty(), not the store itself. This fork tracks
+     * DIRTY_MEMORY_NV2A and NV2A_TEX on top of VGA/CODE/MIGRATION, so every
+     * word written to guest RAM walks all of them.
+     *
+     * Eliding a write that would not change memory is safe for every one of
+     * those consumers: dirty tracking exists to find *changes*, and anything
+     * caching a view of these bytes remains valid if the bytes are identical.
+     * The read is already cheap (cached host pointer via apu_ldl_le) and was
+     * being done anyway for the read-modify-write.
+     */
+    if (new_val == old) {
+        return;
+    }
+
+    stl_le_phys(&address_space_memory, voice + offset, new_val);
 }
 
 static void voice_off(MCPXAPUState *d, uint16_t v)

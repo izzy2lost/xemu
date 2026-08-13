@@ -26,6 +26,7 @@
   <string name="setup_flash_value">Flash ROM: %1$s</string>
   <string name="setup_flash_copy_failed">Failed to copy flash ROM</string>
   <string name="setup_flash_invalid_mcpx">%1$s looks like the MCPX boot ROM, not a BIOS. Pick a flash ROM / BIOS image instead.</string>
+  <string name="setup_flash_invalid_size">%1$s is %2$s, which is not a valid BIOS size. An Xbox flash ROM is 256 KB, 512 KB or 1 MB — this looks like a different file (an eeprom.bin is only 256 bytes).</string>
 
   <string name="setup_hdd_title">Hard Disk</string>
   <string name="setup_hdd_body">Choose your Xbox hard disk image.</string>

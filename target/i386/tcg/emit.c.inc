@@ -911,14 +911,99 @@ static void gen_##uname(DisasContext *s, X86DecodedInsn *decode)                
                           gen_helper_##lname##_xmm,                                \
                           gen_helper_##lname##_ymm);                               \
 }
-BINARY_INT_MMX(PUNPCKLBW,  punpcklbw)
-BINARY_INT_MMX(PUNPCKLWD,  punpcklwd)
-BINARY_INT_MMX(PUNPCKLDQ,  punpckldq)
+
+/*
+ * An MMX register is exactly 64 bits, so it fits in a single host register and
+ * the pure-permutation MMX ops can be emitted inline instead of calling a
+ * helper. The helper path costs a call plus a byte-at-a-time loop through
+ * memory; inline this becomes a handful of shifts and deposits (BFI on
+ * aarch64). Only the 64-bit MMX forms are handled here -- the 128/256-bit
+ * SSE/AVX forms still go through the helpers, where a scalar expansion would
+ * not pay off.
+ *
+ * Measured on Fable/Pixel 10a, punpcklwd+punpcklbw alone were 11.4% of the
+ * (frame-limiting) guest CPU thread before this.
+ */
+static void gen_mmx_ld_i64(TCGv_i64 v, X86DecodedInsn *decode, int opn)
+{
+    tcg_gen_ld_i64(v, tcg_env, vector_reg_offset(&decode->op[opn]));
+}
+
+static void gen_mmx_st_i64(TCGv_i64 v, X86DecodedInsn *decode, int opn)
+{
+    tcg_gen_st_i64(v, tcg_env, vector_reg_offset(&decode->op[opn]));
+}
+
+/*
+ * PUNPCK{L,H}{BW,WD,DQ} on MMX: interleave the low (or high) half of the
+ * elements of op1 and op2, i.e. d = [v[k], s[k], v[k+1], s[k+1], ...] with
+ * k = 0 for the low forms and k = n/2 for the high forms.
+ *
+ * Both sources are read into temporaries before the destination is written,
+ * so d aliasing either source is safe.
+ */
+static void gen_mmx_punpck(X86DecodedInsn *decode, unsigned esz, bool high)
+{
+    unsigned n = 64 / esz;
+    TCGv_i64 v = tcg_temp_new_i64();
+    TCGv_i64 s = tcg_temp_new_i64();
+    TCGv_i64 d = tcg_temp_new_i64();
+    TCGv_i64 t = tcg_temp_new_i64();
+
+    gen_mmx_ld_i64(v, decode, 1);
+    gen_mmx_ld_i64(s, decode, 2);
+
+    /* Bring the half we are interleaving down to element 0 of each source. */
+    if (high) {
+        tcg_gen_shri_i64(v, v, (n / 2) * esz);
+        tcg_gen_shri_i64(s, s, (n / 2) * esz);
+    }
+
+    /*
+     * Element 0 of the result is already element 0 of v; every later element
+     * is deposited over the leftover bits, so no masking is needed.
+     */
+    tcg_gen_mov_i64(d, v);
+    for (unsigned i = 0; i < n / 2; i++) {
+        if (i != 0) {
+            tcg_gen_shri_i64(t, v, i * esz);
+            tcg_gen_deposit_i64(d, d, t, 2 * i * esz, esz);
+        }
+        tcg_gen_shri_i64(t, s, i * esz);
+        tcg_gen_deposit_i64(d, d, t, (2 * i + 1) * esz, esz);
+    }
+
+    gen_mmx_st_i64(d, decode, 0);
+}
+
+/* Same dispatch as gen_binary_int_sse(), but inlining the MMX case. */
+#define BINARY_INT_MMX_PUNPCK(uname, lname, esz, high)                             \
+static void gen_##uname(DisasContext *s, X86DecodedInsn *decode)                   \
+{                                                                                  \
+    assert(decode->e.special == X86_SPECIAL_MMX);                                  \
+    if (!(s->prefix & PREFIX_DATA)) {                                              \
+        if (s->prefix & PREFIX_VEX) {                                              \
+            /* VEX encoding is not applicable to MMX instructions.  */             \
+            gen_illegal_opcode(s);                                                 \
+            return;                                                                \
+        }                                                                          \
+        gen_mmx_punpck(decode, esz, high);                                         \
+    } else if (!s->vex_l) {                                                        \
+        gen_helper_##lname##_xmm(tcg_env, OP_PTR0, OP_PTR1, OP_PTR2);              \
+    } else {                                                                       \
+        gen_helper_##lname##_ymm(tcg_env, OP_PTR0, OP_PTR1, OP_PTR2);              \
+    }                                                                              \
+}
+
+BINARY_INT_MMX_PUNPCK(PUNPCKLBW,  punpcklbw,  8, false)
+BINARY_INT_MMX_PUNPCK(PUNPCKLWD,  punpcklwd, 16, false)
+BINARY_INT_MMX_PUNPCK(PUNPCKLDQ,  punpckldq, 32, false)
+BINARY_INT_MMX_PUNPCK(PUNPCKHBW,  punpckhbw,  8, true)
+BINARY_INT_MMX_PUNPCK(PUNPCKHWD,  punpckhwd, 16, true)
+BINARY_INT_MMX_PUNPCK(PUNPCKHDQ,  punpckhdq, 32, true)
+
 BINARY_INT_MMX(PACKSSWB,   packsswb)
 BINARY_INT_MMX(PACKUSWB,   packuswb)
-BINARY_INT_MMX(PUNPCKHBW,  punpckhbw)
-BINARY_INT_MMX(PUNPCKHWD,  punpckhwd)
-BINARY_INT_MMX(PUNPCKHDQ,  punpckhdq)
 BINARY_INT_MMX(PACKSSDW,   packssdw)
 
 BINARY_INT_MMX(PAVGB,   pavgb)
@@ -3101,10 +3186,40 @@ static void gen_POPF(DisasContext *s, X86DecodedInsn *decode)
     s->base.is_jmp = DISAS_EOB_NEXT;
 }
 
+/*
+ * PSHUFW is MMX-only and the selector is an immediate, so the permutation is
+ * fully known at translation time: emit it as at most three shift+deposit
+ * pairs rather than calling a helper. d->W(i) = s->W((order >> 2i) & 3).
+ */
 static void gen_PSHUFW(DisasContext *s, X86DecodedInsn *decode)
 {
-    TCGv_i32 imm = tcg_constant8u_i32(decode->immediate);
-    gen_helper_pshufw_mmx(OP_PTR0, OP_PTR1, imm);
+    unsigned order = decode->immediate & 0xff;
+    TCGv_i64 src = tcg_temp_new_i64();
+    TCGv_i64 d = tcg_temp_new_i64();
+    TCGv_i64 t = tcg_temp_new_i64();
+    unsigned sel;
+
+    gen_mmx_ld_i64(src, decode, 1);
+
+    /* Lane 0: leftover high bits are overwritten by the deposits below. */
+    sel = order & 3;
+    if (sel != 0) {
+        tcg_gen_shri_i64(d, src, sel * 16);
+    } else {
+        tcg_gen_mov_i64(d, src);
+    }
+
+    for (unsigned i = 1; i < 4; i++) {
+        sel = (order >> (2 * i)) & 3;
+        if (sel != 0) {
+            tcg_gen_shri_i64(t, src, sel * 16);
+            tcg_gen_deposit_i64(d, d, t, i * 16, 16);
+        } else {
+            tcg_gen_deposit_i64(d, d, src, i * 16, 16);
+        }
+    }
+
+    gen_mmx_st_i64(d, decode, 0);
 }
 
 static void gen_PSRLW_i(DisasContext *s, X86DecodedInsn *decode)

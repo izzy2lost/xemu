@@ -154,9 +154,22 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
             b.image_pool_max = 8;
             b.surface_image_pool_max = 4;
         } else if (budget_mib <= 768) {
-            b.texture_cache_entries = 256;
-            b.image_pool_max = 16;
-            b.surface_image_pool_max = 8;
+            /*
+             * EXPERIMENT: an 8GB device (Pixel 10a reports total_heap=7808MB,
+             * just under the 8GiB tier boundary) lands here and gets only 256
+             * texture cache entries. In a Forza race that is not enough to hold
+             * the frame's working set, so textures are evicted and re-decoded
+             * every frame -- software DXT decode plus the block writer was
+             * ~12.6% of the whole process at 9.6fps.
+             *
+             * The cache entries are metadata; the real cost is the VkImages
+             * they retain, which is why image_pool_max moves with them. Buffer
+             * budgets are deliberately left at the conservative tier value --
+             * only the texture retention changes here.
+             */
+            b.texture_cache_entries = 1024;
+            b.image_pool_max = 64;
+            b.surface_image_pool_max = 32;
         } else if (budget_mib <= 1536) {
             b.texture_cache_entries = 512;
             b.image_pool_max = 32;

@@ -23,6 +23,9 @@ class SetupWizardActivity : AppCompatActivity() {
     private const val EXPECTED_MCPX_MD5 = "d49c52a4102f6df7bcf8d0617ac475ed"
     private const val KNOWN_BAD_MCPX_MD5 = "196a5f59a13382c185636e691d6c323d"
     private const val EXPECTED_MCPX_SIZE_BYTES = 512L
+
+    /* Xbox flash/BIOS dumps are 256 KB, 512 KB or 1 MB. */
+    private val VALID_FLASH_SIZE_BYTES = setOf(262144L, 524288L, 1048576L)
   }
 
   private data class FileFingerprint(
@@ -490,6 +493,17 @@ class SetupWizardActivity : AppCompatActivity() {
       fingerprint.md5 == KNOWN_BAD_MCPX_MD5
     ) {
       return getString(R.string.setup_flash_invalid_mcpx, fingerprint.displayName)
+    }
+    // A real flash image is 256 KB, 512 KB or 1 MB. Without this check any
+    // .bin sails through -- users have picked their 256-byte eeprom.bin here,
+    // which boots to a black screen with no error because the MCPX ROM jumps
+    // straight into garbage.
+    if (fingerprint.sizeBytes !in VALID_FLASH_SIZE_BYTES) {
+      return getString(
+        R.string.setup_flash_invalid_size,
+        fingerprint.displayName,
+        Formatter.formatShortFileSize(this, fingerprint.sizeBytes),
+      )
     }
     return null
   }
