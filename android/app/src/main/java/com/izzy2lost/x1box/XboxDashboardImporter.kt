@@ -26,7 +26,7 @@ internal object XboxDashboardImporter {
 
   private object NativeBridge {
     init {
-      System.loadLibrary("SDL2")
+      System.loadLibrary("SDL3")
       System.loadLibrary("xemu")
     }
 
