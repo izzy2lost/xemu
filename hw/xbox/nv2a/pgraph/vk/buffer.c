@@ -22,10 +22,12 @@
 #ifdef __ANDROID__
 #include <android/log.h>
 #include <sys/system_properties.h>
+#include <unistd.h>
 #endif
 
 typedef struct MemoryBudget {
     size_t total_heap;
+    unsigned memory_class_gib;
     size_t renderer_budget;
     size_t vertex_inline_cap;
     size_t index_cap;
@@ -40,6 +42,62 @@ typedef struct MemoryBudget {
     int image_pool_max;
     int surface_image_pool_max;
 } MemoryBudget;
+
+/*
+ * Common device RAM configurations, in GiB.
+ *
+ * Neither number available to us reports a device's nominal RAM. sysconf()
+ * excludes kernel reservations and carveouts, and the largest Vulkan heap is
+ * whatever the driver chooses to expose. A nominally-8GB Pixel 10a measured
+ * 7.39GiB physical and a 7.17GiB Vulkan heap; a different 8GB device reported
+ * a 7.63GiB heap. Tiering directly off either number puts devices of the same
+ * class on different rungs, and leaves a borderline device free to change tier
+ * between runs, because the heap size is not stable.
+ *
+ * So snap to the nearest real configuration and tier off that instead. The
+ * result is stable across runs and is what the ladders below actually mean to
+ * select on.
+ */
+static const unsigned k_memory_classes_gib[] = { 2, 3, 4, 6, 8, 12, 16, 24 };
+
+static unsigned device_memory_class_gib(size_t total_heap)
+{
+    const size_t mib = 1024 * 1024;
+    size_t phys = 0;
+
+#ifdef __ANDROID__
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && page_size > 0) {
+        phys = (size_t)pages * (size_t)page_size;
+    }
+#endif
+
+    /* Physical memory is the better signal; fall back to the heap if the
+     * platform will not tell us. */
+    if (phys == 0) {
+        phys = total_heap;
+    }
+    if (phys == 0) {
+        return 0;
+    }
+
+    size_t phys_mib = phys / mib;
+    unsigned best = k_memory_classes_gib[0];
+    size_t best_delta = SIZE_MAX;
+
+    for (size_t i = 0; i < ARRAY_SIZE(k_memory_classes_gib); i++) {
+        size_t class_mib = (size_t)k_memory_classes_gib[i] * 1024;
+        size_t delta = phys_mib > class_mib ? phys_mib - class_mib
+                                            : class_mib - phys_mib;
+        if (delta < best_delta) {
+            best_delta = delta;
+            best = k_memory_classes_gib[i];
+        }
+    }
+
+    return best;
+}
 
 static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
 {
@@ -58,25 +116,35 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
 
     MemoryBudget b = { .total_heap = total_heap };
 
+    b.memory_class_gib = device_memory_class_gib(total_heap);
+
 #ifdef __ANDROID__
-    if (total_heap <= 4 * gib) {
+    if (b.memory_class_gib <= 4) {
         b.renderer_budget = 384 * mib;
-    } else if (total_heap <= 6 * gib) {
+    } else if (b.memory_class_gib <= 6) {
         b.renderer_budget = 512 * mib;
-    } else if (total_heap <= 8 * gib) {
+    } else if (b.memory_class_gib <= 8) {
         b.renderer_budget = 768 * mib;
-    } else if (total_heap <= 12 * gib) {
+    } else if (b.memory_class_gib <= 12) {
         b.renderer_budget = 1024 * mib;
-    } else if (total_heap <= 16 * gib) {
+    } else if (b.memory_class_gib <= 16) {
         b.renderer_budget = 1536 * mib;
-    } else if (total_heap <= 22 * gib) {
-        b.renderer_budget = 2048 * mib;
     } else {
-        b.renderer_budget = SIZE_MAX;
+        b.renderer_budget = 2048 * mib;
+    }
+
+    /*
+     * The class is what the device nominally has, not what this driver will
+     * actually hand out, so never budget more than half of the heap we can
+     * really see. Only engages on parts that expose an unusually small heap.
+     */
+    if (total_heap && b.renderer_budget > total_heap / 2) {
+        b.renderer_budget = total_heap / 2;
     }
 #else
     b.renderer_budget = SIZE_MAX;
 #endif
+    (void)gib;
 
     if (b.renderer_budget == SIZE_MAX) {
         b.vertex_inline_cap = SIZE_MAX;
@@ -153,51 +221,51 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
         /*
          * Texture retention ladder.
          *
-         * These are *ceilings*, not commitments, and it is safe to set them
-         * generously: memory is reclaimed by two independent mechanisms.
+         * Deliberately keyed on the device memory class, NOT on
+         * renderer_budget. renderer_budget sizes staging/vertex/index/uniform
+         * *buffers* in bytes; texture retention is an entry count backed by a
+         * separate allocator with its own reclaim path. Sharing one knob is
+         * what produced the original bug: an 8GB device landed exactly on the
+         * 768MB buffer tier and inherited only 256 texture entries with it.
+         *
+         * These are ceilings, not commitments, and it is safe to set them
+         * generously -- memory is reclaimed by two independent mechanisms.
          * Proactively, pgraph_vk_check_memory_budget() trims a quarter of the
          * cache and drains the image pool whenever VMA reports allocation
          * approaching the heap budget. Reactively, a failed vmaCreateImage()
          * drains the pool, flushes frames, evicts up to 64 entries and retries,
-         * then flushes the whole cache and retries again. An entry only costs
-         * memory while it is actually holding a VkImage.
+         * then flushes the whole cache and retries again. An entry costs
+         * nothing until it is actually holding a VkImage.
          *
-         * Sizing them too small is not free, though: Mali has no S3TC support,
-         * so every eviction of a compressed texture costs a full software DXT
-         * decompress on the next use. At 256 entries an 8GB device could not
-         * hold a Forza race's working set and re-decoded textures *every
-         * frame* -- decompress_dxt1/dxt5_block plus write_block_to_texture were
-         * ~12.6% of total process CPU. Raising that tier to 1024 removed those
-         * symbols from the profile entirely.
+         * Sizing them too small is not free: Mali has no S3TC support, so every
+         * eviction of a compressed texture costs a full software DXT decompress
+         * on next use. At 256 entries an 8GB device could not hold a Forza
+         * race's working set and re-decoded textures *every frame* --
+         * decompress_dxt1/dxt5_block plus write_block_to_texture were ~12.6% of
+         * total process CPU. Raising that tier to 1024 removed those symbols
+         * from the profile entirely.
          *
-         * Two things to keep true here:
-         *   - Monotonic. A 12GB device must never get a smaller cache than an
-         *     8GB one (it briefly did, when only the 768MB tier was raised).
-         *   - Note the input: renderer_budget is derived from the largest
-         *     *Vulkan heap*, not from device RAM, and on UMA Android parts that
-         *     is neither exactly system RAM nor perfectly stable across runs
-         *     (measured 7344MB and 7808MB on two nominally-8GB devices). So a
-         *     device can sit close to a boundary; keep the steps gentle enough
-         *     that landing on either side is not dramatic.
+         * Keep this monotonic: a 12GB device must never get a smaller cache
+         * than an 8GB one (it briefly did).
          */
-        if (budget_mib <= 512) {
-            /* ~4-6GB devices. Unmeasured; raised off 128 because that tier
-             * almost certainly thrashes for the same reason 256 did. */
+        if (b.memory_class_gib <= 4) {
             b.texture_cache_entries = 256;
             b.image_pool_max = 16;
             b.surface_image_pool_max = 8;
-        } else if (budget_mib <= 768) {
-            /* ~8GB devices. 1024 measured good on a Pixel 10a. */
+        } else if (b.memory_class_gib <= 6) {
+            b.texture_cache_entries = 512;
+            b.image_pool_max = 32;
+            b.surface_image_pool_max = 16;
+        } else if (b.memory_class_gib <= 8) {
+            /* Measured good on a Pixel 10a (8GB). */
             b.texture_cache_entries = 1024;
             b.image_pool_max = 64;
             b.surface_image_pool_max = 32;
-        } else if (budget_mib <= 1536) {
-            /* ~12-16GB devices. */
+        } else if (b.memory_class_gib <= 12) {
             b.texture_cache_entries = 1536;
             b.image_pool_max = 96;
             b.surface_image_pool_max = 48;
         } else {
-            /* >16GB, and the unlimited-budget desktop path below. */
             b.texture_cache_entries = 2048;
             b.image_pool_max = IMAGE_POOL_MAX_SIZE;
             b.surface_image_pool_max = SURFACE_IMAGE_POOL_MAX_SIZE;
@@ -270,12 +338,13 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
     r->surface_image_pool_max = mb.surface_image_pool_max;
 
     VK_LOG_ERROR(
-        "memory_budget: total_heap=%zuMB budget=%s%zuMB "
+        "memory_budget: total_heap=%zuMB mem_class=%uGB budget=%s%zuMB "
         "vtx_inline_cap=%zuMB index_cap=%zuMB staging_cap=%zuMB "
         "uniform_cap=%zuMB pf_vtx=%zuMB pf_idx=%zuMB "
         "pf_uni=%zuMB pf_stg=%zuMB "
         "shader_cache=%zu tex_cache=%zu img_pool=%d surf_pool=%d",
-        mb.total_heap >> 20, mb.renderer_budget == SIZE_MAX ? "uncapped/" : "",
+        mb.total_heap >> 20, mb.memory_class_gib,
+        mb.renderer_budget == SIZE_MAX ? "uncapped/" : "",
         mb.renderer_budget == SIZE_MAX ? 0 : mb.renderer_budget >> 20,
         mb.vertex_inline_cap == SIZE_MAX ? 0 : mb.vertex_inline_cap >> 20,
         mb.index_cap == SIZE_MAX ? 0 : mb.index_cap >> 20,
