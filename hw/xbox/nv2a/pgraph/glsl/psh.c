@@ -1649,8 +1649,29 @@ static MString* psh_convert(struct PixelShader *ps)
 
     /* On tile GPUs the fixed-function-depth fallback also covers perspective
      * depth: an approximate hardware W-depth is preferable to losing the GPU
-     * when gl_FragDepth disables early-Z under heavy overdraw. */
-    if (ps->state->depth_needed && !ps->opts.fixed_function_depth) {
+     * when gl_FragDepth disables early-Z under heavy overdraw.
+     *
+     * The depth-via-varying Z-buffer case needs no gl_FragDepth at all. The
+     * vertex stage emits `oPos.z = oPos.z / clipRange.y` before the
+     * perspective multiply, so gl_Position.z/w *is* the emulated depth already
+     * and fixed-function interpolation reproduces it exactly; the varying
+     * keeps the raw guest value separately (`vec4 vtxPos = oPos;` is taken
+     * before that divide) purely to feed the guest depth-clip rejection.
+     * Polygon offset is handled by hardware depth bias on that path.
+     *
+     * Writing gl_FragDepth anyway forces late-Z and disables hidden-surface
+     * removal for every depth-using draw, which is precisely what drives Mali
+     * into a watchdog reset under heavy overdraw. The block above already
+     * documents this ("gl_FragDepth is not written at all"), but the guard
+     * here never checked it, so the saving was never actually taken.
+     *
+     * W-buffer draws still need it: 1/W is not linear in screen space, so
+     * fixed-function interpolation cannot reproduce it. */
+    bool ff_depth_is_exact =
+        ps->opts.depth_via_varying && !ps->state->z_perspective;
+
+    if (ps->state->depth_needed && !ps->opts.fixed_function_depth &&
+        !ff_depth_is_exact) {
         switch (ps->state->depth_format) {
         case DEPTH_FORMAT_D16:
             mstring_append(

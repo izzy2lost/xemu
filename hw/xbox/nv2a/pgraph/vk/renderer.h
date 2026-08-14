@@ -1577,6 +1577,8 @@ void pgraph_vk_bind_shaders(PGRAPHState *pg);
  * must come from vkCmdSetDepthBias rather than the fragment shader. */
 bool pgraph_vk_uses_fixed_function_depth(PGRAPHVkState *r,
                                          const ShaderState *state);
+bool pgraph_vk_needs_hw_depth_bias(PGRAPHVkState *r,
+                                   const ShaderState *state);
 void pgraph_vk_reclaim_descriptor_overflow(PGRAPHVkState *r);
 void pgraph_vk_update_shader_uniforms(PGRAPHState *pg);
 

@@ -1512,7 +1512,7 @@ static void create_pipeline(PGRAPHState *pg)
     /* When the fragment shader stops writing gl_FragDepth, it also stops
      * applying the guest polygon offset, so hand that to the hardware. */
     snode->has_dynamic_depth_bias =
-        pgraph_vk_uses_fixed_function_depth(r, &r->shader_binding->state);
+        pgraph_vk_needs_hw_depth_bias(r, &r->shader_binding->state);
 
     VkPipelineRasterizationStateCreateInfo rasterizer = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,

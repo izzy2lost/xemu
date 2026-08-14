@@ -68,6 +68,25 @@ static bool use_fixed_function_depth(PGRAPHVkState *r)
             (property[0] == '0' || property[0] == '1')) {
             mode = property[0] - '0';
         } else {
+            /* Mali defaults to the fixed-function path. It is NOT correct --
+             * it skips the gl_FragDepth normalization in psh.c, leaving guest
+             * depth in raw integer units, which black-screens any game whose
+             * shaders need depth output. But writing gl_FragDepth forces
+             * late-Z and kills hidden-surface removal, which resets Mali in
+             * seconds, so this is the lesser evil until the depth-varying
+             * path is good enough to take over.
+             *
+             * Measured on a Mali-G715 (Conker), for whoever picks this up:
+             *   ff_depth=1 (this)            stable, sky renders correctly
+             *   ff_depth=0                   DEVICE_LOST in ~9s
+             *   ff_depth=0 + depth_varying=1 survives >150s, but the sky gets
+             *                                black diagonal striping
+             * The striping is in the W-buffer (z_perspective) draws, which
+             * take perspective-interpolated W from a varying instead of the
+             * geometry shader's barycentric reconstruction. Fixing that is
+             * what stands between here and making depth-varying the default.
+             *
+             * Override with `setprop debug.xemu.vk.ff_depth 0|1`. */
             mode = (r->device_props.vendorID == 0x13B5u) ? 1 : 0;
         }
         __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
@@ -917,6 +936,34 @@ bool pgraph_vk_uses_fixed_function_depth(PGRAPHVkState *r,
 {
 #ifdef __ANDROID__
     return use_fixed_function_depth(r) && state->psh.depth_needed;
+#else
+    return false;
+#endif
+}
+
+/*
+ * True when the fragment shader does not write gl_FragDepth for a draw that
+ * still uses depth. Such a draw cannot apply the guest polygon offset in the
+ * shader, so it must come from hardware depth bias instead.
+ *
+ * There are two such cases and they must be kept in sync with psh.c:
+ *   1. fixed-function depth (the old Mali path), and
+ *   2. depth-via-varying on a Z-buffer, where gl_Position.z/w already carries
+ *      the exact emulated depth (ff_depth_is_exact in psh.c).
+ *
+ * Missing case 2 here loses polygon offset entirely, which shows up as
+ * z-fighting on co-planar geometry -- notably a badly corrupted sky.
+ */
+bool pgraph_vk_needs_hw_depth_bias(PGRAPHVkState *r, const ShaderState *state)
+{
+#ifdef __ANDROID__
+    if (!state->psh.depth_needed) {
+        return false;
+    }
+    if (use_fixed_function_depth(r)) {
+        return true;
+    }
+    return use_depth_varying(r) && !state->psh.z_perspective;
 #else
     return false;
 #endif
