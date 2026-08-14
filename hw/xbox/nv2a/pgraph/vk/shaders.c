@@ -1141,6 +1141,42 @@ static bool shader_cache_entry_compare(Lru *lru, LruNode *node, const void *key)
 
 static bool shader_module_warmup_in_progress;
 
+/*
+ * shader_module_keys.bin is a raw dump of ShaderModuleCacheKey structs, replayed
+ * at startup to pre-compile shaders. That struct embeds VshState/GeomState/
+ * PshState and their GLSL option structs, so *any* change to shader state
+ * silently changes its layout -- and the file carried no version information.
+ *
+ * An upgraded install would therefore reinterpret its old cache as garbage,
+ * produce a nonsense VkShaderStageFlagBits, and abort in
+ * shader_module_compile_sync():
+ *
+ *   shaders.c:1180: assertion "!"Invalid shader module kind"" failed
+ *
+ * That aborted at "vk init stage: shaders", i.e. every launch, before any disc
+ * or HDD was touched -- which made it look like specific HDD images were at
+ * fault when it was really just which installs had accumulated a stale cache.
+ *
+ * Bump SHADER_MODULE_KEY_FILE_VERSION whenever the key layout changes.
+ */
+#define SHADER_MODULE_KEY_FILE_MAGIC   0x584D4B53u /* 'SKMX' */
+#define SHADER_MODULE_KEY_FILE_VERSION 1u
+
+typedef struct ShaderModuleKeyFileHeader {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t key_size;
+    uint32_t reserved;
+} ShaderModuleKeyFileHeader;
+
+static bool shader_module_key_kind_valid(VkShaderStageFlagBits kind)
+{
+    return kind == VK_SHADER_STAGE_VERTEX_BIT ||
+           kind == VK_SHADER_STAGE_GEOMETRY_BIT ||
+           kind == VK_SHADER_STAGE_FRAGMENT_BIT;
+}
+
+
 void shader_module_key_persist(const ShaderModuleCacheKey *key)
 {
     if (!g_config.perf.cache_shaders || shader_module_warmup_in_progress) {
@@ -1152,6 +1188,19 @@ void shader_module_key_persist(const ShaderModuleCacheKey *key)
 
     FILE *f = fopen(path, "ab");
     if (f) {
+        /*
+         * Stamp a header on a newly created file so the reader can reject a
+         * cache written by a build with a different key layout. See
+         * shader_module_key_cache_header_ok().
+         */
+        if (ftell(f) == 0) {
+            ShaderModuleKeyFileHeader hdr = {
+                .magic = SHADER_MODULE_KEY_FILE_MAGIC,
+                .version = SHADER_MODULE_KEY_FILE_VERSION,
+                .key_size = (uint32_t)sizeof(ShaderModuleCacheKey),
+            };
+            fwrite(&hdr, sizeof(hdr), 1, f);
+        }
         fwrite(key, sizeof(ShaderModuleCacheKey), 1, f);
         fclose(f);
     }
@@ -1177,8 +1226,16 @@ static void shader_module_compile_sync(PGRAPHVkState *r,
                                    module->key.psh.glsl_opts);
         break;
     default:
-        assert(!"Invalid shader module kind");
-        code = NULL;
+        /*
+         * Reachable from persisted data, not just from a programming error:
+         * these keys are read back from shader_module_keys.bin. A stale or
+         * corrupt file must degrade to "no warm-up", never abort the emulator
+         * at startup, so this is a soft failure.
+         */
+        VK_LOG_ERROR("Ignoring shader module with invalid kind 0x%x",
+                     (unsigned)module->key.kind);
+        module->module_info = NULL;
+        return;
     }
 
     module->module_info = pgraph_vk_create_shader_module_from_glsl(
@@ -1302,23 +1359,57 @@ static void shader_cache_init(PGRAPHState *pg)
         gchar *data = NULL;
         gsize len = 0;
 
-        if (g_file_get_contents(path, &data, &len, NULL) && len > 0) {
-            size_t num_keys = len / sizeof(ShaderModuleCacheKey);
-            ShaderModuleCacheKey *keys = (ShaderModuleCacheKey *)data;
+        if (g_file_get_contents(path, &data, &len, NULL) &&
+            len > sizeof(ShaderModuleKeyFileHeader)) {
+            const ShaderModuleKeyFileHeader *hdr =
+                (const ShaderModuleKeyFileHeader *)data;
+            bool usable = hdr->magic == SHADER_MODULE_KEY_FILE_MAGIC &&
+                          hdr->version == SHADER_MODULE_KEY_FILE_VERSION &&
+                          hdr->key_size == sizeof(ShaderModuleCacheKey);
 
-            shader_module_warmup_in_progress = true;
-            int warmed = 0;
-            for (size_t i = 0; i < num_keys; i++) {
-                uint64_t hash = hash_shader_module_key(&keys[i]);
-                if (!lru_contains_hash(&r->shader_module_cache, hash)) {
-                    lru_lookup(&r->shader_module_cache, hash, &keys[i]);
-                    warmed++;
+            if (!usable) {
+                /*
+                 * Written by a different build (or headerless, from before the
+                 * header existed). Replaying it would compile garbage, so drop
+                 * it and start over -- costs one session of warm-up, versus
+                 * aborting at startup forever.
+                 */
+                VK_LOG_ERROR("Discarding incompatible shader module key cache "
+                             "(magic=0x%08x version=%u key_size=%u, expected "
+                             "0x%08x/%u/%zu)",
+                             hdr->magic, hdr->version, hdr->key_size,
+                             SHADER_MODULE_KEY_FILE_MAGIC,
+                             SHADER_MODULE_KEY_FILE_VERSION,
+                             sizeof(ShaderModuleCacheKey));
+                qemu_unlink(path);
+            } else {
+                const char *body = data + sizeof(*hdr);
+                size_t num_keys =
+                    (len - sizeof(*hdr)) / sizeof(ShaderModuleCacheKey);
+                const ShaderModuleCacheKey *keys =
+                    (const ShaderModuleCacheKey *)body;
+
+                shader_module_warmup_in_progress = true;
+                int warmed = 0, skipped = 0;
+                for (size_t i = 0; i < num_keys; i++) {
+                    /* Defence in depth: a matching header does not guarantee
+                     * the body is intact (truncated write, bit rot). */
+                    if (!shader_module_key_kind_valid(keys[i].kind)) {
+                        skipped++;
+                        continue;
+                    }
+                    uint64_t hash = hash_shader_module_key(&keys[i]);
+                    if (!lru_contains_hash(&r->shader_module_cache, hash)) {
+                        lru_lookup(&r->shader_module_cache, hash, &keys[i]);
+                        warmed++;
+                    }
                 }
-            }
-            shader_module_warmup_in_progress = false;
+                shader_module_warmup_in_progress = false;
 
-            VK_LOG_ERROR("Shader module warm-up: %d/%zu modules pre-compiled",
-                         warmed, num_keys);
+                VK_LOG_ERROR("Shader module warm-up: %d/%zu modules "
+                             "pre-compiled (%d skipped)",
+                             warmed, num_keys, skipped);
+            }
         }
         g_free(data);
         g_free(path);
