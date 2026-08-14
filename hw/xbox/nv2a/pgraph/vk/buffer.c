@@ -88,9 +88,10 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
         b.perframe_uni_cap = SIZE_MAX;
         b.perframe_stg_cap = SIZE_MAX;
         b.shader_module_cache_entries = 50 * 1024;
-        b.texture_cache_entries = 1024;
-        b.image_pool_max = 128;
-        b.surface_image_pool_max = 64;
+        /* Unbudgeted (desktop): keep at least the top mobile tier. */
+        b.texture_cache_entries = 2048;
+        b.image_pool_max = IMAGE_POOL_MAX_SIZE;
+        b.surface_image_pool_max = SURFACE_IMAGE_POOL_MAX_SIZE;
     } else {
         size_t budget = b.renderer_budget;
         /*
@@ -149,35 +150,57 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
             b.shader_module_cache_entries = 50 * 1024;
         }
 
+        /*
+         * Texture retention ladder.
+         *
+         * These are *ceilings*, not commitments, and it is safe to set them
+         * generously: memory is reclaimed by two independent mechanisms.
+         * Proactively, pgraph_vk_check_memory_budget() trims a quarter of the
+         * cache and drains the image pool whenever VMA reports allocation
+         * approaching the heap budget. Reactively, a failed vmaCreateImage()
+         * drains the pool, flushes frames, evicts up to 64 entries and retries,
+         * then flushes the whole cache and retries again. An entry only costs
+         * memory while it is actually holding a VkImage.
+         *
+         * Sizing them too small is not free, though: Mali has no S3TC support,
+         * so every eviction of a compressed texture costs a full software DXT
+         * decompress on the next use. At 256 entries an 8GB device could not
+         * hold a Forza race's working set and re-decoded textures *every
+         * frame* -- decompress_dxt1/dxt5_block plus write_block_to_texture were
+         * ~12.6% of total process CPU. Raising that tier to 1024 removed those
+         * symbols from the profile entirely.
+         *
+         * Two things to keep true here:
+         *   - Monotonic. A 12GB device must never get a smaller cache than an
+         *     8GB one (it briefly did, when only the 768MB tier was raised).
+         *   - Note the input: renderer_budget is derived from the largest
+         *     *Vulkan heap*, not from device RAM, and on UMA Android parts that
+         *     is neither exactly system RAM nor perfectly stable across runs
+         *     (measured 7344MB and 7808MB on two nominally-8GB devices). So a
+         *     device can sit close to a boundary; keep the steps gentle enough
+         *     that landing on either side is not dramatic.
+         */
         if (budget_mib <= 512) {
-            b.texture_cache_entries = 128;
-            b.image_pool_max = 8;
-            b.surface_image_pool_max = 4;
+            /* ~4-6GB devices. Unmeasured; raised off 128 because that tier
+             * almost certainly thrashes for the same reason 256 did. */
+            b.texture_cache_entries = 256;
+            b.image_pool_max = 16;
+            b.surface_image_pool_max = 8;
         } else if (budget_mib <= 768) {
-            /*
-             * EXPERIMENT: an 8GB device (Pixel 10a reports total_heap=7808MB,
-             * just under the 8GiB tier boundary) lands here and gets only 256
-             * texture cache entries. In a Forza race that is not enough to hold
-             * the frame's working set, so textures are evicted and re-decoded
-             * every frame -- software DXT decode plus the block writer was
-             * ~12.6% of the whole process at 9.6fps.
-             *
-             * The cache entries are metadata; the real cost is the VkImages
-             * they retain, which is why image_pool_max moves with them. Buffer
-             * budgets are deliberately left at the conservative tier value --
-             * only the texture retention changes here.
-             */
+            /* ~8GB devices. 1024 measured good on a Pixel 10a. */
             b.texture_cache_entries = 1024;
             b.image_pool_max = 64;
             b.surface_image_pool_max = 32;
         } else if (budget_mib <= 1536) {
-            b.texture_cache_entries = 512;
-            b.image_pool_max = 32;
-            b.surface_image_pool_max = 16;
+            /* ~12-16GB devices. */
+            b.texture_cache_entries = 1536;
+            b.image_pool_max = 96;
+            b.surface_image_pool_max = 48;
         } else {
-            b.texture_cache_entries = 1024;
-            b.image_pool_max = 64;
-            b.surface_image_pool_max = 32;
+            /* >16GB, and the unlimited-budget desktop path below. */
+            b.texture_cache_entries = 2048;
+            b.image_pool_max = IMAGE_POOL_MAX_SIZE;
+            b.surface_image_pool_max = SURFACE_IMAGE_POOL_MAX_SIZE;
         }
     }
 
