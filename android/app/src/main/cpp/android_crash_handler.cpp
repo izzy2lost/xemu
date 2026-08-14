@@ -4,7 +4,9 @@
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
 #include <unwind.h>
@@ -14,6 +16,27 @@ constexpr const char* kCrashTag = "xemu-android";
 constexpr size_t kPathMax = 512;
 
 static char g_inline_aio_flag_path[kPathMax];
+
+/*
+ * Session marker.
+ *
+ * The emulator runs in its own :xemu process and is large, so Android's
+ * lowmemorykiller reclaims it readily -- especially once backgrounded. When
+ * that happens there is *no* record we can read: the kill is reported to
+ * logcat -b system, which needs READ_LOGS (signature|privileged), so a normal
+ * app can never see it. The user-visible result is "the app crashed" and a
+ * debug export containing nothing at all.
+ *
+ * So the process reports on itself. It writes a marker on startup, keeps the
+ * lifecycle state current, and deletes it on clean exit. If the marker is
+ * still present at the next launch, the previous session died without
+ * unwinding -- and whether a signal was recorded tells us if it was our crash
+ * or the OS reclaiming us.
+ */
+static char g_session_marker_path[kPathMax];
+static char g_session_state[32] = "starting";
+static long long g_session_start_ms;
+static int g_session_signal;
 
 static int GetTid() {
   return static_cast<int>(syscall(SYS_gettid));
@@ -110,6 +133,46 @@ static void LogInterruptedContext(void* raw_context) {
 #endif
 }
 
+static long long NowMs() {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+    return 0;
+  }
+  return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/*
+ * Async-signal-safe enough to call from the crash handler: no malloc, no
+ * stdio, single write() of a preformatted buffer.
+ */
+static void WriteSessionMarker() {
+  if (g_session_marker_path[0] == '\0') {
+    return;
+  }
+
+  char buf[512];
+  int n = snprintf(buf, sizeof(buf),
+                   "version=1\n"
+                   "pid=%d\n"
+                   "start_ms=%lld\n"
+                   "update_ms=%lld\n"
+                   "state=%s\n"
+                   "signal=%d\n",
+                   (int)getpid(), g_session_start_ms, NowMs(),
+                   g_session_state, g_session_signal);
+  if (n <= 0) {
+    return;
+  }
+
+  int fd = open(g_session_marker_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    return;
+  }
+  ssize_t ignored = write(fd, buf, (size_t)n);
+  (void)ignored;
+  close(fd);
+}
+
 static void MarkInlineAioRequired() {
   if (g_inline_aio_flag_path[0] == '\0') {
     return;
@@ -130,6 +193,9 @@ static void CrashHandler(int sig, siginfo_t* info, void* ucontext) {
   if (sig == SIGILL) {
     MarkInlineAioRequired();
   }
+  /* Distinguishes "we crashed" from "the OS reclaimed us" on next launch. */
+  g_session_signal = sig;
+  WriteSessionMarker();
   __android_log_print(ANDROID_LOG_ERROR, kCrashTag,
                       "Caught signal %d code=%d fault_addr=%p in tid %d",
                       sig, info ? info->si_code : 0,
@@ -160,6 +226,37 @@ extern "C" void xemu_android_set_inline_aio_crash_flag_path(const char* path) {
   size_t len = strnlen(path, sizeof(g_inline_aio_flag_path) - 1);
   memcpy(g_inline_aio_flag_path, path, len);
   g_inline_aio_flag_path[len] = '\0';
+}
+
+extern "C" void xemu_android_session_begin(const char* path) {
+  if (!path) {
+    g_session_marker_path[0] = '\0';
+    return;
+  }
+  size_t len = strnlen(path, sizeof(g_session_marker_path) - 1);
+  memcpy(g_session_marker_path, path, len);
+  g_session_marker_path[len] = '\0';
+
+  g_session_start_ms = NowMs();
+  g_session_signal = 0;
+  snprintf(g_session_state, sizeof(g_session_state), "%s", "foreground");
+  WriteSessionMarker();
+}
+
+extern "C" void xemu_android_session_set_state(const char* state) {
+  if (!state || g_session_marker_path[0] == '\0') {
+    return;
+  }
+  snprintf(g_session_state, sizeof(g_session_state), "%s", state);
+  WriteSessionMarker();
+}
+
+extern "C" void xemu_android_session_end(void) {
+  if (g_session_marker_path[0] == '\0') {
+    return;
+  }
+  unlink(g_session_marker_path);
+  g_session_marker_path[0] = '\0';
 }
 
 __attribute__((constructor)) static void InstallCrashHandlersOnLoad() {

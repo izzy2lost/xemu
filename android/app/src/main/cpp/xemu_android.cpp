@@ -336,6 +336,78 @@ static std::string JStringToString(JNIEnv* env, jstring value) {
   return out;
 }
 
+extern "C" void xemu_android_session_begin(const char* path);
+extern "C" void xemu_android_session_set_state(const char* state);
+extern "C" void xemu_android_session_end(void);
+
+/*
+ * If a session marker survived, the previous run never reached its clean exit.
+ * Turn that into a human-readable report the debug export can include.
+ *
+ * This exists because the interesting case -- Android's lowmemorykiller
+ * reclaiming the :xemu process -- is invisible to us: it is reported only to
+ * logcat -b system, which needs READ_LOGS, a signature|privileged permission a
+ * normal app cannot hold. Without this the export is simply empty, which is
+ * exactly what a user's "it just crashes" report looked like.
+ */
+static void ReportPreviousSession(const std::string& marker_path,
+                                  const std::string& report_path) {
+  if (marker_path.empty() || report_path.empty()) {
+    return;
+  }
+
+  std::ifstream marker(marker_path);
+  if (!marker.is_open()) {
+    /* Clean shutdown last time; drop any stale report. */
+    remove(report_path.c_str());
+    return;
+  }
+
+  std::string line, state = "unknown";
+  long long start_ms = 0, update_ms = 0;
+  int sig = 0, pid = 0;
+  while (std::getline(marker, line)) {
+    const char* c = line.c_str();
+    if (!strncmp(c, "state=", 6)) state = line.substr(6);
+    else if (!strncmp(c, "start_ms=", 9)) start_ms = atoll(c + 9);
+    else if (!strncmp(c, "update_ms=", 10)) update_ms = atoll(c + 10);
+    else if (!strncmp(c, "signal=", 7)) sig = atoi(c + 7);
+    else if (!strncmp(c, "pid=", 4)) pid = atoi(c + 4);
+  }
+  marker.close();
+
+  const char* verdict;
+  if (sig != 0) {
+    verdict = "terminated by a signal (see Crash Buffer for the fault)";
+  } else if (state == "background") {
+    verdict = "killed while backgrounded, most likely by the Android "
+              "lowmemorykiller reclaiming the emulator process";
+  } else {
+    verdict = "died in the foreground without crashing -- an external kill "
+              "(lowmemorykiller / user swipe / watchdog)";
+  }
+
+  std::ostringstream out;
+  out << "Previous session did NOT shut down cleanly.\n"
+      << "  verdict:  " << verdict << "\n"
+      << "  state:    " << state << "\n"
+      << "  signal:   " << sig << (sig ? "" : " (none recorded)") << "\n"
+      << "  pid:      " << pid << "\n";
+  if (start_ms && update_ms >= start_ms) {
+    out << "  ran for:  " << (update_ms - start_ms) / 1000 << " s before the "
+        << "last recorded state change\n";
+  }
+
+  std::ofstream report(report_path, std::ios::trunc);
+  if (report.is_open()) {
+    report << out.str();
+  }
+  __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                      "Previous session ended abnormally: %s "
+                      "(state=%s signal=%d)",
+                      verdict, state.c_str(), sig);
+}
+
 static bool HasInlineAioCrashFlag(const std::string& flag_path) {
   if (flag_path.empty()) {
     return false;
@@ -594,6 +666,8 @@ struct SetupFiles {
   std::string eeprom;
   std::string config_path;
   std::string inline_aio_flag_path;
+  std::string session_marker_path;
+  std::string last_session_report_path;
   std::string audio_driver;  // SDL audio driver hint ("aaudio", "android", "dummy")
 };
 
@@ -758,6 +832,8 @@ static SetupFiles SyncSetupFiles() {
   EnsureDirExists(base);
   out.eeprom = base + "/eeprom.bin";
   out.inline_aio_flag_path = base + "/inline_aio_required.flag";
+  out.session_marker_path = base + "/session.marker";
+  out.last_session_report_path = base + "/last_session.txt";
 
   std::string envVars = GetPrefString(env, activity, "env_vars");
   if (!envVars.empty()) {
@@ -1246,6 +1322,13 @@ extern "C" int SDL_main(int argc, char* argv[]) {
                                                    ? nullptr
                                                    : setup.inline_aio_flag_path.c_str());
 
+  /* Order matters: analyse the old marker before overwriting it. */
+  ReportPreviousSession(setup.session_marker_path,
+                        setup.last_session_report_path);
+  xemu_android_session_begin(setup.session_marker_path.empty()
+                                 ? nullptr
+                                 : setup.session_marker_path.c_str());
+
   if (!SDL_getenv("XEMU_ANDROID_INLINE_AIO")) {
     const bool use_inline_aio =
         ShouldEnableInlineAioWorkaround(setup.inline_aio_flag_path);
@@ -1393,6 +1476,9 @@ extern "C" int SDL_main(int argc, char* argv[]) {
      * GameLibraryActivity in a new task *before* calling into native, so
      * Android respawns the library UI once this process dies. */
     (void)g_return_to_library_on_exit.exchange(false);
+    /* Reached the end under our own power -- clear the marker so the next
+     * launch does not report this as an abnormal termination. */
+    xemu_android_session_end();
     LogInfo("SDL_main: QEMU cleanup complete, terminating process");
     _exit(qemu_rc);
   }

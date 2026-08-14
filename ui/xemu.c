@@ -136,6 +136,13 @@ void xemu_android_persist_tb_cache(void);
 static bool g_android_gl_bgra_supported = true;
 static bool g_android_force_finish_before_swap = false;
 static bool g_android_paused = false;
+
+/*
+ * Records foreground/background in the session marker so that, if Android
+ * reclaims this process, the next launch can say which state it died in.
+ * Defined in android_crash_handler.cpp.
+ */
+extern void xemu_android_session_set_state(const char *state);
 static bool g_android_should_quit = false;
 static volatile bool g_android_qemu_thread_finished = false;
 static volatile bool g_android_vm_pause_requested = false;
@@ -766,6 +773,7 @@ static void handle_windowevent(SDL_Event *ev)
     case SDL_EVENT_WINDOW_RESTORED:
 #ifdef __ANDROID__
         g_android_paused = false;
+        xemu_android_session_set_state("foreground");
         __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                             "android: window restored");
 #endif
@@ -773,6 +781,7 @@ static void handle_windowevent(SDL_Event *ev)
     case SDL_EVENT_WINDOW_MINIMIZED:
 #ifdef __ANDROID__
         g_android_paused = true;
+        xemu_android_session_set_state("background");
         __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                             "android: window minimized");
 #endif
@@ -800,6 +809,7 @@ static void handle_windowevent(SDL_Event *ev)
         scon->hidden = false;
 #ifdef __ANDROID__
         g_android_paused = false;
+        xemu_android_session_set_state("foreground");
         __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                             "android: window shown");
 #endif
@@ -808,6 +818,7 @@ static void handle_windowevent(SDL_Event *ev)
         scon->hidden = true;
 #ifdef __ANDROID__
         g_android_paused = true;
+        xemu_android_session_set_state("background");
         __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                             "android: window hidden");
 #endif
@@ -870,6 +881,7 @@ void sdl2_poll_events(struct sdl2_console *scon)
             break;
         case SDL_EVENT_WILL_ENTER_BACKGROUND:
             g_android_paused = true;
+            xemu_android_session_set_state("background");
             bdrv_flush_all();
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                 "android: app background, flushed");
@@ -878,6 +890,7 @@ void sdl2_poll_events(struct sdl2_console *scon)
         case SDL_EVENT_WILL_ENTER_FOREGROUND:
         case SDL_EVENT_DID_ENTER_FOREGROUND:
             g_android_paused = false;
+            xemu_android_session_set_state("foreground");
             __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                                 "android: app foreground");
             break;
@@ -1762,6 +1775,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
                             "sdl2_gl_refresh: make current failed: %s",
                             SDL_GetError());
         g_android_paused = true;
+        xemu_android_session_set_state("background");
 #endif
         qemu_mutex_lock_main_loop();
         bql_lock();

@@ -113,6 +113,26 @@ object DebugLog {
         writer.appendLine()
       }
 
+      // Leads the non-crash sections: when the crash buffers above are empty,
+      // this is usually the reason why.
+      val lastSession = lastSessionReportFile(context)
+      if (lastSession.isFile) {
+        writer.appendLine("=== Previous Session (abnormal termination) ===")
+        lastSession.bufferedReader().useLines { lines ->
+          lines.forEach(writer::appendLine)
+        }
+        writer.appendLine()
+      }
+
+      val marker = sessionMarkerFile(context)
+      if (marker.isFile) {
+        describeSessionMarker(marker)?.let {
+          writer.appendLine("=== Session Marker (live) ===")
+          writer.append(it)
+          writer.appendLine()
+        }
+      }
+
       if (uiLog.isFile) {
         writer.appendLine("=== UI Debug Log ===")
         uiLog.bufferedReader().useLines { lines ->
@@ -263,6 +283,56 @@ object DebugLog {
 
   private fun crashTailFile(context: Context): File {
     return File(logDir(context), CRASH_TAIL_FILE_NAME)
+  }
+
+  /*
+   * Written by the :xemu process at startup when it finds a session marker
+   * left behind by a previous run. This is the only record we get of the
+   * emulator being killed by the OS: that event is reported to
+   * logcat -b system, which needs READ_LOGS (signature|privileged), so a
+   * normal app can never read it.
+   */
+  private fun lastSessionReportFile(context: Context): File {
+    return File(context.getExternalFilesDir(null), "x1box/last_session.txt")
+  }
+
+  /*
+   * The live marker. The native report above is only produced when the :xemu
+   * process next starts, so a user who exports logs without launching another
+   * game would otherwise see nothing. Interpreting the marker here covers that
+   * case, since it survives until the next clean shutdown.
+   */
+  private fun sessionMarkerFile(context: Context): File {
+    return File(context.getExternalFilesDir(null), "x1box/session.marker")
+  }
+
+  private fun describeSessionMarker(marker: File): String? {
+    val fields = runCatching {
+      marker.readLines().mapNotNull { line ->
+        val i = line.indexOf('=')
+        if (i <= 0) null else line.substring(0, i) to line.substring(i + 1)
+      }.toMap()
+    }.getOrNull() ?: return null
+    if (fields.isEmpty()) return null
+
+    val state = fields["state"] ?: "unknown"
+    val signal = fields["signal"]?.toIntOrNull() ?: 0
+    val verdict = when {
+      signal != 0 ->
+        "terminated by signal $signal (see Crash Buffer for the fault)"
+      state == "background" ->
+        "killed while backgrounded, most likely the Android lowmemorykiller " +
+          "reclaiming the emulator process"
+      else ->
+        "died in the foreground without crashing - an external kill " +
+          "(lowmemorykiller / user swipe / watchdog)"
+    }
+    return buildString {
+      appendLine("A session marker was still present, so the emulator did not")
+      appendLine("shut down cleanly (or is running right now).")
+      appendLine("  verdict: $verdict")
+      fields.forEach { (k, v) -> appendLine("  $k = $v") }
+    }
   }
 
   private fun currentProcessLogcatFile(context: Context): File {
