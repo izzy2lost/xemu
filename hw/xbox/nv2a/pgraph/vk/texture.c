@@ -1523,25 +1523,16 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     }
 
     /*
-     * If no active surface matched, check the shelf for a compatible
-     * draw-dirty surface at the same address.  This allows textures to
-     * read directly from a shelved surface's VkImage instead of from
-     * stale VRAM data.
+     * Shelved surfaces are deliberately not used as texture sources.  A
+     * shelved surface has no CPU access callback registered, so guest
+     * writes to its VRAM range go untracked, and the surface_to_texture
+     * path below refreshes only when surface->draw_time advances --
+     * which never happens for a surface nothing draws to.  Binding one
+     * here would freeze the texture at the shelved image's contents.
+     *
+     * Shelving now reads the surface back to VRAM, so the normal upload
+     * path below sees the correct pixels.
      */
-    if (!surface_to_texture && state.levels == 1) {
-        SurfaceBinding *shelved;
-        QTAILQ_FOREACH(shelved, &r->shelved_surfaces, entry) {
-            if (shelved->vram_addr == texture_vram_offset) {
-                bool compat = check_surface_to_texture_compatiblity(
-                    shelved, &state);
-                if (shelved->draw_dirty && compat) {
-                    surface = shelved;
-                    surface_to_texture = true;
-                    break;
-                }
-            }
-        }
-    }
 
     if (!surface_to_texture) {
         bool skip_surf_scan = false;

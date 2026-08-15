@@ -2786,32 +2786,23 @@ static void update_surface_part(NV2AState *d, bool upload, bool color)
                     }
 
                     /*
-                     * When a draw-dirty surface is shelved without a
-                     * full download, the VRAM at its address still
-                     * contains stale data (typically zeros).  If a new
-                     * surface (or texture) is later bound at the same
-                     * address, the upload path reads from VRAM and the
-                     * stale zeros are interpreted as e.g. depth=0.0,
-                     * causing everything to fail the depth test (all-
-                     * white rendering).
+                     * Shelving keeps the VkImage but unregisters the
+                     * surface's CPU access callback, so guest writes to
+                     * this VRAM range are no longer tracked.  The image
+                     * and VRAM must therefore not be allowed to diverge:
+                     * read the surface back so VRAM holds the real
+                     * pixels, exactly as every other eviction path does
+                     * (expire_old_surfaces, invalidate_overlapping_
+                     * surfaces).
                      *
-                     * To avoid this, fill the VRAM region with 0xFF
-                     * which encodes as depth ≈ 1.0 (D24S8) or opaque
-                     * white (color), ensuring that any subsequent
-                     * texture or surface upload from this region gets
-                     * safe initial values.  The dirty bits are set so
-                     * the texture cache knows to re-hash and re-upload.
+                     * Skipping this readback and stamping the region
+                     * instead left VRAM permanently out of sync with the
+                     * shelved image, which is what made CPU-written
+                     * content at a previously-rendered address (FMV
+                     * frames decoded into an old render target) render
+                     * as the stale shelved image.
                      */
-                    size_t region =
-                        (size_t)surface->pitch * surface->height;
-                    memset(d->vram_ptr + surface->vram_addr, 0xFF,
-                           region);
-                    memory_region_set_client_dirty(
-                        d->vram, surface->vram_addr, region,
-                        DIRTY_MEMORY_NV2A_TEX);
-                    memory_region_set_client_dirty(
-                        d->vram, surface->vram_addr, region,
-                        DIRTY_MEMORY_VGA);
+                    pgraph_vk_surface_download_if_dirty(d, surface);
                 }
                 shelve_surface(d, surface);
                 g_nv2a_stats.surf_working.lk_evict_ns += nv2a_clock_ns() - _gt1;
