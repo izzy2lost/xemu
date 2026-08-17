@@ -153,6 +153,37 @@ static int64_t FileSize(const std::string& path) {
   return static_cast<int64_t>(st.st_size);
 }
 
+static uint64_t GetPhysicalMemoryBytes() {
+  const long pages = sysconf(_SC_PHYS_PAGES);
+  const long pageSize = sysconf(_SC_PAGE_SIZE);
+  if (pages > 0 && pageSize > 0) {
+    return static_cast<uint64_t>(pages) * static_cast<uint64_t>(pageSize);
+  }
+  return 0;
+}
+
+static bool IsLowMemoryDevice() {
+  constexpr uint64_t kFourGiB = 4ULL * 1024 * 1024 * 1024;
+  const uint64_t physicalBytes = GetPhysicalMemoryBytes();
+  return physicalBytes > 0 && physicalBytes <= kFourGiB;
+}
+
+static int DefaultSubmitFramesForDevice() {
+  if (IsLowMemoryDevice()) {
+    /*
+     * Each additional submit frame owns a complete VRAM mirror plus upload
+     * arenas. On a 64 MiB Xbox configuration the second slot costs about
+     * 117 MiB. Low-memory Android devices benefit more from avoiding reclaim
+     * and swap stalls than from one extra frame of GPU queue depth.
+     *
+     * sysconf reports usable memory (about 3.56 GiB on a nominal 4 GiB
+     * phone), so comparing with 4 GiB includes the intended device class.
+     */
+    return 1;
+  }
+  return 2;
+}
+
 static void LogQcow2Info(const std::string& path) {
   FILE* f = fopen(path.c_str(), "rb");
   if (!f) return;
@@ -288,24 +319,27 @@ static const char* GetTcgThreadFromEnv() {
 }
 
 static int GetTcgTbSizeFromEnv() {
-  constexpr int kDefaultTbSize = 256;
   constexpr int kMinTbSize = 32;
   constexpr int kMaxTbSize = 512;
+  const int defaultTbSize = IsLowMemoryDevice() ? 128 : 256;
 
   const char* value = SDL_getenv("XEMU_ANDROID_TCG_TB_SIZE");
   if (!value || value[0] == '\0') {
-    return kDefaultTbSize;
+    return defaultTbSize;
   }
 
   char* end = nullptr;
   long parsed = strtol(value, &end, 10);
   if (end == value || (end && *end != '\0')) {
-    return kDefaultTbSize;
+    return defaultTbSize;
   }
   if (parsed < kMinTbSize) {
     parsed = kMinTbSize;
   } else if (parsed > kMaxTbSize) {
     parsed = kMaxTbSize;
+  }
+  if (IsLowMemoryDevice() && parsed > 128) {
+    parsed = 128;
   }
   return static_cast<int>(parsed);
 }
@@ -944,7 +978,20 @@ static SetupFiles SyncSetupFiles() {
   }
 
   out.config_path = base + "/xemu.toml";
-  int tbSize = GetPrefInt(env, activity, "tcg_tb_size", 256);
+  int tbSize = GetPrefInt(env, activity, "tcg_tb_size",
+                          IsLowMemoryDevice() ? 128 : 256);
+  if (IsLowMemoryDevice() && tbSize > 128) {
+    /*
+     * Older installs persisted the former 256 MiB default in preferences,
+     * so changing only the fallback would never help an upgraded 4 GiB
+     * device. A 128 MiB translated-block cache is still ample for Xbox code
+     * while returning another 128 MiB of addressable working set to Android.
+     */
+    __android_log_print(ANDROID_LOG_INFO, "xemu-android",
+                        "low-memory device: limiting TCG TB cache from %dMB "
+                        "to 128MB", tbSize);
+    tbSize = 128;
+  }
 
   DisplaySettings ds;
   ds.surface_scale = GetPrefInt(
@@ -1026,7 +1073,8 @@ static SetupFiles SyncSetupFiles() {
   __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                       "frame skip: %s", frame_skip ? "ON" : "OFF");
 
-  int submit_frames = GetPrefInt(env, activity, "submit_frames", 2);
+  int submit_frames = GetPrefInt(env, activity, "submit_frames",
+                                 DefaultSubmitFramesForDevice());
   xemu_set_submit_frames(submit_frames);
   __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                       "submit frames: %d", submit_frames);

@@ -39,6 +39,7 @@ typedef struct MemoryBudget {
     size_t perframe_stg_cap;
     size_t shader_module_cache_entries;
     size_t texture_cache_entries;
+    size_t allocation_soft_limit;
     int image_pool_max;
     int surface_image_pool_max;
 } MemoryBudget;
@@ -121,16 +122,22 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
 #ifdef __ANDROID__
     if (b.memory_class_gib <= 4) {
         b.renderer_budget = 384 * mib;
+        b.allocation_soft_limit = 512 * mib;
     } else if (b.memory_class_gib <= 6) {
         b.renderer_budget = 512 * mib;
+        b.allocation_soft_limit = 768 * mib;
     } else if (b.memory_class_gib <= 8) {
         b.renderer_budget = 768 * mib;
+        b.allocation_soft_limit = 1024 * mib;
     } else if (b.memory_class_gib <= 12) {
         b.renderer_budget = 1024 * mib;
+        b.allocation_soft_limit = 1536 * mib;
     } else if (b.memory_class_gib <= 16) {
         b.renderer_budget = 1536 * mib;
+        b.allocation_soft_limit = 2048 * mib;
     } else {
         b.renderer_budget = 2048 * mib;
+        b.allocation_soft_limit = 3072 * mib;
     }
 
     /*
@@ -143,6 +150,7 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
     }
 #else
     b.renderer_budget = SIZE_MAX;
+    b.allocation_soft_limit = SIZE_MAX;
 #endif
     (void)gib;
 
@@ -289,6 +297,32 @@ static const char *const buffer_names[BUFFER_COUNT] = {
     "BUFFER_UNIFORM_STAGING",
 };
 
+/*
+ * These buffers used to be the renderer's only upload buffers. Uploads are
+ * now owned by FrameStagingState so that CPU writes cannot race GPU work from
+ * an older submit frame. get_staging_buffer() consequently redirects every
+ * access to the active frame, but keeping the old global allocations around
+ * still committed a complete, permanently-unused second copy. That is a very
+ * expensive leak on unified-memory Android devices (169 MiB with 64 MiB Xbox
+ * RAM and the 4 GiB device caps).
+ *
+ * Keep their buffer_size metadata below because it is used to size the active
+ * frame allocations, but do not create or map backing Vulkan memory for them.
+ */
+static bool is_per_frame_staging_buffer(int buffer_id)
+{
+    switch (buffer_id) {
+    case BUFFER_STAGING_SRC:
+    case BUFFER_INDEX_STAGING:
+    case BUFFER_VERTEX_RAM:
+    case BUFFER_VERTEX_INLINE_STAGING:
+    case BUFFER_UNIFORM_STAGING:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static bool create_buffer(PGRAPHState *pg, StorageBuffer *buffer,
                           const char *name, Error **errp)
 {
@@ -334,6 +368,7 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
     MemoryBudget mb = compute_memory_budget(r);
     r->shader_module_cache_target = mb.shader_module_cache_entries;
     r->texture_cache_target = mb.texture_cache_entries;
+    r->allocation_soft_limit = mb.allocation_soft_limit;
     r->image_pool_max = mb.image_pool_max;
     r->surface_image_pool_max = mb.surface_image_pool_max;
 
@@ -342,7 +377,8 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
         "vtx_inline_cap=%zuMB index_cap=%zuMB staging_cap=%zuMB "
         "uniform_cap=%zuMB pf_vtx=%zuMB pf_idx=%zuMB "
         "pf_uni=%zuMB pf_stg=%zuMB "
-        "shader_cache=%zu tex_cache=%zu img_pool=%d surf_pool=%d",
+        "shader_cache=%zu tex_cache=%zu alloc_soft=%zuMB "
+        "img_pool=%d surf_pool=%d",
         mb.total_heap >> 20, mb.memory_class_gib,
         mb.renderer_budget == SIZE_MAX ? "uncapped/" : "",
         mb.renderer_budget == SIZE_MAX ? 0 : mb.renderer_budget >> 20,
@@ -355,6 +391,8 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
         mb.perframe_uni_cap == SIZE_MAX ? 0 : mb.perframe_uni_cap >> 20,
         mb.perframe_stg_cap == SIZE_MAX ? 0 : mb.perframe_stg_cap >> 20,
         mb.shader_module_cache_entries, mb.texture_cache_entries,
+        mb.allocation_soft_limit == SIZE_MAX ? 0 :
+            mb.allocation_soft_limit >> 20,
         mb.image_pool_max, mb.surface_image_pool_max);
 
     size_t staging_size = vram_size * 2;
@@ -493,6 +531,11 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
     };
 
     for (int i = 0; i < BUFFER_COUNT; i++) {
+        if (is_per_frame_staging_buffer(i)) {
+            VK_LOG("buffer_init: skip superseded global %s size=%zu",
+                   buffer_names[i], r->storage_buffers[i].buffer_size);
+            continue;
+        }
         VK_LOG("buffer_init: create %s size=%zu",
                buffer_names[i], r->storage_buffers[i].buffer_size);
         if (!create_buffer(pg, &r->storage_buffers[i], buffer_names[i], errp)) {
@@ -503,12 +546,7 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
 
     // FIXME: Add fallback path for device using host mapped memory
 
-    int buffers_to_map[] = { BUFFER_VERTEX_RAM,
-                             BUFFER_INDEX_STAGING,
-                             BUFFER_VERTEX_INLINE_STAGING,
-                             BUFFER_UNIFORM_STAGING,
-                             BUFFER_STAGING_SRC,
-                             BUFFER_STAGING_DST };
+    int buffers_to_map[] = { BUFFER_STAGING_DST };
 
     for (int i = 0; i < ARRAY_SIZE(buffers_to_map); i++) {
         int idx = buffers_to_map[i];

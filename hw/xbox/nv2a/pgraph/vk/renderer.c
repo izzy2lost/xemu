@@ -36,10 +36,6 @@ extern bool xemu_get_frame_skip(void);
 #include <sys/stat.h>
 #include <unistd.h>
 
-#ifdef __ANDROID__
-#include <android/log.h>
-#endif
-
 typedef struct {
     uint32_t shader_cache_abi;
     uint32_t vendor_id;
@@ -1615,9 +1611,11 @@ void pgraph_vk_check_memory_budget(PGRAPHState *pg)
     const float budget_threshold = 0.8;
 #endif
     bool near_budget = false;
+    size_t allocation_bytes = 0;
 
     for (uint32_t i = 0; i < props->memoryHeapCount; i++) {
         VmaBudget *b = &budgets[i];
+        allocation_bytes += b->statistics.allocationBytes;
         if (b->budget == 0) {
             continue;
         }
@@ -1626,7 +1624,23 @@ void pgraph_vk_check_memory_budget(PGRAPHState *pg)
         near_budget |= use_to_budget_ratio > budget_threshold;
     }
 
+    /*
+     * UMA drivers commonly expose almost all physical RAM as their heap, so
+     * the driver budget ratio does not react until Android is already under
+     * severe reclaim pressure. Use the device-tier cap chosen during buffer
+     * initialization as the process-aware signal.
+     */
+    near_budget |= r->allocation_soft_limit != SIZE_MAX &&
+                   allocation_bytes > r->allocation_soft_limit;
+
     if (near_budget) {
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "memory pressure: VMA=%zuMB soft_limit=%zuMB; "
+                            "trimming caches",
+                            allocation_bytes >> 20,
+                            r->allocation_soft_limit >> 20);
+#endif
         pgraph_vk_trim_texture_cache(pg);
         pgraph_vk_surface_image_pool_drain(r);
     }

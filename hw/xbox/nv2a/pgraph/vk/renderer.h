@@ -1069,6 +1069,7 @@ typedef struct PGRAPHVkState {
     unsigned int last_stall_draw_time;
     bool in_command_buffer;
     int draws_in_cb;  /* Draw/clear/blit commands recorded in current CB */
+    int draws_in_render_pass;
 #if OPT_BINDLESS_TEXTURES
     bool bindless_set_bound;
 #endif
@@ -1291,6 +1292,7 @@ typedef struct PGRAPHVkState {
     ShaderModuleCacheEntry *shader_module_cache_entries;
     size_t shader_module_cache_target;
     size_t texture_cache_target;
+    size_t allocation_soft_limit;
     int image_pool_max;
     int surface_image_pool_max;
 

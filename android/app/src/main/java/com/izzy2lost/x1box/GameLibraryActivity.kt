@@ -260,8 +260,7 @@ class GameLibraryActivity : AppCompatActivity() {
   }
 
   private fun launchMainActivityForRestart() {
-    startActivity(Intent(this, MainActivity::class.java))
-    finish()
+    EmulationProcessHandoff.launch(this, Intent(this, MainActivity::class.java))
   }
 
   private fun launchDashboard() {
@@ -286,8 +285,7 @@ class GameLibraryActivity : AppCompatActivity() {
       .putBoolean("skip_game_picker", false)
       .commit()
 
-    startActivity(Intent(this, MainActivity::class.java))
-    finish()
+    EmulationProcessHandoff.launch(this, Intent(this, MainActivity::class.java))
   }
 
   private fun hasAccessibleCoreFiles(): Boolean {
@@ -472,8 +470,7 @@ class GameLibraryActivity : AppCompatActivity() {
     val intent = Intent(this, MainActivity::class.java).apply {
       putExtra(MainActivity.EXTRA_AUTO_LOAD_SNAPSHOT_SLOT, slot)
     }
-    startActivity(intent)
-    finish()
+    EmulationProcessHandoff.launch(this, intent)
   }
 
   private fun showSnapshotStartupPicker() {
@@ -1393,8 +1390,7 @@ class GameLibraryActivity : AppCompatActivity() {
       .putBoolean("skip_game_picker", false)
       .commit()
 
-    startActivity(Intent(this, MainActivity::class.java))
-    finish()
+    EmulationProcessHandoff.launch(this, Intent(this, MainActivity::class.java))
   }
 
   private fun scanFolderForGames(folderUri: Uri): List<GameEntry> {

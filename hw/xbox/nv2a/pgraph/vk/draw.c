@@ -108,31 +108,47 @@ static int get_command_buffer_draw_limit(PGRAPHVkState *r)
     return INT_MAX;
 }
 
+static int get_strict_draw_batch_limit(PGRAPHVkState *r)
+{
+#ifdef __ANDROID__
+    static int limit = -1;
+    if (limit < 0) {
+        char property[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.vk.strict_draws", property) > 0) {
+            char *end = NULL;
+            long value = strtol(property, &end, 10);
+            if (end != property && *end == '\0' &&
+                value >= 0 && value <= 256) {
+                limit = value;
+            }
+        }
+        if (limit < 0) {
+            bool old_mali = r->device_props.vendorID == 0x13B5u &&
+                VK_VERSION_MAJOR(r->device_props.driverVersion) < 54;
+            /*
+             * The original workaround ended the render pass after every
+             * guest draw. On tile-based Mali GPUs that forces every tile to
+             * memory and back: Halo's menu went from 4 render passes and
+             * 11 ms GPU time to 53 passes and 90 ms. The underlying r38p1
+             * failure involved a large number of draws sharing one pass, so
+             * bound the batch instead. A property value of 1 retains the
+             * legacy per-draw behavior for diagnostics.
+             */
+            limit = old_mali ? 16 : 0;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "strict draw batch limit: %d", limit);
+    }
+    return limit;
+#else
+    return 0;
+#endif
+}
+
 static bool requires_strict_draw_serialization(PGRAPHVkState *r)
 {
 #ifdef __ANDROID__
-    static int mode = -1;
-    if (mode < 0) {
-        char property[PROP_VALUE_MAX] = {};
-        if (__system_property_get("debug.xemu.vk.strict_draws", property) > 0 &&
-            (property[0] == '0' || property[0] == '1') &&
-            property[1] == '\0') {
-            mode = property[0] - '0';
-        } else {
-            /*
-             * The per-draw render-pass break was added for the r38p1 Mali
-             * driver, which could lose the device when a large number of
-             * guest draws shared one render pass. Keep that workaround on
-             * the old driver family; modern Mali drivers can preserve the
-             * attachments across normal in-pass draws.
-             */
-            mode = r->device_props.vendorID == 0x13B5u &&
-                   VK_VERSION_MAJOR(r->device_props.driverVersion) < 54;
-        }
-        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
-                            "strict per-draw serialization: %d", mode);
-    }
-    return mode == 1;
+    return get_strict_draw_batch_limit(r) > 0;
 #else
     return false;
 #endif
@@ -2280,6 +2296,7 @@ static void begin_render_pass(PGRAPHState *pg)
     vkCmdBeginRenderPass(r->command_buffer, &render_pass_begin_info,
                          VK_SUBPASS_CONTENTS_INLINE);
     r->in_render_pass = true;
+    r->draws_in_render_pass = 0;
 
     if (r->gpu_ts_supported &&
         r->gpu_ts_rp_index < GPU_TS_MAX_RENDER_PASSES) {
@@ -2306,6 +2323,7 @@ static void end_render_pass(PGRAPHVkState *r)
         }
         vkCmdEndRenderPass(r->command_buffer);
         r->in_render_pass = false;
+        r->draws_in_render_pass = 0;
     }
 }
 
@@ -3489,6 +3507,7 @@ static void begin_draw(PGRAPHState *pg)
         begin_render_pass(pg);
         must_bind_pipeline = true;
     }
+    r->draws_in_render_pass++;
 
     if (must_bind_pipeline) {
         nv2a_profile_inc_counter(NV2A_PROF_PIPELINE_BIND);
@@ -3768,14 +3787,10 @@ static void end_draw(PGRAPHState *pg)
 
     r->in_draw = false;
 
-    /*
-     * Mali r38p1 can lose the device when two NV2A draws overlap within the
-     * same graphics command buffer. Close the render pass and establish a
-     * full memory dependency at each guest draw boundary. This is cheaper
-     * than submitting and waiting after every draw while preserving strict
-     * Xbox draw ordering.
-     */
-    if (requires_strict_draw_serialization(r)) {
+    /* Bound old-Mali render-pass batches and establish ordering between them. */
+    int strict_batch_limit = get_strict_draw_batch_limit(r);
+    if (strict_batch_limit > 0 &&
+        r->draws_in_render_pass >= strict_batch_limit) {
         end_render_pass(r);
         VkMemoryBarrier barrier = {
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,

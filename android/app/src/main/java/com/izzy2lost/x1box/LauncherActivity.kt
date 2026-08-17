@@ -117,8 +117,7 @@ class LauncherActivity : Activity() {
 
       if (hasMcpx && hasFlash && hasHdd) {
         DebugLog.i(TAG) { "Frontend launch resolved via ${frontendLaunch.source}" }
-        startActivity(Intent(this, MainActivity::class.java))
-        finish()
+        EmulationProcessHandoff.launch(this, Intent(this, MainActivity::class.java))
         return
       }
 

@@ -1509,7 +1509,7 @@ class SettingsActivity : AppCompatActivity() {
       .putBoolean("skip_game_picker", false)
       .commit()
 
-    startActivity(Intent(this, MainActivity::class.java))
+    EmulationProcessHandoff.launch(this, Intent(this, MainActivity::class.java))
   }
 
   private fun resolveInsigniaSetupAssistantUri(): Uri? {
