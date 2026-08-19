@@ -159,6 +159,13 @@ struct OptBisectStats {
     int finish_stalled;
     int stall_deferred;
     int stall_batched;
+    int stall_suppressed;
+    /* Why the render pass was ended (diagnostic: see hakuX-rpb). */
+    int rpb_query;
+    int rpb_clear;
+    int rpb_batch;
+    int rpb_finish;
+    int rpb_other;
     int predownload_hits;
 };
 extern struct OptBisectStats g_opt_stats;
@@ -1067,6 +1074,8 @@ typedef struct PGRAPHVkState {
     VkFence command_buffer_fence;
     unsigned int command_buffer_start_time;
     unsigned int last_stall_draw_time;
+    /* Opportunistic stall finishes already spent on the frame being built. */
+    int stall_finishes_this_frame;
     bool in_command_buffer;
     int draws_in_cb;  /* Draw/clear/blit commands recorded in current CB */
     int draws_in_render_pass;

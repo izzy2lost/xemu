@@ -1294,6 +1294,8 @@ static void pgraph_vk_flip_stall(NV2AState *d)
 
     {
         PGRAPHVkState *r = d->pgraph.vk_renderer_state;
+        /* New frame, new allowance of opportunistic submits. */
+        r->stall_finishes_this_frame = 0;
         r->frame_was_skipped = r->frame_skip_active;
         if (r->frame_skip_active) {
             r->blend_after_skip = true;

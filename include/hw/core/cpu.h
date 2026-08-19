@@ -288,6 +288,15 @@ typedef struct CPUTLBDesc {
     /* maximum number of entries observed in the window */
     size_t window_max_entries;
     size_t n_used_entries;
+    /*
+     * Set the first time an entry is filled for this mode, never cleared.
+     * NB_MMU_MODES is the maximum over all targets and every mode gets a
+     * table allocated, but a given target only ever uses a few of them; this
+     * lets whole-TLB sweeps skip the ones that were never touched. Kept
+     * separate from n_used_entries so a sweep cannot be misled by that
+     * counter drifting.
+     */
+    bool ever_used;
     /* The next index to use in the tlb victim table.  */
     size_t vindex;
     /* The tlb victim table, in two parts.  */

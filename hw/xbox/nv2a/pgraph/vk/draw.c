@@ -257,8 +257,13 @@ static void opt_stats_log_and_reset(void)
                 g_opt_stats.draws_skipped_pending,
                 g_opt_stats.draws_skipped_frameskip);
         __android_log_print(ANDROID_LOG_INFO, "hakuX-stall",
-                "RPBreaks:%d Finish:%d(vtx%d sc%d sd%d buf%d fb%d pres%d flip%d flu%d stl%d stlDef%d stlBat%d) InlClr:%d/%d PreDL:%d sd[ev%d noCb%d dl%d cDef%d cDefC%d pDl%d dDl%d] dlSrc[defFb%d ppdFb%d dirtyIf%d] dif[ovl%d ovlSh%d exp%d expSh%d blt%d flu%d dds%d oth%d]",
+                "RPBreaks:%d[q%d clr%d bat%d fin%d oth%d] Finish:%d(vtx%d sc%d sd%d buf%d fb%d pres%d flip%d flu%d stl%d stlDef%d stlBat%d stlSup%d) InlClr:%d/%d PreDL:%d sd[ev%d noCb%d dl%d cDef%d cDefC%d pDl%d dDl%d] dlSrc[defFb%d ppdFb%d dirtyIf%d] dif[ovl%d ovlSh%d exp%d expSh%d blt%d flu%d dds%d oth%d]",
                 g_opt_stats.render_pass_breaks,
+                g_opt_stats.rpb_query,
+                g_opt_stats.rpb_clear,
+                g_opt_stats.rpb_batch,
+                g_opt_stats.rpb_finish,
+                g_opt_stats.rpb_other,
                 g_opt_stats.finish_calls,
                 g_opt_stats.finish_vtx_dirty,
                 g_opt_stats.finish_surf_create,
@@ -271,6 +276,7 @@ static void opt_stats_log_and_reset(void)
                 g_opt_stats.finish_stalled,
                 g_opt_stats.stall_deferred,
                 g_opt_stats.stall_batched,
+                g_opt_stats.stall_suppressed,
                 g_opt_stats.inline_clear_hits,
                 g_opt_stats.inline_clear_misses,
                 g_opt_stats.predownload_hits,
@@ -2025,10 +2031,14 @@ static void push_texture_indices(PGRAPHState *pg)
 }
 #endif
 
+/* The pool is reset once per command buffer by reserve_query_pool(), because
+ * vkCmdResetQueryPool may not be called inside a render pass instance.
+ * Beginning and ending a query inside one is allowed, so these run wherever
+ * the draw stream needs them. */
 static void begin_query(PGRAPHVkState *r)
 {
     assert(r->in_command_buffer);
-    assert(!r->in_render_pass);
+    assert(r->queries_reset_in_cb);
     assert(!r->query_in_flight);
 
     // FIXME: We should handle this. Make the query buffer bigger, but at least
@@ -2036,8 +2046,6 @@ static void begin_query(PGRAPHVkState *r)
     assert(r->num_queries_in_flight < r->max_queries_in_flight);
 
     nv2a_profile_inc_counter(NV2A_PROF_QUERY);
-    vkCmdResetQueryPool(r->command_buffer, r->query_pool,
-                        r->num_queries_in_flight, 1);
     VkQueryControlFlags query_flags =
         r->enabled_physical_device_features.occlusionQueryPrecise == VK_TRUE ?
         VK_QUERY_CONTROL_PRECISE_BIT : 0;
@@ -2052,7 +2060,6 @@ static void begin_query(PGRAPHVkState *r)
 static void end_query(PGRAPHVkState *r)
 {
     assert(r->in_command_buffer);
-    assert(!r->in_render_pass);
     assert(r->query_in_flight);
 
     vkCmdEndQuery(r->command_buffer, r->query_pool,
@@ -2311,6 +2318,12 @@ static void begin_render_pass(PGRAPHState *pg)
 static void end_render_pass(PGRAPHVkState *r)
 {
     if (r->in_render_pass) {
+        /* A query begun inside a render pass instance must also end inside it.
+         * Consecutive query results are summed, so letting one logical zpass
+         * count span several render passes stays correct. */
+        if (r->query_in_flight) {
+            end_query(r);
+        }
         OPT_STAT_INC(render_pass_breaks);
         if (r->gpu_ts_supported &&
             r->gpu_ts_rp_index < GPU_TS_MAX_RENDER_PASSES) {
@@ -2483,6 +2496,7 @@ void pgraph_vk_finish(PGRAPHState *pg, FinishReason finish_reason)
         nv2a_profile_inc_counter(finish_reason_to_counter_enum[finish_reason]);
 
         if (r->in_render_pass) {
+            OPT_STAT_INC(rpb_finish);
             end_render_pass(r);
         }
         if (r->query_in_flight) {
@@ -2904,6 +2918,7 @@ void pgraph_vk_begin_command_buffer(PGRAPHState *pg)
     r->command_buffer_start_time = pg->draw_time;
     r->in_command_buffer = true;
     r->draws_in_cb = 0;
+    r->queries_reset_in_cb = false;
 
     if (r->gpu_ts_supported) {
         uint32_t base = r->current_frame * GPU_TS_QUERIES_PER_CB;
@@ -2934,6 +2949,9 @@ void pgraph_vk_ensure_not_in_render_pass(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
 
+    if (r->in_render_pass) {
+        OPT_STAT_INC(rpb_other);
+    }
     end_render_pass(r);
     if (r->query_in_flight) {
         end_query(r);
@@ -3482,22 +3500,25 @@ static void begin_draw(PGRAPHState *pg)
     assert(r->in_command_buffer);
     r->draws_in_cb++;
 
-    // Visibility testing
-    if (!pg->clearing && pg->zpass_pixel_count_enable) {
-        if (r->new_query_needed && r->query_in_flight) {
+    bool want_query = !pg->clearing && pg->zpass_pixel_count_enable;
+
+    /* Reserve the whole occlusion pool once per command buffer. This is the
+     * only part of query handling that has to happen outside a render pass, so
+     * doing it here costs at most one break per command buffer instead of one
+     * every time visibility testing toggles. Titles that never issue a query
+     * never pay for it. */
+    if (want_query && !r->queries_reset_in_cb) {
+        if (r->in_render_pass) {
+            OPT_STAT_INC(rpb_query);
             end_render_pass(r);
-            end_query(r);
         }
-        if (!r->query_in_flight) {
-            end_render_pass(r);
-            begin_query(r);
-        }
-    } else if (r->query_in_flight) {
-        end_render_pass(r);
-        end_query(r);
+        vkCmdResetQueryPool(r->command_buffer, r->query_pool, 0,
+                            r->max_queries_in_flight);
+        r->queries_reset_in_cb = true;
     }
 
     if (pg->clearing) {
+        if (r->in_render_pass) { OPT_STAT_INC(rpb_clear); }
         end_render_pass(r);
     }
 
@@ -3506,6 +3527,18 @@ static void begin_draw(PGRAPHState *pg)
     if (!r->in_render_pass) {
         begin_render_pass(pg);
         must_bind_pipeline = true;
+    }
+
+    // Visibility testing, inside the render pass instance
+    if (want_query) {
+        if (r->new_query_needed && r->query_in_flight) {
+            end_query(r);
+        }
+        if (!r->query_in_flight) {
+            begin_query(r);
+        }
+    } else if (r->query_in_flight) {
+        end_query(r);
     }
     r->draws_in_render_pass++;
 
@@ -3782,6 +3815,7 @@ static void end_draw(PGRAPHState *pg)
     assert(r->in_render_pass);
 
     if (pg->clearing) {
+        if (r->in_render_pass) { OPT_STAT_INC(rpb_clear); }
         end_render_pass(r);
     }
 
@@ -3791,6 +3825,7 @@ static void end_draw(PGRAPHState *pg)
     int strict_batch_limit = get_strict_draw_batch_limit(r);
     if (strict_batch_limit > 0 &&
         r->draws_in_render_pass >= strict_batch_limit) {
+        if (r->in_render_pass) { OPT_STAT_INC(rpb_batch); }
         end_render_pass(r);
         VkMemoryBarrier barrier = {
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
