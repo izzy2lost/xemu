@@ -1277,6 +1277,12 @@ typedef struct PGRAPHVkState {
     } tex_reg_cache[NV2A_MAX_TEXTURES];
     VkFormatProperties *texture_format_properties;
 
+    /* Effective Vulkan format for each Kelvin texture format. Seeded from
+     * kelvin_color_format_vk_map, then adjusted for what this device actually
+     * supports (see pgraph_vk_init_textures).
+     */
+    VkColorFormatInfo texture_format_map[KELVIN_COLOR_FORMAT_COUNT];
+
     Lru shader_cache;
     ShaderBinding *shader_cache_entries;
     ShaderBinding *shader_binding;

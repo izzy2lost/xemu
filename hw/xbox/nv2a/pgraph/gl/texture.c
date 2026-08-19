@@ -135,12 +135,14 @@ static bool android_texture_rgba8_upload_applies_swizzle(const TextureShape s)
     }
 }
 
-static unsigned int android_texture_source_bpp(const TextureShape s,
-                                               unsigned int default_bpp,
+static unsigned int android_texture_source_bpp(unsigned int default_bpp,
                                                bool has_converted_data)
 {
-    if (has_converted_data &&
-        s.color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_I8_A8R8G8B8) {
+    /* Every format pgraph_convert_texture_data() handles is expanded to four
+     * 8-bit components, regardless of how tightly it was packed in guest
+     * memory, so the converted rows are always four bytes per pixel.
+     */
+    if (has_converted_data) {
         return 4;
     }
     return default_bpp;
@@ -1017,7 +1019,7 @@ static void upload_gl_texture(PGRAPHGLState *r,
                 const uint8_t *upload_data = pixel_data;
                 unsigned int source_bpp =
 #ifdef __ANDROID__
-                    android_texture_source_bpp(s, f.bytes_per_pixel,
+                    android_texture_source_bpp(f.bytes_per_pixel,
                                                converted != NULL);
 #else
                     f.bytes_per_pixel;
@@ -1119,7 +1121,7 @@ static void upload_gl_texture(PGRAPHGLState *r,
                 unsigned int tex_height = height;
                 unsigned int source_bpp =
 #ifdef __ANDROID__
-                    android_texture_source_bpp(s, f.bytes_per_pixel,
+                    android_texture_source_bpp(f.bytes_per_pixel,
                                                converted != NULL);
 #else
                     f.bytes_per_pixel;
@@ -1229,7 +1231,7 @@ static void upload_gl_texture(PGRAPHGLState *r,
                     const uint8_t *upload_data = pixel_data;
                     unsigned int source_bpp =
 #ifdef __ANDROID__
-                        android_texture_source_bpp(s, f.bytes_per_pixel,
+                        android_texture_source_bpp(f.bytes_per_pixel,
                                                    converted != NULL);
 #else
                         f.bytes_per_pixel;

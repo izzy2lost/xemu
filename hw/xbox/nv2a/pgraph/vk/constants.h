@@ -154,7 +154,9 @@ typedef struct VkColorFormatInfo {
     VkComponentMapping component_map;
 } VkColorFormatInfo;
 
-static const VkColorFormatInfo kelvin_color_format_vk_map[66] = {
+#define KELVIN_COLOR_FORMAT_COUNT 66
+
+static const VkColorFormatInfo kelvin_color_format_vk_map[KELVIN_COLOR_FORMAT_COUNT] = {
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_Y8] = {
         VK_FORMAT_R8_UNORM,
         { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE },
@@ -244,7 +246,7 @@ static const VkColorFormatInfo kelvin_color_format_vk_map[66] = {
         { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G }
     },
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R6G5B5] = {
-        VK_FORMAT_R8G8B8_SNORM, // Converted
+        VK_FORMAT_R8G8B8A8_SNORM, // Converted
     },
     [NV097_SET_TEXTURE_FORMAT_COLOR_SZ_G8B8] = {
         VK_FORMAT_R8G8_UNORM,

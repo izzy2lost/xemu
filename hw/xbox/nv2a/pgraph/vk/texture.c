@@ -544,7 +544,7 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
     NV2A_PHASE_TIMER_BEGIN(texture_upload);
     PGRAPHVkState *r = pg->vk_renderer_state;
     TextureShape *state = &binding->key.state;
-    VkColorFormatInfo vkf = kelvin_color_format_vk_map[state->color_format];
+    VkColorFormatInfo vkf = r->texture_format_map[state->color_format];
 
     VK_LOG("upload_texture: idx=%d fmt=%d %ux%u cubemap=%d levels=%d",
            texture_idx, state->color_format, state->width, state->height,
@@ -678,7 +678,7 @@ static void copy_depth_surface_to_texture(PGRAPHState *pg,
 
     PGRAPHVkState *r = pg->vk_renderer_state;
     TextureShape *state = &texture->key.state;
-    VkColorFormatInfo vkf = kelvin_color_format_vk_map[state->color_format];
+    VkColorFormatInfo vkf = r->texture_format_map[state->color_format];
     assert(vkf.vk_format == VK_FORMAT_R16_UNORM);
 
     if (r->reorder_window.count > 0) {
@@ -825,7 +825,7 @@ static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surfac
     }
 
     TextureShape *state = &texture->key.state;
-    VkColorFormatInfo vkf = kelvin_color_format_vk_map[state->color_format];
+    VkColorFormatInfo vkf = r->texture_format_map[state->color_format];
 
     nv2a_profile_inc_counter(NV2A_PROF_SURF_TO_TEX);
 
@@ -1140,7 +1140,7 @@ static void copy_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surface,
         pgraph_vk_flush_draw_queue(d);
     }
     TextureShape *state = &texture->key.state;
-    VkColorFormatInfo vkf = kelvin_color_format_vk_map[state->color_format];
+    VkColorFormatInfo vkf = r->texture_format_map[state->color_format];
 
     nv2a_profile_inc_counter(NV2A_PROF_SURF_TO_TEX);
 
@@ -1209,15 +1209,21 @@ static unsigned int vk_format_texel_size(VkFormat format)
     case VK_FORMAT_R5G6B5_UNORM_PACK16:     return 2;
     case VK_FORMAT_A4R4G4B4_UNORM_PACK16:   return 2;
     case VK_FORMAT_R16_UNORM:               return 2;
-    case VK_FORMAT_R8G8B8_SNORM:            return 3;
     case VK_FORMAT_B8G8R8A8_UNORM:          return 4;
     case VK_FORMAT_R8G8B8A8_UNORM:          return 4;
     case VK_FORMAT_R32_UINT:                return 4;
+    /* Only formats that may be sampled straight out of a surface belong
+     * above. Returning 0 for anything else means the caller falls back to a
+     * normal texture upload, which is what formats that need a component
+     * swizzle or a signed reinterpretation want -- aliasing a surface skips
+     * both.
+     */
     default:                                return 0;
     }
 }
 
-static bool check_surface_to_texture_compatiblity(const SurfaceBinding *surface,
+static bool check_surface_to_texture_compatiblity(PGRAPHVkState *r,
+                                                  const SurfaceBinding *surface,
                                                   const TextureShape *shape)
 {
     if (surface->width != shape->width ||
@@ -1231,7 +1237,7 @@ static bool check_surface_to_texture_compatiblity(const SurfaceBinding *surface,
         return true;
     }
 
-    VkColorFormatInfo tex_vkf = kelvin_color_format_vk_map[shape->color_format];
+    VkColorFormatInfo tex_vkf = r->texture_format_map[shape->color_format];
     return tex_vkf.vk_format &&
            surface->host_fmt.host_bytes_per_pixel == vk_format_texel_size(tex_vkf.vk_format);
 }
@@ -1509,7 +1515,7 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     SurfaceBinding *surface = pgraph_vk_surface_get(d, texture_vram_offset);
     if (surface && state.levels == 1) {
         surface_to_texture =
-            check_surface_to_texture_compatiblity(surface, &state);
+            check_surface_to_texture_compatiblity(r, surface, &state);
 
         if (!surface_to_texture && surface->color) {
             trace_nv2a_pgraph_surface_texture_compat_failed(
@@ -1714,7 +1720,7 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     snode->possibly_dirty = false;
     snode->hash = content_hash;
 
-    VkColorFormatInfo vkf = kelvin_color_format_vk_map[state.color_format];
+    VkColorFormatInfo vkf = r->texture_format_map[state.color_format];
     assert(vkf.vk_format != 0);
     assert(0 < state.dimensionality);
     assert(state.dimensionality < ARRAY_SIZE(dimensionality_to_vk_image_type));
@@ -2401,18 +2407,100 @@ void pgraph_vk_trim_texture_cache(PGRAPHState *pg)
                     r->texture_cache.num_used);
 }
 
+static bool format_can_be_sampled(PGRAPHVkState *r, VkFormat format)
+{
+    if (format == VK_FORMAT_UNDEFINED) {
+        return false;
+    }
+
+    VkFormatProperties props;
+    vkGetPhysicalDeviceFormatProperties(r->physical_device, format, &props);
+    return (props.optimalTilingFeatures &
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+}
+
+/* Pick the effective Vulkan format for each Kelvin texture format.
+ *
+ * The preferred format is not always available. A4R4G4B4 in particular only
+ * became core in Vulkan 1.3 (VK_EXT_4444_formats before that), so plenty of
+ * Vulkan 1.1 mobile drivers do not expose it at all. Creating an image with an
+ * unsupported format leaves the texture unusable and it samples as nothing --
+ * which shows up as missing text, since that is the format games commonly pick
+ * for font glyph atlases.
+ *
+ * Where the exact format is missing, read the same 16-bit texel through
+ * another 4444 layout and swizzle the image view back into ARGB order. That
+ * keeps the texel size and the upload path unchanged.
+ */
+static void init_texture_format_map(PGRAPHVkState *r)
+{
+    memcpy(r->texture_format_map, kelvin_color_format_vk_map,
+           sizeof(r->texture_format_map));
+
+    /* Xbox A4R4G4B4 packs A into bits 15..12, R into 11..8, G into 7..4 and B
+     * into 3..0. Each candidate below names the channel each of those nibbles
+     * lands in for that Vulkan format, so the swizzle maps them back to RGBA.
+     */
+    static const VkColorFormatInfo argb4444_candidates[] = {
+        /* A:15..12 R:11..8 G:7..4 B:3..0 -- exact match, no swizzle. */
+        { VK_FORMAT_A4R4G4B4_UNORM_PACK16,
+          { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY } },
+        /* B:15..12 G:11..8 R:7..4 A:3..0 -- so R=G, G=R, B=A, A=B. */
+        { VK_FORMAT_B4G4R4A4_UNORM_PACK16,
+          { VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R,
+            VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_B } },
+        /* R:15..12 G:11..8 B:7..4 A:3..0 -- so R=G, G=B, B=A, A=R. */
+        { VK_FORMAT_R4G4B4A4_UNORM_PACK16,
+          { VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B,
+            VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_R } },
+    };
+
+    static const int argb4444_formats[] = {
+        NV097_SET_TEXTURE_FORMAT_COLOR_SZ_A4R4G4B4,
+        NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_A4R4G4B4,
+    };
+
+    const VkColorFormatInfo *argb4444 = NULL;
+    for (int i = 0; i < ARRAY_SIZE(argb4444_candidates); i++) {
+        if (format_can_be_sampled(r, argb4444_candidates[i].vk_format)) {
+            argb4444 = &argb4444_candidates[i];
+            break;
+        }
+    }
+
+    if (argb4444 == NULL) {
+        fprintf(stderr,
+                "nv2a: no supported 4444 texture format; A4R4G4B4 textures "
+                "will not render\n");
+        return;
+    }
+
+    if (argb4444 != &argb4444_candidates[0]) {
+        fprintf(stderr,
+                "nv2a: VK_FORMAT_A4R4G4B4_UNORM_PACK16 unsupported, using "
+                "format %d with a swizzled view instead\n",
+                argb4444->vk_format);
+    }
+
+    for (int i = 0; i < ARRAY_SIZE(argb4444_formats); i++) {
+        r->texture_format_map[argb4444_formats[i]] = *argb4444;
+    }
+}
+
 void pgraph_vk_init_textures(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
 
     texture_cache_init(r);
+    init_texture_format_map(r);
     create_dummy_texture(pg);
 
     r->texture_format_properties = g_malloc0_n(
-        ARRAY_SIZE(kelvin_color_format_vk_map), sizeof(VkFormatProperties));
-    for (int i = 0; i < ARRAY_SIZE(kelvin_color_format_vk_map); i++) {
+        KELVIN_COLOR_FORMAT_COUNT, sizeof(VkFormatProperties));
+    for (int i = 0; i < KELVIN_COLOR_FORMAT_COUNT; i++) {
         vkGetPhysicalDeviceFormatProperties(
-            r->physical_device, kelvin_color_format_vk_map[i].vk_format,
+            r->physical_device, r->texture_format_map[i].vk_format,
             &r->texture_format_properties[i]);
     }
 }

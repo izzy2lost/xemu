@@ -213,14 +213,14 @@ void pgraph_glsl_set_psh_state(PGRAPHState *pg, PshState *state)
             }
         }
 
-        /* Keep track of textures uploaded as signed normalized data.
-         * Those must not be remapped a second time in the fragment shader.
-         * GLES uploads as unsigned RGBA8, so detect signed via color format. */
-        if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_OPENGL) {
-            state->snorm_tex[i] =
-                color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R6G5B5;
-        }
-        /* VK/desktop GL: snorm_tex left at default (false) — FIXME */
+        /* Keep track of textures uploaded as signed normalized data. Those
+         * must not be remapped a second time in the fragment shader. R6G5B5
+         * is the only such format, and both backends upload it signed
+         * (GL_RGBA8_SNORM / VK_FORMAT_R8G8B8A8_SNORM), so this does not depend
+         * on which renderer is in use.
+         */
+        state->snorm_tex[i] =
+            color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R6G5B5;
         state->shadow_map[i] = f.depth;
 
         uint32_t filter = pgraph_reg_r(pg, NV_PGRAPH_TEXFILTER0 + i * 4);
