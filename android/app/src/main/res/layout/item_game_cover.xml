@@ -6,7 +6,9 @@
   android:clickable="true"
   android:clipChildren="false"
   android:clipToPadding="false"
+  android:defaultFocusHighlightEnabled="false"
   android:focusable="true"
+  android:foreground="@drawable/game_cover_focus_frame"
   android:padding="6dp">
 
   <com.google.android.material.card.MaterialCardView

@@ -47,6 +47,8 @@ import java.util.concurrent.Executors
 class GameLibraryActivity : AppCompatActivity() {
   companion object {
     const val EXTRA_RESTART_LAST_GAME = "com.izzy2lost.x1box.extra.RESTART_LAST_GAME"
+    private const val COVER_FOCUS_SCALE = 1.06f
+    private const val COVER_FOCUS_ANIM_MS = 120L
     private const val SNAPSHOT_PREVIEW_HEADER_SIZE = 12
     private const val TOTAL_SNAPSHOT_SLOTS = 10
     private const val XDVDFS_SECTOR_SIZE = 2048L
@@ -640,6 +642,9 @@ class GameLibraryActivity : AppCompatActivity() {
       if (columnIndex == 0) {
         row = LinearLayout(this).apply {
           orientation = LinearLayout.HORIZONTAL
+          /* Let the focused cell scale up without being clipped by its row. */
+          clipChildren = false
+          clipToPadding = false
         }
         val rowLp = LinearLayout.LayoutParams(
           LinearLayout.LayoutParams.MATCH_PARENT,
@@ -665,6 +670,21 @@ class GameLibraryActivity : AppCompatActivity() {
       bindConvertibleWarning(convertWarningText, game)
       item.setOnClickListener { launchGame(game) }
       item.setOnLongClickListener { showGameContextMenu(game); true }
+      /*
+       * The green frame in the item's foreground already marks focus; lifting
+       * and enlarging the focused cover makes it readable at a glance when
+       * navigating with a controller, which is the only way to move focus
+       * here.
+       */
+      item.setOnFocusChangeListener { view, hasFocus ->
+        val scale = if (hasFocus) COVER_FOCUS_SCALE else 1f
+        view.animate()
+          .scaleX(scale)
+          .scaleY(scale)
+          .setDuration(COVER_FOCUS_ANIM_MS)
+          .start()
+        view.z = if (hasFocus) dp(8).toFloat() else 0f
+      }
       bindCoverArt(coverImage, game)
     }
 
