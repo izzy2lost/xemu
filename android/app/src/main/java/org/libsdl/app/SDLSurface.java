@@ -88,7 +88,16 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         setOnApplyWindowInsetsListener(this);
         setOnKeyListener(this);
         setOnTouchListener(this);
-        enableSensor(Sensor.TYPE_ACCELEROMETER, true);
+        /*
+         * Upstream SDL turns the accelerometer into a virtual joystick here, at
+         * SENSOR_DELAY_GAME (~50 Hz). An Xbox controller has no accelerometer
+         * and nothing in xemu reads onNativeAccel(), so every one of those
+         * samples was a wasted sensor callback and JNI crossing -- and on this
+         * hardware each one also drew a framework "SensorManager" log line,
+         * around 50/s from this process alone. Leave the sensor off; the
+         * enableSensor() plumbing above stays in case a future input mode
+         * wants it.
+         */
     }
 
     protected Surface getNativeSurface() {

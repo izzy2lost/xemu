@@ -862,11 +862,17 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             if (mSurface.mIsSurfaceReady && (mHasFocus || mHasMultiWindow) && mIsResumedCalled) {
                 if (mSDLThread == null) {
                     // This is the entry point to the C app.
-                    // Start up the C app thread and enable sensor input for the first time
-                    // FIXME: Why aren't we enabling sensor input at start?
 
                     mSDLThread = new Thread(new SDLMain(), "SDLThread");
-                    mSurface.enableSensor(Sensor.TYPE_ACCELEROMETER, true);
+                    /*
+                     * Upstream enables the accelerometer here so SDL can expose
+                     * it as a virtual joystick. An Xbox pad has no
+                     * accelerometer and nothing in xemu reads onNativeAccel(),
+                     * so this only registered a 50 Hz (SENSOR_DELAY_GAME)
+                     * listener that woke the main thread and kept the sensor
+                     * powered for the whole session. See the matching note in
+                     * SDLSurface.handleResume().
+                     */
                     mSDLThread.start();
 
                     // No nativeResume(), don't signal Android_ResumeSem

@@ -227,7 +227,14 @@ static void pgraph_vk_init(NV2AState *d, Error **errp)
 
     {
         PGRAPHVkState *r = pg->vk_renderer_state;
-        if (r->device_props.limits.timestampComputeAndGraphics) {
+        /*
+         * The timestamp pool exists solely to feed the "xemu-gpu" telemetry
+         * line, and it costs two vkCmdWriteTimestamp per render pass plus a
+         * pool reset and readback per command buffer. Tie it to the telemetry
+         * switch so a build with NV2A_PERF_LOG=0 does not pay for it.
+         */
+        if (NV2A_PERF_LOG &&
+            r->device_props.limits.timestampComputeAndGraphics) {
             VkQueryPoolCreateInfo ts_ci = {
                 .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                 .queryType = VK_QUERY_TYPE_TIMESTAMP,

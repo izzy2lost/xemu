@@ -17,6 +17,17 @@ endif()
 option(XEMU_ENABLE_VULKAN "Enable Vulkan renderer" ON)
 option(XEMU_ENABLE_XISO_CONVERTER "Enable ISO->XISO converter library" ON)
 option(XEMU_ENABLE_LTO "Enable interprocedural optimization for release builds" OFF)
+# The nv2a performance telemetry (phase timers, ~190 counters and the periodic
+# hakuX-*/xemu-* logcat lines, plus per-render-pass GPU timestamp queries) is
+# compiled in by default because it is how this fork gets profiled. Turn it OFF
+# for a shipping build to drop that work entirely.
+option(XEMU_ENABLE_PERF_LOG "Compile in nv2a performance telemetry" ON)
+# assert() must stay live: QEMU hard-errors on NDEBUG ("building with NDEBUG is
+# not supported", include/qemu/osdep.h), so turning asserts off is not an
+# available trade no matter how much faster it might be. These flags cancel
+# NDEBUG in case a toolchain default ever introduces it; as configured today the
+# Android toolchain never defines it at all.
+set(XEMU_ASSERT_FLAG $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:-UNDEBUG>)
 option(XEMU_OPT_NATIVE_FLOAT "Enable native ARM64 float operations for SSE/FPU" OFF)
 option(XEMU_OPT_TCG_PEEPHOLE "Enable TCG optimizer setcond+brcond peephole fusion" OFF)
 option(XEMU_OPT_TB_CACHE_HINTS "Enable persistent TB cache hints (pre-warm on load)" OFF)
@@ -1134,8 +1145,12 @@ target_compile_definitions(xemu_core PRIVATE
 )
 
 target_compile_options(xemu_core PRIVATE -g1
-  $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:-UNDEBUG>
+  ${XEMU_ASSERT_FLAG}
 )
+
+if(NOT XEMU_ENABLE_PERF_LOG)
+  target_compile_definitions(xemu_core PRIVATE NV2A_PERF_LOG=0)
+endif()
 
 target_include_directories(xemu_core PRIVATE
   "${nv2a_vsh_cpu_SOURCE_DIR}/src"
@@ -1248,8 +1263,12 @@ if(XEMU_ENABLE_VULKAN)
 endif()
 
 target_compile_options(xemu PRIVATE -fexceptions -frtti -g1
-  $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:-UNDEBUG>
+  ${XEMU_ASSERT_FLAG}
 )
+
+if(NOT XEMU_ENABLE_PERF_LOG)
+  target_compile_definitions(xemu PRIVATE NV2A_PERF_LOG=0)
+endif()
 
 target_include_directories(xemu PRIVATE
   "${REPO_ROOT}"
@@ -1281,7 +1300,7 @@ if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
 
   target_compile_definitions(xiso_converter PRIVATE ANDROID __ANDROID__)
   target_compile_options(xiso_converter PRIVATE -fexceptions -frtti -g1
-    $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:-UNDEBUG>
+    ${XEMU_ASSERT_FLAG}
   )
 
   target_link_libraries(xiso_converter PRIVATE

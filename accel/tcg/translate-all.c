@@ -852,7 +852,13 @@ void tcg_flush_jmp_cache(CPUState *cpu)
 
 #include "tcg/tcg-op-common.h"
 #include "exec/translator.h"
-#ifdef __ANDROID__
+/*
+ * Fires once per superblock formed, i.e. from inside tb_gen_code(), so it is a
+ * logd socket write on a hot path. Left on by default because that is the
+ * existing behaviour; XEMU_ENABLE_PERF_LOG=OFF (which defines NV2A_PERF_LOG=0
+ * for this target) compiles it out along with the rest of the telemetry.
+ */
+#if defined(__ANDROID__) && (!defined(NV2A_PERF_LOG) || NV2A_PERF_LOG)
 #include <android/log.h>
 #define SB_LOG(...) __android_log_print(ANDROID_LOG_INFO, "superblock", __VA_ARGS__)
 #else
