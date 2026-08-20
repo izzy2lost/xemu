@@ -483,12 +483,12 @@ bool pgraph_vk_init_buffers(NV2AState *d, Error **errp)
     };
 
     r->bitmap_size = memory_region_size(d->vram) / 4096;
-    r->uploaded_bitmap = bitmap_new(r->bitmap_size);
-    if (!r->uploaded_bitmap) {
-        error_setg(errp, "Failed to allocate uploaded surface bitmap");
+    r->cb_vertex_pages = bitmap_new(r->bitmap_size);
+    if (!r->cb_vertex_pages) {
+        error_setg(errp, "Failed to allocate vertex RAM page bitmap");
         return false;
     }
-    bitmap_clear(r->uploaded_bitmap, 0, r->bitmap_size);
+    bitmap_clear(r->cb_vertex_pages, 0, r->bitmap_size);
     r->vertex_ram_flush_min = VK_WHOLE_SIZE;
     r->vertex_ram_flush_max = 0;
 
@@ -701,8 +701,8 @@ fail:
         }
         destroy_buffer(pg, &r->storage_buffers[i]);
     }
-    g_free(r->uploaded_bitmap);
-    r->uploaded_bitmap = NULL;
+    g_free(r->cb_vertex_pages);
+    r->cb_vertex_pages = NULL;
     r->bitmap_size = 0;
     return false;
 }
@@ -740,8 +740,8 @@ void pgraph_vk_finalize_buffers(NV2AState *d)
     g_free(r->draw_queue.index_buf);
     r->draw_queue.index_buf = NULL;
 
-    g_free(r->uploaded_bitmap);
-    r->uploaded_bitmap = NULL;
+    g_free(r->cb_vertex_pages);
+    r->cb_vertex_pages = NULL;
 }
 
 bool pgraph_vk_buffer_has_space_for(PGRAPHState *pg, int index,

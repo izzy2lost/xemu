@@ -53,7 +53,21 @@ void pgraph_vk_update_vertex_ram_buffer(PGRAPHState *pg, hwaddr offset,
     size_t end_bit = TARGET_PAGE_ALIGN(offset + size) / TARGET_PAGE_SIZE;
     size_t nbits = end_bit - start_bit;
 
-    /* Per-frame buffer: no finish needed, each frame has its own copy */
+    /*
+     * Draws read their vertices straight out of the RAM buffer, so a draw that
+     * has been recorded but not yet submitted still depends on what these pages
+     * hold. A title that reuses one vertex arena for several draws in a frame
+     * -- Morrowind's title screen builds both its background quad and its
+     * "Press START" quad at the same guest address -- would otherwise have the
+     * earlier draw pick up the later draw's vertices at submission time.
+     *
+     * The per-frame buffer only isolates frames from each other; it does not
+     * help within a command buffer. Submit what is already recorded before
+     * overwriting a page any of it reads.
+     */
+    if (find_next_bit(r->cb_vertex_pages, end_bit, start_bit) < end_bit) {
+        pgraph_vk_finish(pg, VK_FINISH_REASON_VERTEX_BUFFER_DIRTY);
+    }
 
     nv2a_profile_inc_counter(NV2A_PROF_GEOM_BUFFER_UPDATE_1);
     StorageBuffer *vram = get_staging_buffer(r, BUFFER_VERTEX_RAM);
@@ -75,6 +89,7 @@ void pgraph_vk_update_vertex_ram_buffer(PGRAPHState *pg, hwaddr offset,
     }
 
     bitmap_set(get_uploaded_bitmap(r), start_bit, nbits);
+    bitmap_set(r->cb_vertex_pages, start_bit, nbits);
 }
 
 static void update_memory_buffer(NV2AState *d, hwaddr addr, hwaddr size)

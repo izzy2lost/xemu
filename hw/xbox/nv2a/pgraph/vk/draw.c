@@ -2534,6 +2534,10 @@ void pgraph_vk_finish(PGRAPHState *pg, FinishReason finish_reason)
         sync_staging_buffer(pg, cmd, BUFFER_VERTEX_INLINE_STAGING,
                                 BUFFER_VERTEX_INLINE);
         sync_staging_buffer(pg, cmd, BUFFER_UNIFORM_STAGING, BUFFER_UNIFORM);
+
+        /* Everything recorded so far is on its way to the GPU, so the vertex
+         * RAM pages it read are free to be overwritten again. */
+        bitmap_clear(r->cb_vertex_pages, 0, r->bitmap_size);
 #if OPT_SYNC_RANGE_SKIP
         r->sync_range_attr_gen = 0;
         r->sync_range_min = UINT32_MAX;
@@ -5717,6 +5721,8 @@ static void sync_vertex_ram_buffer(PGRAPHState *pg)
 
     vw->merged += num_syncs;
 
+    bool needs_copy[ARRAY_SIZE(merged)] = { false };
+
     {
         ram_addr_t ram_base = r->vram_ram_addr;
 
@@ -5750,9 +5756,22 @@ static void sync_vertex_ram_buffer(PGRAPHState *pg)
                 physical_memory_dirty_bits_cleared(start, size);
                 vw->dirty_count++;
                 vw->bytes_copied += size;
-                pgraph_vk_update_vertex_ram_buffer(pg, addr,
-                                                   d->vram_ptr + addr, size);
+                needs_copy[i] = true;
             }
+        }
+    }
+
+    /*
+     * Copy outside the RCU read-side section above: a copy can hit a page an
+     * already-recorded draw reads, which submits the command buffer and waits
+     * on the GPU. Doing that under the read lock would hold off RCU writers
+     * for the length of a GPU wait.
+     */
+    for (int i = 0; i < num_syncs; i++) {
+        if (needs_copy[i]) {
+            pgraph_vk_update_vertex_ram_buffer(pg, merged[i].addr,
+                                               d->vram_ptr + merged[i].addr,
+                                               merged[i].size);
         }
     }
 

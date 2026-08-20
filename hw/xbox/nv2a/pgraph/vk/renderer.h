@@ -1182,7 +1182,10 @@ typedef struct PGRAPHVkState {
 
     MemorySyncRequirement vertex_ram_buffer_syncs[NV2A_VERTEXSHADER_ATTRIBUTES];
     size_t num_vertex_ram_buffer_syncs;
-    unsigned long *uploaded_bitmap;
+    /* Guest pages copied into the vertex RAM buffer since the current command
+     * buffer started recording. Draws already recorded read from those pages,
+     * so overwriting one before submission would retroactively change them. */
+    unsigned long *cb_vertex_pages;
     size_t bitmap_size;
 
     uint32_t last_vertex_attr_gen;
