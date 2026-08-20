@@ -1563,6 +1563,7 @@ void pgraph_vk_bind_textures(NV2AState *d);
 bool pgraph_vk_check_textures_fast_skip(PGRAPHState *pg);
 void pgraph_vk_mark_textures_possibly_dirty(NV2AState *d, hwaddr addr,
                                             hwaddr size);
+bool pgraph_vk_poll_texture_memory_dirty(NV2AState *d);
 void pgraph_vk_trim_texture_cache(PGRAPHState *pg);
 
 // compile_worker.c

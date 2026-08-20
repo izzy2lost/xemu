@@ -3020,6 +3020,11 @@ void pgraph_vk_end_nondraw_commands(PGRAPHState *pg, VkCommandBuffer cmd)
 static void begin_pre_draw(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
+    NV2AState *d = container_of(pg, NV2AState, pgraph);
+
+    if (pgraph_vk_poll_texture_memory_dirty(d)) {
+        pgraph_vk_bind_textures(d);
+    }
 
     assert(r->color_binding || r->zeta_binding);
     assert(!r->color_binding || r->color_binding->initialized);

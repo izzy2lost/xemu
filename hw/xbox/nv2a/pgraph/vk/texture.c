@@ -454,8 +454,8 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
     return layout;
 }
 
-void pgraph_vk_mark_textures_possibly_dirty(NV2AState *d,
-    hwaddr addr, hwaddr size)
+static void mark_texture_range_dirty(NV2AState *d, hwaddr addr, hwaddr size,
+                                     bool confirmed_dirty)
 {
     PGRAPHVkState *r = d->pgraph.vk_renderer_state;
     hwaddr end = TARGET_PAGE_ALIGN(addr + size) - 1;
@@ -465,7 +465,7 @@ void pgraph_vk_mark_textures_possibly_dirty(NV2AState *d,
     bool any_newly_dirty = false;
     TextureBinding *tnode;
     QTAILQ_FOREACH(tnode, &r->texture_active_list, active_entry) {
-        if (tnode->possibly_dirty) {
+        if (tnode->possibly_dirty && !confirmed_dirty) {
             continue;
         }
 
@@ -480,13 +480,23 @@ void pgraph_vk_mark_textures_possibly_dirty(NV2AState *d,
         }
 
         if (overlapping) {
-            any_newly_dirty = true;
+            any_newly_dirty |= !tnode->possibly_dirty;
+            if (confirmed_dirty) {
+                tnode->dirty_check_frame = d->pgraph.frame_time;
+                tnode->dirty_check_result = true;
+            }
         }
         tnode->possibly_dirty |= overlapping;
     }
     if (any_newly_dirty) {
         r->texture_vram_gen++;
     }
+}
+
+void pgraph_vk_mark_textures_possibly_dirty(NV2AState *d,
+    hwaddr addr, hwaddr size)
+{
+    mark_texture_range_dirty(d, addr, size, false);
 }
 
 static bool check_texture_dirty(NV2AState *d, hwaddr addr, hwaddr size)
@@ -510,6 +520,41 @@ static bool check_texture_dirty(NV2AState *d, hwaddr addr, hwaddr size)
     }
     return memory_region_test_and_clear_dirty(d->vram, addr, end - addr,
                                               DIRTY_MEMORY_NV2A_TEX);
+}
+
+bool pgraph_vk_poll_texture_memory_dirty(NV2AState *d)
+{
+    PGRAPHVkState *r = d->pgraph.vk_renderer_state;
+    bool found_dirty = false;
+
+    /* Guest CPU writes do not change texture registers, so the register and
+     * pipeline generation fast paths cannot notice them.  Poll the dirty
+     * bitmap for the currently bound texture ranges before those fast paths
+     * run, then invalidate every cached binding which aliases a dirty page. */
+    for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
+        TextureBinding *binding = r->texture_bindings[i];
+        if (!binding || binding == &r->dummy_texture) {
+            continue;
+        }
+
+        bool texture_dirty = check_texture_dirty(
+            d, binding->key.texture_vram_offset,
+            binding->key.texture_length);
+        if (texture_dirty) {
+            found_dirty = true;
+            mark_texture_range_dirty(d, binding->key.texture_vram_offset,
+                                     binding->key.texture_length, true);
+        }
+        if (binding->key.palette_length > 0 &&
+            check_texture_dirty(d, binding->key.palette_vram_offset,
+                                binding->key.palette_length)) {
+            found_dirty = true;
+            mark_texture_range_dirty(d, binding->key.palette_vram_offset,
+                                     binding->key.palette_length, true);
+        }
+    }
+
+    return found_dirty;
 }
 
 static void resolve_possibly_dirty_textures(NV2AState *d)
@@ -1595,6 +1640,11 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
         NV2A_VK_DPRINTF("Cache hit");
         r->texture_bindings[texture_idx] = snode;
         possibly_dirty |= snode->possibly_dirty;
+        if (!surface_to_texture &&
+            snode->dirty_check_frame == pg->frame_time) {
+            possibly_dirty_checked = true;
+            possibly_dirty |= snode->dirty_check_result;
+        }
     } else {
         possibly_dirty = true;
     }
@@ -2048,7 +2098,9 @@ static bool check_textures_dirty(PGRAPHState *pg)
     PGRAPHVkState *r = pg->vk_renderer_state;
 
     for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
-        if (!r->texture_bindings[i] || pg->texture_dirty[i]) {
+        TextureBinding *binding = r->texture_bindings[i];
+        if (!binding || pg->texture_dirty[i] ||
+            (binding != &r->dummy_texture && binding->possibly_dirty)) {
             return true;
         }
     }
