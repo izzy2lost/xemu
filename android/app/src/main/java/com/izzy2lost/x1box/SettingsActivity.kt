@@ -41,11 +41,32 @@ class SettingsActivity : AppCompatActivity() {
     private const val PREF_HRTF_DEFAULT_OFF_MIGRATED = "setting_hrtf_default_off_migrated_v1"
     private const val PREF_SETTINGS_MIGRATED_V2 = "settings_migrated_v2"
     private const val PREF_SETTINGS_MIGRATED_V3 = "settings_migrated_v3"
+    private const val PREF_DRAW_REORDER_FORCED_OFF = "draw_reorder_forced_off_v1"
     private const val PREF_INSIGNIA_SETUP_URI = "setting_insignia_setup_assistant_uri"
     private const val PREF_INSIGNIA_SETUP_NAME = "setting_insignia_setup_assistant_name"
     private const val INSIGNIA_SIGN_UP_URL = "https://insignia.live/"
     private const val INSIGNIA_GUIDE_URL = "https://insignia.live/guide/connect"
     private const val MANAGED_FILES_ARCHIVE_PREFIX = "x1box-files-"
+
+    /*
+     * Draw reordering corrupts geometry -- Morrowind's interiors render as
+     * exploded shards once a draw becomes eligible for the reorder window.
+     * classify_draw_safe() admits draws on depth-test + depth-write + LEQUAL,
+     * which is not sufficient for order independence. It now defaults off, but
+     * anyone who already ran a build where it defaulted on still has "true"
+     * saved, so clear it once. Deliberately re-enabling it afterwards sticks.
+     */
+    @JvmStatic
+    fun applyDrawReorderOffMigration(context: android.content.Context) {
+      val p = context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+      if (p.getBoolean(PREF_DRAW_REORDER_FORCED_OFF, false)) {
+        return
+      }
+      p.edit()
+        .putBoolean("draw_reorder", false)
+        .putBoolean(PREF_DRAW_REORDER_FORCED_OFF, true)
+        .apply()
+    }
     private val MANAGED_EMULATOR_FILE_ORDER = listOf(
       "mcpx.bin",
       "flash.bin",
@@ -291,6 +312,7 @@ class SettingsActivity : AppCompatActivity() {
     OrientationLocker(this).enable()
     DebugLog.initialize(this)
     applyHrtfDefaultOffMigration()
+    applyDrawReorderOffMigration(this)
     applySettingsMigrationV2()
     applySettingsMigrationV3()
     setContentView(R.layout.activity_settings)
@@ -435,7 +457,7 @@ class SettingsActivity : AppCompatActivity() {
     switchVsync.isChecked   = prefs.getBoolean("setting_vsync", false)
     switchSkipBootAnim.isChecked =
       prefs.getBoolean("setting_skip_boot_anim", true)
-    switchDrawReorder.isChecked  = prefs.getBoolean("draw_reorder", true)
+    switchDrawReorder.isChecked  = prefs.getBoolean("draw_reorder", false)
     switchDrawMerge.isChecked    = prefs.getBoolean("draw_merge", true)
     switchAsyncCompile.isChecked = prefs.getBoolean("async_compile", false)
     switchShowFps.isChecked      = prefs.getBoolean("show_fps", false)
@@ -625,7 +647,7 @@ class SettingsActivity : AppCompatActivity() {
     val editor = prefs.edit()
 
     if (!prefs.contains("setting_skip_boot_anim")) editor.putBoolean("setting_skip_boot_anim", true)
-    if (!prefs.contains("draw_reorder")) editor.putBoolean("draw_reorder", true)
+    if (!prefs.contains("draw_reorder")) editor.putBoolean("draw_reorder", false)
     if (!prefs.contains("draw_merge")) editor.putBoolean("draw_merge", true)
     if (!prefs.contains("async_compile")) editor.putBoolean("async_compile", false)
     if (!prefs.contains("setting_cache_shaders")) editor.putBoolean("setting_cache_shaders", true)

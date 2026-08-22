@@ -705,6 +705,34 @@ static int diag_find_or_add_shader(uint64_t hash, const char *vsh,
     diag_shaders[idx].vsh_glsl = vsh ? g_strdup(vsh) : NULL;
     diag_shaders[idx].psh_glsl = psh ? g_strdup(psh) : NULL;
     diag_shaders[idx].geom_glsl = geom ? g_strdup(geom) : NULL;
+
+    /*
+     * The session JSON is only written once the frame flips. A frame that
+     * never completes -- which is exactly the case worth capturing -- takes
+     * every shader down with it, so write each one out as it is first seen.
+     */
+    if (diag_session_dir[0]) {
+        static const struct { const char *ext; size_t off; } kinds[] = {
+            { "vert", offsetof(DiagShaderEntry, vsh_glsl) },
+            { "frag", offsetof(DiagShaderEntry, psh_glsl) },
+            { "geom", offsetof(DiagShaderEntry, geom_glsl) },
+        };
+        for (size_t k = 0; k < ARRAY_SIZE(kinds); k++) {
+            const char *src =
+                *(const char **)((char *)&diag_shaders[idx] + kinds[k].off);
+            if (!src) {
+                continue;
+            }
+            char path[800];
+            snprintf(path, sizeof(path), "%s/shader_%016" PRIx64 ".%s",
+                     diag_session_dir, hash, kinds[k].ext);
+            FILE *f = fopen(path, "wb");
+            if (f) {
+                fwrite(src, 1, strlen(src), f);
+                fclose(f);
+            }
+        }
+    }
     return idx;
 }
 
@@ -1068,6 +1096,38 @@ void nv2a_diag_log_draw_call(NV2AState *d, PGRAPHState *pg,
                                 r->shader_binding->geom.module_info->glsl)
                                ? r->shader_binding->geom.module_info->glsl : NULL;
         diag_find_or_add_shader(shader_hash, vsh_src, psh_src, geom_src);
+    }
+
+    /* Same reasoning as the shader dump: record each draw as it happens so a
+     * frame that never flips still leaves a usable trace. */
+    if (diag_session_dir[0]) {
+        char path[800];
+        snprintf(path, sizeof(path), "%s/draws.txt", diag_session_dir);
+        FILE *f = fopen(path, "a");
+        if (f) {
+            fprintf(f,
+                    "draw %4d %-16s count=%-6d prim=%d shader=%016" PRIx64
+                    " blend=%d zfunc=%d zwrite=%d cull=%s surf=%ux%u\n",
+                    idx, type, count, pg->primitive_mode, shader_hash,
+                    blend_en, zfunc, depth_write, cull_str,
+                    r->color_binding ? r->color_binding->width : 0,
+                    r->color_binding ? r->color_binding->height : 0);
+            /* Per-attribute setup, to tell a bad layout from bad data. */
+            for (int a = 0; a < NV2A_VERTEXSHADER_ATTRIBUTES; a++) {
+                VertexAttribute *va = &pg->vertex_attributes[a];
+                if (va->count == 0 && va->size == 0) {
+                    continue;
+                }
+                fprintf(f,
+                        "      attr%-2d fmt=%u size=%u count=%u stride=%-4u "
+                        "offset=0x%08" HWADDR_PRIx " dma=%d inline=[%g %g %g %g]\n",
+                        a, va->format, va->size, va->count, va->stride,
+                        va->offset, va->dma_select,
+                        va->inline_value[0], va->inline_value[1],
+                        va->inline_value[2], va->inline_value[3]);
+            }
+            fclose(f);
+        }
     }
 
     /* Compute state fingerprint for diff detection.

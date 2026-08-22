@@ -17,6 +17,10 @@ class LauncherActivity : Activity() {
     DebugLog.initialize(this)
     OrientationLocker(this).enable()
 
+    /* Runs here, not only in Settings, so existing installs get it even if
+     * the user never opens the settings screen. */
+    SettingsActivity.applyDrawReorderOffMigration(this)
+
     val prefs = getSharedPreferences("x1box_prefs", MODE_PRIVATE)
     var setupComplete = prefs.getBoolean("setup_complete", false)
     val mcpxUriStr = prefs.getString("mcpxUri", null)

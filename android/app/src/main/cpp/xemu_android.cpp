@@ -1048,7 +1048,7 @@ static SetupFiles SyncSetupFiles() {
   __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                       "fast fences: %s", fast_fences ? "ON" : "OFF");
 
-  bool draw_reorder = GetPrefBool(env, activity, "draw_reorder", true);
+  bool draw_reorder = GetPrefBool(env, activity, "draw_reorder", false);
   xemu_set_draw_reorder(draw_reorder);
   __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                       "draw reorder: %s", draw_reorder ? "ON" : "OFF");
