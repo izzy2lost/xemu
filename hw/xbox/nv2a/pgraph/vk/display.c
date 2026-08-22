@@ -590,9 +590,19 @@ static void create_render_pass(PGRAPHState *pg)
 
     VkAttachmentDescription attachment;
 
+    /*
+     * The framebuffers built for this pass wrap swapchain images, so the
+     * attachment format has to be whatever the surface actually gave us.
+     * Assume RGBA8 until a swapchain has been created and told us otherwise.
+     */
+    VkFormat attachment_format = r->display.swapchain_format != VK_FORMAT_UNDEFINED
+                                     ? r->display.swapchain_format
+                                     : VK_FORMAT_R8G8B8A8_UNORM;
+    r->display.render_pass_format = attachment_format;
+
     VkAttachmentReference color_reference;
     attachment = (VkAttachmentDescription){
-        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .format = attachment_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1362,23 +1372,52 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
     VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
         r->physical_device, r->present_surface, &format_count, formats));
 
+    /*
+     * Presentation is a fullscreen draw, not a raw copy, so the hardware
+     * handles channel order when it writes the attachment -- BGRA is as good
+     * as RGBA here. Requiring R8G8B8A8_UNORM specifically meant any device
+     * whose surface only advertises BGRA (common on Android) failed swapchain
+     * creation, and render_display() then returned without presenting
+     * anything: a black screen with working audio.
+     */
+    static const VkFormat kPreferredFormats[] = {
+        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_B8G8R8A8_UNORM,
+        VK_FORMAT_A8B8G8R8_UNORM_PACK32,
+        VK_FORMAT_R8G8B8A8_SRGB,
+        VK_FORMAT_B8G8R8A8_SRGB,
+    };
+
     VkSurfaceFormatKHR selected = formats[0];
-    bool found_rgba = false;
-    for (uint32_t i = 0; i < format_count; i++) {
-        if (formats[i].format == VK_FORMAT_R8G8B8A8_UNORM) {
-            selected = formats[i];
-            found_rgba = true;
-            break;
+    bool found = false;
+    for (size_t pref = 0; pref < ARRAY_SIZE(kPreferredFormats) && !found;
+         pref++) {
+        for (uint32_t i = 0; i < format_count; i++) {
+            if (formats[i].format == kPreferredFormats[pref]) {
+                selected = formats[i];
+                found = true;
+                break;
+            }
         }
     }
-    if (!found_rgba && selected.format != VK_FORMAT_UNDEFINED) {
-        __android_log_print(ANDROID_LOG_ERROR, "hakuX-vk",
-                            "present: RGBA8 swapchain format unavailable");
-        return false;
-    }
     if (selected.format == VK_FORMAT_UNDEFINED) {
+        /* The surface has no preference; pick something universally sane. */
         selected.format = VK_FORMAT_R8G8B8A8_UNORM;
         selected.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    } else if (!found) {
+        __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
+                            "present: no preferred swapchain format, using %d",
+                            (int)selected.format);
+    }
+
+    /* Rebuild the render pass if this format is not what it was built for;
+     * a framebuffer must match its render pass attachment format. */
+    if (r->display.render_pass_format != selected.format) {
+        r->display.swapchain_format = selected.format;
+        destroy_display_pipeline(pg);
+        destroy_render_pass(pg);
+        create_render_pass(pg);
+        create_display_pipeline(pg);
     }
 
     VkExtent2D extent = caps.currentExtent;
@@ -1637,7 +1676,22 @@ static bool create_display_image(PGRAPHState *pg, int width, int height)
 
 #ifdef __ANDROID__
     if (d->direct_present) {
-        return create_android_swapchain(pg, width, height);
+        if (create_android_swapchain(pg, width, height)) {
+            return true;
+        }
+        /*
+         * Every failure inside create_android_swapchain() used to end here as
+         * a black screen: pgraph_vk_render_display() returns without
+         * presenting, while emulation (and audio) carry on. The causes are all
+         * device-dependent -- an unusable surface format, a queue that cannot
+         * present, vkCreateSwapchainKHR refusing the parameters -- so rather
+         * than fail outright, drop to the non-direct display path, which
+         * composites through an intermediate image and works far more widely.
+         */
+        __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
+                            "present: swapchain unavailable, falling back to "
+                            "indirect display path");
+        d->direct_present = false;
     }
 #endif
 

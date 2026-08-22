@@ -807,6 +807,9 @@ typedef struct PGRAPHVkDisplayState {
     bool direct_present;
     VkSwapchainKHR swapchain;
     VkFormat swapchain_format;
+    /* Format the display render pass was built for; framebuffers wrapping
+     * swapchain images must match it. */
+    VkFormat render_pass_format;
     VkExtent2D swapchain_extent;
     VkRect2D present_viewport;
     VkSemaphore image_available[NUM_DISPLAY_IMAGES];
