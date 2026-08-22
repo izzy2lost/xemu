@@ -293,25 +293,10 @@ GLSL_DEFINE(materialEmissionColor, GLSL_LTCTXA(NV_IGRAPH_XF_LTCTXA_CM_COL) ".xyz
             );
         }
 
-        /*
-         * TEMP EXPERIMENT: emit lighting for at most this many lights. The
-         * earlier "one loop instead of eight copies" test was invalid -- a
-         * constant-bound loop is trivially unrollable, so the compiler could
-         * undo it. Actually emitting less lighting code cannot be undone, so
-         * this answers whether the volume of lighting code is what kills the
-         * Mali compiler. Diagnostic only: it visibly drops lights.
-         */
-        const int temp_max_lights = 4;
-        int temp_lights_emitted = 0;
-
         for (i = 0; i < NV2A_MAX_LIGHTS; i++) {
             if (state->fixed_function.light[i] == LIGHT_OFF) {
                 continue;
             }
-            if (temp_lights_emitted >= temp_max_lights) {
-                break;
-            }
-            temp_lights_emitted++;
 
             mstring_append_fmt(body, "/* Light %d */ {\n", i);
 
