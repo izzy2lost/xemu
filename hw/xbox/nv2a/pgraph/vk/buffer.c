@@ -257,11 +257,20 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
          * than an 8GB one (it briefly did).
          */
         if (b.memory_class_gib <= 4) {
-            b.texture_cache_entries = 256;
+            /* 256 was not enough to hold a Forza Motorsport race on a 4GB
+             * Adreno 610: upload_texture_image() ran 6000-14000 times per
+             * sample interval, and because each upload ends the render pass to
+             * issue its transfer, that alone produced ~12000 render pass breaks
+             * -- on a tiler, a full tile store+reload every time. The frame was
+             * ~700ms with the GPU doing 150ms of pure transfer and essentially
+             * no rendering. Entries, not bytes, were the binding constraint:
+             * with DXT stored as blocks the same run reported no memory
+             * pressure trims at all. */
+            b.texture_cache_entries = 1024;
             b.image_pool_max = 16;
             b.surface_image_pool_max = 8;
         } else if (b.memory_class_gib <= 6) {
-            b.texture_cache_entries = 512;
+            b.texture_cache_entries = 1024;
             b.image_pool_max = 32;
             b.surface_image_pool_max = 16;
         } else if (b.memory_class_gib <= 8) {

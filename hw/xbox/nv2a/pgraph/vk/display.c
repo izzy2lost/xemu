@@ -1365,6 +1365,8 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
     VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(
         r->physical_device, r->present_surface, &format_count, NULL));
     if (format_count == 0) {
+        __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
+                            "present: surface has no formats yet; retrying");
         return false;
     }
     g_autofree VkSurfaceFormatKHR *formats =
@@ -1434,6 +1436,9 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
                               (int)caps.maxImageExtent.height);
     }
     if (extent.width == 0 || extent.height == 0) {
+        __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
+                            "present: surface extent is %ux%u; retrying",
+                            extent.width, extent.height);
         return false;
     }
 
@@ -1558,6 +1563,10 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
     VK_CHECK(vkGetSwapchainImagesKHR(r->device, d->swapchain,
                                      &image_count, NULL));
     if (image_count > NUM_DISPLAY_IMAGES) {
+        __android_log_print(
+            ANDROID_LOG_ERROR, "hakuX-vk",
+            "present: driver returned %u swapchain images (capacity %u)",
+            image_count, NUM_DISPLAY_IMAGES);
         destroy_current_display_image(pg);
         return false;
     }
@@ -1676,22 +1685,16 @@ static bool create_display_image(PGRAPHState *pg, int width, int height)
 
 #ifdef __ANDROID__
     if (d->direct_present) {
-        if (create_android_swapchain(pg, width, height)) {
-            return true;
-        }
         /*
-         * Every failure inside create_android_swapchain() used to end here as
-         * a black screen: pgraph_vk_render_display() returns without
-         * presenting, while emulation (and audio) carry on. The causes are all
-         * device-dependent -- an unusable surface format, a queue that cannot
-         * present, vkCreateSwapchainKHR refusing the parameters -- so rather
-         * than fail outright, drop to the non-direct display path, which
-         * composites through an intermediate image and works far more widely.
+         * The SDL window was created with SDL_WINDOW_VULKAN and deliberately
+         * has no GL context. Switching this flag off after a transient Android
+         * surface failure therefore cannot actually use the indirect GL
+         * presenter: the display loop remains in its Vulkan-only branch while
+         * these intermediate images have no consumer, producing a permanent
+         * black screen. Keep direct presentation enabled and let the next
+         * display sync retry once the SurfaceView has a usable extent.
          */
-        __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
-                            "present: swapchain unavailable, falling back to "
-                            "indirect display path");
-        d->direct_present = false;
+        return create_android_swapchain(pg, width, height);
     }
 #endif
 
@@ -2098,7 +2101,8 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
             &acquired_index);
         if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
             __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
-                                "present: swapchain out of date");
+                                "present: swapchain out of date; recreating");
+            destroy_current_display_image(pg);
             return;
         }
         if (acquire_result != VK_SUCCESS &&
@@ -2423,9 +2427,15 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
             .pImageIndices = &present_image_index,
         };
         VkResult present_result = vkQueuePresentKHR(r->queue, &present_info);
+        if (present_result == VK_ERROR_OUT_OF_DATE_KHR) {
+            __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
+                                "present: swapchain became out of date; "
+                                "recreating");
+            destroy_current_display_image(pg);
+            return;
+        }
         if (present_result != VK_SUCCESS &&
-            present_result != VK_SUBOPTIMAL_KHR &&
-            present_result != VK_ERROR_OUT_OF_DATE_KHR) {
+            present_result != VK_SUBOPTIMAL_KHR) {
             __android_log_print(ANDROID_LOG_ERROR, "hakuX-vk",
                                 "present: queue present failed (%d)",
                                 present_result);

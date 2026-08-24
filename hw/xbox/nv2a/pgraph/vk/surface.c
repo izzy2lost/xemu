@@ -249,6 +249,7 @@ static bool download_surface_record_deferred(NV2AState *d,
                  scaled_height = surface->height;
     pgraph_apply_scaling_factor(pg, &scaled_width, &scaled_height);
 
+    OPT_STAT_INC(nd_surfdl);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
     pgraph_vk_begin_debug_marker(r, cmd, RGBA_RED,
                                  "download_surface_deferred");
@@ -715,6 +716,7 @@ static void download_surface_to_buffer(NV2AState *d, SurfaceBinding *surface,
     pgraph_apply_scaling_factor(pg, &scaled_width, &scaled_height);
 
 #if OPT_SURF_TO_TEX_INLINE
+    OPT_STAT_INC(nd_surfdl);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
 #else
     VkCommandBuffer cmd = pgraph_vk_begin_single_time_commands(pg);
@@ -1903,6 +1905,7 @@ static void create_surface_image(PGRAPHState *pg, SurfaceBinding *surface)
     VK_CHECK(vkCreateImageView(r->device, &image_view_create_info, NULL,
                                &surface->image_view));
 
+    OPT_STAT_INC(nd_surfcreate);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
     pgraph_vk_begin_debug_marker(r, cmd, RGBA_RED, __func__);
 
@@ -2193,6 +2196,7 @@ void pgraph_vk_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
     vmaFlushAllocation(r->allocator, copy_buffer->allocation, staging_base,
                        uploaded_image_size);
 
+    OPT_STAT_INC(nd_surfup);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
     pgraph_vk_begin_debug_marker(r, cmd, RGBA_RED, __func__);
 
@@ -2680,6 +2684,7 @@ static void update_surface_part(NV2AState *d, bool upload, bool color)
         int64_t _gt0 = nv2a_clock_ns();
         // FIXME: We don't need to be so aggressive flushing the command list
         // pgraph_vk_finish(pg, VK_FINISH_REASON_SURFACE_CREATE);
+        if (r->in_render_pass) { OPT_STAT_INC(rpb_surface); }
         pgraph_vk_ensure_not_in_render_pass(pg);
 
         unbind_surface(d, color);

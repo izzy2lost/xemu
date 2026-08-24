@@ -30,10 +30,61 @@
 #include "qemu/lru.h"
 #include "renderer.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include <sys/system_properties.h>
+#endif
+
 static void texture_cache_release_node_resources(PGRAPHVkState *r, TextureBinding *snode);
 static bool image_pool_acquire(PGRAPHVkState *r, const TextureImageConfig *config,
                                VkImage *out_image, VmaAllocation *out_allocation);
 static void image_pool_drain(PGRAPHVkState *r);
+
+/* Xbox DXT1/3/5 blocks are bit-identical to Vulkan BC1/BC2/BC3. Where the
+ * device can sample those formats we hand the blocks straight to the driver
+ * instead of running s3tc_decompress_* on the CPU and storing the result at
+ * 4-8x the size. See init_texture_format_map() for where the map is switched
+ * over, and texture_format_for_shape() for the cases that must stay
+ * decompressed. */
+static bool format_is_block_compressed(VkFormat format)
+{
+    return format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ||
+           format == VK_FORMAT_BC2_UNORM_BLOCK ||
+           format == VK_FORMAT_BC3_UNORM_BLOCK;
+}
+
+/* Block upload covers plain 2D and cubemap textures. Volume textures are
+ * excluded because a 3D image in a BC format is not required to be supported,
+ * and bordered textures because the border is cropped by resampling the
+ * decompressed texels. Both keep the software path. */
+static bool texture_shape_uses_blocks(PGRAPHVkState *r, TextureShape s)
+{
+    return format_is_block_compressed(
+               r->texture_format_map[s.color_format].vk_format) &&
+           s.dimensionality == 2 && !s.border;
+}
+
+/* The image format actually used for a texture, which is the block format only
+ * when the shape can be uploaded as blocks. */
+static VkColorFormatInfo texture_format_for_shape(PGRAPHVkState *r,
+                                                  TextureShape s)
+{
+    VkColorFormatInfo vkf = r->texture_format_map[s.color_format];
+    if (format_is_block_compressed(vkf.vk_format) &&
+        !texture_shape_uses_blocks(r, s)) {
+        return kelvin_color_format_vk_map[s.color_format];
+    }
+    return vkf;
+}
+
+/* Direct-mapped index for tex_surf_range_cache, keyed by the VRAM range. */
+static inline unsigned surf_range_cache_index(hwaddr addr, hwaddr length)
+{
+    uint64_t h = (uint64_t)addr * 0x9E3779B97F4A7C15ULL;
+    h ^= (uint64_t)length * 0xC2B2AE3D27D4EB4FULL;
+    h ^= h >> 29;
+    return (unsigned)(h & (TEX_SURF_RANGE_CACHE_SIZE - 1));
+}
 
 static const VkImageType dimensionality_to_vk_image_type[] = {
     0,
@@ -195,8 +246,10 @@ static size_t get_cubemap_layer_size(PGRAPHState *pg, TextureShape s)
 static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
 {
     NV2AState *d = container_of(pg, NV2AState, pgraph);
+    PGRAPHVkState *r = pg->vk_renderer_state;
     TextureShape s = pgraph_get_texture_shape(pg, texture_idx);
     BasicColorFormatInfo f = kelvin_color_format_info_map[s.color_format];
+    const bool upload_blocks = texture_shape_uses_blocks(r, s);
 
     NV2A_VK_DGROUP_BEGIN("Texture %d: cubemap=%d, dimensionality=%d, color_format=0x%x, levels=%d, width=%d, height=%d, depth=%d border=%d, min_mipmap_level=%d, max_mipmap_level=%d, pitch=%d",
         texture_idx,
@@ -300,11 +353,22 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
                     unsigned int tex_width = width, tex_height = height;
                     unsigned int physical_width = (width + 3) & ~3,
                                  physical_height = (height + 3) & ~3;
+                    size_t block_bytes =
+                        physical_width / 4 * physical_height / 4 * block_size;
 
-                    size_t converted_size = width * height * 4;
-                    uint8_t *converted = s3tc_decompress_2d(
-                        kelvin_format_to_s3tc_format(s.color_format),
-                        texture_data_ptr, width, height);
+                    size_t converted_size;
+                    uint8_t *converted;
+
+                    if (upload_blocks) {
+                        converted_size = block_bytes;
+                        converted = g_malloc(block_bytes);
+                        memcpy(converted, texture_data_ptr, block_bytes);
+                    } else {
+                        converted_size = width * height * 4;
+                        converted = s3tc_decompress_2d(
+                            kelvin_format_to_s3tc_format(s.color_format),
+                            texture_data_ptr, width, height);
+                    }
                     assert(converted);
 
                     if (s.cubemap && adjusted_width != s.width) {
@@ -331,8 +395,7 @@ static TextureLayout *get_texture_layout(PGRAPHState *pg, int texture_idx)
                         .decoded_data = converted,
                     };
 
-                    texture_data_ptr +=
-                        physical_width / 4 * physical_height / 4 * block_size;
+                    texture_data_ptr += block_bytes;
                 } else {
                     unsigned int pitch = width * f.bytes_per_pixel;
                     unsigned int tex_width = width, tex_height = height;
@@ -589,7 +652,7 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
     NV2A_PHASE_TIMER_BEGIN(texture_upload);
     PGRAPHVkState *r = pg->vk_renderer_state;
     TextureShape *state = &binding->key.state;
-    VkColorFormatInfo vkf = r->texture_format_map[state->color_format];
+    VkColorFormatInfo vkf = texture_format_for_shape(r, *state);
 
     VK_LOG("upload_texture: idx=%d fmt=%d %ux%u cubemap=%d levels=%d",
            texture_idx, state->color_format, state->width, state->height,
@@ -664,6 +727,7 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
     vmaFlushAllocation(r->allocator, staging->allocation,
                        staging_base, buffer_offset - staging_base);
 
+    OPT_STAT_INC(nd_texup);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
     pgraph_vk_begin_debug_marker(r, cmd, RGBA_GREEN, __func__);
 
@@ -747,6 +811,7 @@ static void copy_depth_surface_to_texture(PGRAPHState *pg,
         surface->vram_addr, surface->width, surface->height);
 
 #if OPT_SURF_TO_TEX_INLINE
+    OPT_STAT_INC(nd_copysurf);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
 #else
     pgraph_vk_finish(pg, VK_FINISH_REASON_SURFACE_DOWN);
@@ -878,6 +943,7 @@ static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surfac
         surface->vram_addr, surface->width, surface->height);
 
 #if OPT_SURF_TO_TEX_INLINE
+    OPT_STAT_INC(nd_copysurf);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
 #else
     pgraph_vk_finish(pg, VK_FINISH_REASON_SURFACE_DOWN);
@@ -1047,17 +1113,35 @@ static bool can_bind_surface_direct(PGRAPHVkState *r,
                                     const SurfaceBinding *surface)
 {
 #ifdef __ANDROID__
-    extern bool xemu_android_vulkan_custom_driver_zip_loaded(void);
-
-    /* Some stock mobile drivers dereference transient render-surface views
-     * while processing combined-image-sampler descriptor writes.  Mali-G715
-     * r54 and Qualcomm's Adreno 710 driver both eventually segfault inside
+    /* Some mobile drivers dereference transient render-surface views while
+     * processing combined-image-sampler descriptor writes.  Mali-G715 r54 and
+     * Qualcomm's Adreno drivers both eventually segfault inside
      * push_descriptor_set/vkUpdateDescriptorSets.  Use the existing
      * surface-to-texture copy so descriptors reference cache-owned views.
-     * Custom Qualcomm drivers do not need the stock-driver workaround. */
-    if (r->device_props.vendorID == 0x13B5u ||
-        (r->device_props.vendorID == 0x5143u &&
-         !xemu_android_vulkan_custom_driver_zip_loaded())) {
+     *
+     * This applies to side-loaded custom Adreno drivers as well: they are
+     * arbitrary blobs, often built for a different GPU generation than the
+     * part they end up running on.
+     *
+     * The copy is not cheap: a Forza race issues ~8 surface-to-texture copies
+     * per frame, each one also ending the render pass to record its transfer.
+     * `setprop debug.xemu.vk.surf_direct 1` re-enables direct binding so the
+     * cost of this workaround can be measured against the crash it prevents.
+     */
+    static int force_direct = -1;
+    if (force_direct < 0) {
+        char prop[PROP_VALUE_MAX] = {};
+        force_direct = 0;
+        if (__system_property_get("debug.xemu.vk.surf_direct", prop) > 0) {
+            force_direct = (prop[0] == '1');
+        }
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "surface direct binding: %s",
+                            force_direct ? "forced on (diagnostic)"
+                                         : "off (driver workaround)");
+    }
+    if (!force_direct && (r->device_props.vendorID == 0x13B5u ||
+                          r->device_props.vendorID == 0x5143u)) {
         return false;
     }
 #endif
@@ -1082,6 +1166,7 @@ static void bind_surface_as_texture(PGRAPHState *pg, SurfaceBinding *surface,
     nv2a_profile_inc_counter(NV2A_PROF_SURF_TO_TEX);
 
     // End render pass to flush tile writes, then barrier for shader reads
+    OPT_STAT_INC(nd_bindsurf);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
 
     VkImageMemoryBarrier barrier = {
@@ -1135,6 +1220,7 @@ static void bind_zeta_surface_as_texture(PGRAPHState *pg,
 
     nv2a_profile_inc_counter(NV2A_PROF_SURF_TO_TEX);
 
+    OPT_STAT_INC(nd_bindsurf);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
 
     VkImageMemoryBarrier barrier = {
@@ -1193,6 +1279,7 @@ static void copy_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surface,
         surface->vram_addr, surface->width, surface->height);
 
 #if OPT_SURF_TO_TEX_INLINE
+    OPT_STAT_INC(nd_copysurf);
     VkCommandBuffer cmd = pgraph_vk_begin_nondraw_commands(pg);
 #else
     pgraph_vk_finish(pg, VK_FINISH_REASON_SURFACE_DOWN);
@@ -1586,27 +1673,36 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
      */
 
     if (!surface_to_texture) {
+        unsigned cache_idx =
+            surf_range_cache_index(texture_vram_offset, texture_length);
+        typeof(r->tex_surf_range_cache[0]) *range_ent =
+            &r->tex_surf_range_cache[cache_idx];
+
         bool skip_surf_scan = false;
-        if (r->tex_surf_range_cache[texture_idx].vram_addr == texture_vram_offset &&
-            r->tex_surf_range_cache[texture_idx].length == texture_length &&
-            r->tex_surf_range_cache[texture_idx].surface_list_gen == r->surface_list_gen &&
+        if (range_ent->valid &&
+            range_ent->vram_addr == texture_vram_offset &&
+            range_ent->length == texture_length &&
+            range_ent->surface_list_gen == r->surface_list_gen &&
             (/* No overlap last time — nothing to download */
-             !r->tex_surf_range_cache[texture_idx].had_overlap ||
+             !range_ent->had_overlap ||
              /* Had overlap but no surface has been drawn to since last
               * download — overlapping surfaces are still clean. */
-             r->tex_surf_range_cache[texture_idx].surface_draw_gen ==
-                 r->surface_draw_gen)) {
+             range_ent->surface_draw_gen == r->surface_draw_gen)) {
             skip_surf_scan = true;
         }
+
+        if (skip_surf_scan) { OPT_STAT_INC(dif_scan_skip); }
+        else { OPT_STAT_INC(dif_scan_run); }
 
         if (!skip_surf_scan) {
             bool had_overlap = pgraph_vk_download_surfaces_in_range_if_dirty(
                 pg, texture_vram_offset, texture_length);
-            r->tex_surf_range_cache[texture_idx].vram_addr = texture_vram_offset;
-            r->tex_surf_range_cache[texture_idx].length = texture_length;
-            r->tex_surf_range_cache[texture_idx].had_overlap = had_overlap;
-            r->tex_surf_range_cache[texture_idx].surface_list_gen = r->surface_list_gen;
-            r->tex_surf_range_cache[texture_idx].surface_draw_gen = r->surface_draw_gen;
+            range_ent->vram_addr = texture_vram_offset;
+            range_ent->length = texture_length;
+            range_ent->had_overlap = had_overlap;
+            range_ent->surface_list_gen = r->surface_list_gen;
+            range_ent->surface_draw_gen = r->surface_draw_gen;
+            range_ent->valid = true;
         }
     }
 
@@ -1770,7 +1866,7 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     snode->possibly_dirty = false;
     snode->hash = content_hash;
 
-    VkColorFormatInfo vkf = r->texture_format_map[state.color_format];
+    VkColorFormatInfo vkf = texture_format_for_shape(r, state);
     assert(vkf.vk_format != 0);
     assert(0 < state.dimensionality);
     assert(state.dimensionality < ARRAY_SIZE(dimensionality_to_vk_image_type));
@@ -2489,6 +2585,35 @@ static void init_texture_format_map(PGRAPHVkState *r)
     memcpy(r->texture_format_map, kelvin_color_format_vk_map,
            sizeof(r->texture_format_map));
 
+    /* DXT blocks upload as-is where BC is supported, which removes the
+     * software decompress from every texture cache miss and stores the texture
+     * at its compressed size. Requires all three, so a texture never silently
+     * changes cost depending on which DXT variant a game picked. */
+    static const struct {
+        int kelvin_format;
+        VkFormat block_format;
+    } dxt_block_formats[] = {
+        { NV097_SET_TEXTURE_FORMAT_COLOR_L_DXT1_A1R5G5B5,
+          VK_FORMAT_BC1_RGBA_UNORM_BLOCK },
+        { NV097_SET_TEXTURE_FORMAT_COLOR_L_DXT23_A8R8G8B8,
+          VK_FORMAT_BC2_UNORM_BLOCK },
+        { NV097_SET_TEXTURE_FORMAT_COLOR_L_DXT45_A8R8G8B8,
+          VK_FORMAT_BC3_UNORM_BLOCK },
+    };
+
+    bool all_blocks_supported = true;
+    for (int i = 0; i < ARRAY_SIZE(dxt_block_formats); i++) {
+        all_blocks_supported &=
+            format_can_be_sampled(r, dxt_block_formats[i].block_format);
+    }
+
+    if (all_blocks_supported) {
+        for (int i = 0; i < ARRAY_SIZE(dxt_block_formats); i++) {
+            r->texture_format_map[dxt_block_formats[i].kelvin_format]
+                .vk_format = dxt_block_formats[i].block_format;
+        }
+    }
+
     /* Xbox A4R4G4B4 packs A into bits 15..12, R into 11..8, G into 7..4 and B
      * into 3..0. Each candidate below names the channel each of those nibbles
      * lands in for that Vulkan format, so the swizzle maps them back to RGBA.
@@ -2547,6 +2672,16 @@ void pgraph_vk_init_textures(PGRAPHState *pg)
     texture_cache_init(r);
     init_texture_format_map(r);
     create_dummy_texture(pg);
+
+#ifdef __ANDROID__
+    __android_log_print(
+        ANDROID_LOG_INFO, "hakuX-vk", "DXT upload: %s",
+        format_is_block_compressed(
+            r->texture_format_map[NV097_SET_TEXTURE_FORMAT_COLOR_L_DXT1_A1R5G5B5]
+                .vk_format)
+            ? "native BC blocks"
+            : "software decompress to RGBA8");
+#endif
 
     r->texture_format_properties = g_malloc0_n(
         KELVIN_COLOR_FORMAT_COUNT, sizeof(VkFormatProperties));

@@ -257,13 +257,24 @@ static void opt_stats_log_and_reset(void)
                 g_opt_stats.draws_skipped_pending,
                 g_opt_stats.draws_skipped_frameskip);
         __android_log_print(ANDROID_LOG_INFO, "hakuX-stall",
-                "RPBreaks:%d[q%d clr%d bat%d fin%d oth%d] Finish:%d(vtx%d sc%d sd%d buf%d fb%d pres%d flip%d flu%d stl%d stlDef%d stlBat%d stlSup%d) InlClr:%d/%d PreDL:%d sd[ev%d noCb%d dl%d cDef%d cDefC%d pDl%d dDl%d] dlSrc[defFb%d ppdFb%d dirtyIf%d] dif[ovl%d ovlSh%d exp%d expSh%d blt%d flu%d dds%d oth%d]",
+                "RPBreaks:%d[q%d clr%d bat%d fin%d oth%d(nd%d[tu%d cs%d bs%d dl%d cr%d up%d] fb%d rp%d sf%d iv%d)] Finish:%d(vtx%d sc%d sd%d buf%d fb%d pres%d flip%d flu%d stl%d stlDef%d stlBat%d stlSup%d) InlClr:%d/%d PreDL:%d sd[ev%d noCb%d dl%d cDef%d cDefC%d pDl%d dDl%d] scan[skip%d run%d] dlSrc[defFb%d ppdFb%d dirtyIf%d] dif[ovl%d ovlSh%d exp%d expSh%d blt%d flu%d dds%d oth%d]",
                 g_opt_stats.render_pass_breaks,
                 g_opt_stats.rpb_query,
                 g_opt_stats.rpb_clear,
                 g_opt_stats.rpb_batch,
                 g_opt_stats.rpb_finish,
                 g_opt_stats.rpb_other,
+                g_opt_stats.rpb_nondraw,
+                g_opt_stats.nd_texup,
+                g_opt_stats.nd_copysurf,
+                g_opt_stats.nd_bindsurf,
+                g_opt_stats.nd_surfdl,
+                g_opt_stats.nd_surfcreate,
+                g_opt_stats.nd_surfup,
+                g_opt_stats.rpb_fbdirty,
+                g_opt_stats.rpb_rpdirty,
+                g_opt_stats.rpb_surface,
+                g_opt_stats.rpb_inval,
                 g_opt_stats.finish_calls,
                 g_opt_stats.finish_vtx_dirty,
                 g_opt_stats.finish_surf_create,
@@ -287,6 +298,8 @@ static void opt_stats_log_and_reset(void)
                 g_opt_stats.sd_complete_def_coalesced,
                 g_opt_stats.sd_pending_dl,
                 g_opt_stats.sd_dirty_dl,
+                g_opt_stats.dif_scan_skip,
+                g_opt_stats.dif_scan_run,
                 g_opt_stats.dl_from_def_fb,
                 g_opt_stats.dl_from_ppd_fb,
                 g_opt_stats.dl_from_dirty_if,
@@ -2983,6 +2996,7 @@ void pgraph_vk_invalidate_framebuffers_for_view(PGRAPHState *pg,
 
     if (r->current_framebuffer_views[0] == view ||
         r->current_framebuffer_views[1] == view) {
+        if (r->in_render_pass) { OPT_STAT_INC(rpb_inval); }
         pgraph_vk_ensure_not_in_render_pass(pg);
         r->current_framebuffer = VK_NULL_HANDLE;
         r->current_framebuffer_views[0] = VK_NULL_HANDLE;
@@ -3004,6 +3018,7 @@ VkCommandBuffer pgraph_vk_begin_nondraw_commands(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
     pgraph_vk_ensure_command_buffer(pg);
+    if (r->in_render_pass) { OPT_STAT_INC(rpb_nondraw); }
     pgraph_vk_ensure_not_in_render_pass(pg);
     return r->command_buffer;
 }
@@ -3458,6 +3473,10 @@ mfp_miss: (void)0;
         bool render_pass_dirty = r->pipeline_binding->render_pass != r->render_pass;
 
         if (r->framebuffer_dirty || render_pass_dirty) {
+            if (r->in_render_pass) {
+                if (r->framebuffer_dirty) { OPT_STAT_INC(rpb_fbdirty); }
+                if (render_pass_dirty) { OPT_STAT_INC(rpb_rpdirty); }
+            }
             pgraph_vk_ensure_not_in_render_pass(pg);
         }
         if (render_pass_dirty) {

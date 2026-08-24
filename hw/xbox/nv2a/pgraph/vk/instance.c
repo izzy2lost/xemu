@@ -553,20 +553,24 @@ static void add_optional_device_extension_names(
 
 #if OPT_DYNAMIC_BLEND
     /*
-     * Stock Qualcomm drivers often advertise EXT_extended_dynamic_state3 but
-     * crash or fault inside vkCmdSetColorBlend* / related dynamic state during
-     * real draws. Turnip and other updaters are fine; skip EDS3 on Adreno-only
-     * Android so we use static pipeline blend state instead.
+     * Qualcomm drivers often advertise EXT_extended_dynamic_state3 but crash
+     * or fault inside vkCmdSetColorBlend* / related dynamic state during real
+     * draws, so skip EDS3 on Adreno and use static pipeline blend state.
+     *
+     * This used to be lifted whenever a custom driver ZIP was installed, on
+     * the theory that an updated blob has the bug fixed. That inference does
+     * not hold: the ZIP is an arbitrary Adreno blob a user side-loaded, and it
+     * is frequently built for a different GPU generation than the one it is
+     * running on, which makes it *more* likely to fault than the stock driver,
+     * not less. Treat every Adreno driver the same.
      */
 # ifdef __ANDROID__
-    extern bool xemu_android_vulkan_custom_driver_zip_loaded(void);
-    if (r->device_props.vendorID == 0x5143u &&
-        !xemu_android_vulkan_custom_driver_zip_loaded()) {
+    if (r->device_props.vendorID == 0x5143u) {
         r->eds3_blend_supported = false;
-        fprintf(stderr, "Qualcomm GPU: omitting %s (use static blend for stock-driver compatibility)\n",
+        fprintf(stderr, "Qualcomm GPU: omitting %s (use static blend for driver compatibility)\n",
                 VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
         __android_log_print(ANDROID_LOG_INFO, "hakuX",
-                              "Qualcomm stock driver: dynamic blend (EDS3) disabled");
+                              "Qualcomm driver: dynamic blend (EDS3) disabled");
     } else
 # endif
     {
@@ -594,7 +598,6 @@ static void add_optional_device_extension_names(
 #endif
 
 #ifdef __ANDROID__
-    extern bool xemu_android_vulkan_custom_driver_zip_loaded(void);
     if (r->device_props.vendorID == 0x13B5u) {
         /* Mali-G715 r54 can segfault inside
          * command_buffer::push_descriptor_set while updating an otherwise
@@ -605,13 +608,17 @@ static void add_optional_device_extension_names(
                 VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
         __android_log_print(ANDROID_LOG_INFO, "hakuX",
                             "Mali driver: push descriptors disabled");
-    } else if (r->device_props.vendorID == 0x5143u &&
-               !xemu_android_vulkan_custom_driver_zip_loaded()) {
+    } else if (r->device_props.vendorID == 0x5143u) {
+        /* Adreno drivers fault inside qglinternal::vkCmdPushDescriptorSet
+         * while writing a combined image sampler. Observed on an Adreno 610
+         * running a side-loaded Adreno 805 blob (DriverVer 512.805.0): SIGSEGV
+         * on a truncated pointer during a Forza Motorsport race. Applies to
+         * custom driver ZIPs too -- see the EDS3 note above. */
         r->push_descriptors_supported = false;
-        fprintf(stderr, "Qualcomm GPU: omitting %s (crashes in stock driver)\n",
+        fprintf(stderr, "Qualcomm GPU: omitting %s (crashes in Adreno drivers)\n",
                 VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
         __android_log_print(ANDROID_LOG_INFO, "hakuX",
-                            "Qualcomm stock driver: push descriptors disabled");
+                            "Qualcomm driver: push descriptors disabled");
     } else
 #endif
     {

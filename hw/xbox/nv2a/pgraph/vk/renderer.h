@@ -166,6 +166,20 @@ struct OptBisectStats {
     int rpb_batch;
     int rpb_finish;
     int rpb_other;
+    /* Breakdown of rpb_other by call site (diagnostic). */
+    int rpb_nondraw;
+    int dif_scan_skip;
+    int dif_scan_run;
+    int nd_texup;
+    int nd_copysurf;
+    int nd_bindsurf;
+    int nd_surfdl;
+    int nd_surfcreate;
+    int nd_surfup;
+    int rpb_fbdirty;
+    int rpb_rpdirty;
+    int rpb_surface;
+    int rpb_inval;
     int predownload_hits;
 };
 extern struct OptBisectStats g_opt_stats;
@@ -1268,13 +1282,27 @@ typedef struct PGRAPHVkState {
     uint32_t texture_vram_gen;
     uint32_t last_texture_vram_gen;
 
+    /*
+     * Memoizes "does this VRAM range overlap a surface, and were any of them
+     * dirty" so that binding a texture does not have to walk the surface list
+     * every time.
+     *
+     * Keyed by the texture's VRAM range, NOT by texture unit. It used to be a
+     * 4-entry array indexed by texture_idx, which meant consecutive binds
+     * through the same unit almost never matched: a Forza race pushes hundreds
+     * of distinct textures through 4 units per frame, so the address compare
+     * failed nearly every time and the scan ran anyway -- measured at 36952
+     * scans against 100 skips in one sample interval.
+     */
+#define TEX_SURF_RANGE_CACHE_SIZE 512
     struct {
         uint32_t surface_list_gen;
         uint32_t surface_draw_gen;
         hwaddr vram_addr;
         hwaddr length;
         bool had_overlap;
-    } tex_surf_range_cache[NV2A_MAX_TEXTURES];
+        bool valid;
+    } tex_surf_range_cache[TEX_SURF_RANGE_CACHE_SIZE];
 
     struct {
         uint64_t key_hash;
