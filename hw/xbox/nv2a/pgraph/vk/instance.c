@@ -868,6 +868,10 @@ static bool create_logical_device(PGRAPHState *pg, Error **errp)
         F(samplerAnisotropy, false),
         F(shaderClipDistance, false),
         F(shaderTessellationAndGeometryPointSize, false),
+        /* Gates BC1/BC2/BC3 images, which native DXT upload creates.
+         * init_texture_format_map() only takes that path when this
+         * ends up enabled. */
+        F(textureCompressionBC, false),
         F(wideLines, false),
         #undef F
         // clang-format on

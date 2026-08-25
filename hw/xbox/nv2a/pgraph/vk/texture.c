@@ -77,6 +77,41 @@ static VkColorFormatInfo texture_format_for_shape(PGRAPHVkState *r,
     return vkf;
 }
 
+/*
+ * Whether the tex_surf_range_cache memo is consulted at all.
+ *
+ * The memo skips pgraph_vk_download_surfaces_in_range_if_dirty() for a VRAM
+ * range it believes is still clean. That download is also what *writes* the
+ * range in VRAM, and that write is what sets DIRTY_MEMORY_NV2A_TEX, which is
+ * what check_texture_dirty() reports and what makes create_texture() re-upload.
+ * So a wrong skip does not merely miss a download -- it leaves the texture
+ * binding frozen at whatever it held the first time, with no later event able
+ * to refresh it.
+ *
+ * `debug.xemu.vk.surf_range_memo=0` disables the memo so the scan always runs,
+ * which is what the code did before the memo was keyed by range.
+ */
+static bool surf_range_memo_enabled(void)
+{
+#ifdef __ANDROID__
+    static int enabled = -1;
+    if (enabled < 0) {
+        char prop[PROP_VALUE_MAX] = {};
+        enabled = 1;
+        if (__system_property_get("debug.xemu.vk.surf_range_memo", prop) > 0 &&
+            prop[0] == '0') {
+            enabled = 0;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "texture surface-range memo: %s",
+                            enabled ? "on" : "off (always scan)");
+    }
+    return enabled;
+#else
+    return true;
+#endif
+}
+
 /* Direct-mapped index for tex_surf_range_cache, keyed by the VRAM range. */
 static inline unsigned surf_range_cache_index(hwaddr addr, hwaddr length)
 {
@@ -1679,7 +1714,7 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
             &r->tex_surf_range_cache[cache_idx];
 
         bool skip_surf_scan = false;
-        if (range_ent->valid &&
+        if (surf_range_memo_enabled() && range_ent->valid &&
             range_ent->vram_addr == texture_vram_offset &&
             range_ent->length == texture_length &&
             range_ent->surface_list_gen == r->surface_list_gen &&
@@ -2567,6 +2602,69 @@ static bool format_can_be_sampled(PGRAPHVkState *r, VkFormat format)
             VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
 }
 
+/* Stricter than format_can_be_sampled(): the textures this is used for are
+ * mipmapped and sampled with a linear filter, which is a separate format
+ * feature from plain sampling. A driver that reports SAMPLED_IMAGE but not
+ * SAMPLED_IMAGE_FILTER_LINEAR would leave every filtered fetch undefined. */
+static bool format_can_be_sampled_filtered(PGRAPHVkState *r, VkFormat format)
+{
+    if (format == VK_FORMAT_UNDEFINED) {
+        return false;
+    }
+
+    const VkFormatFeatureFlags required =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+
+    VkFormatProperties props;
+    vkGetPhysicalDeviceFormatProperties(r->physical_device, format, &props);
+    return (props.optimalTilingFeatures & required) == required;
+}
+
+/*
+ * Whether native BC upload may be used at all on this device.
+ *
+ * `debug.xemu.vk.dxt_blocks` forces the answer either way (1 = on, 0 = off) so
+ * the two paths can be A/B compared on one build.
+ */
+static bool device_allows_dxt_blocks(PGRAPHVkState *r)
+{
+#ifndef __ANDROID__
+    (void)r;
+#else
+    char prop[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.xemu.vk.dxt_blocks", prop) > 0 &&
+        (prop[0] == '0' || prop[0] == '1')) {
+        bool forced = (prop[0] == '1');
+        __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
+                            "DXT block upload: forced %s by property",
+                            forced ? "on" : "off");
+        return forced;
+    }
+
+    /*
+     * Adreno has no hardware BC decode. Qualcomm's driver nevertheless
+     * advertises textureCompressionBC and reports SAMPLED_IMAGE for
+     * BC1/BC2/BC3, so the feature and format-property checks below both pass
+     * and are not sufficient on their own.
+     *
+     * Observed on an Adreno 610 (driver 0615.86, Snapdragon 662): with BC
+     * images in use, the textures that go through this path -- the sky and the
+     * road in Forza Motorsport, both large mipmapped DXT -- stop rendering.
+     * Keep the software decompress on Adreno; correctness outranks the upload
+     * saving.
+     */
+    if (r->device_props.vendorID == 0x5143u) {
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "DXT block upload: disabled on Adreno "
+                            "(no hardware BC despite advertised support)");
+        return false;
+    }
+#endif
+    return true;
+}
+
 /* Pick the effective Vulkan format for each Kelvin texture format.
  *
  * The preferred format is not always available. A4R4G4B4 in particular only
@@ -2601,10 +2699,13 @@ static void init_texture_format_map(PGRAPHVkState *r)
           VK_FORMAT_BC3_UNORM_BLOCK },
     };
 
-    bool all_blocks_supported = true;
-    for (int i = 0; i < ARRAY_SIZE(dxt_block_formats); i++) {
-        all_blocks_supported &=
-            format_can_be_sampled(r, dxt_block_formats[i].block_format);
+    bool all_blocks_supported = device_allows_dxt_blocks(r) &&
+                                r->enabled_physical_device_features
+                                    .textureCompressionBC;
+    for (int i = 0; i < ARRAY_SIZE(dxt_block_formats) && all_blocks_supported;
+         i++) {
+        all_blocks_supported = format_can_be_sampled_filtered(
+            r, dxt_block_formats[i].block_format);
     }
 
     if (all_blocks_supported) {

@@ -289,6 +289,25 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
         }
     }
 
+#ifdef __ANDROID__
+    /* Diagnostic: override the texture retention ladder above so a cache size
+     * can be tested against a symptom without a rebuild. */
+    {
+        char prop[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.vk.tex_cache", prop) > 0) {
+            char *end = NULL;
+            unsigned long entries = strtoul(prop, &end, 10);
+            if (end != prop && *end == '\0' && entries >= 64 &&
+                entries <= 8192) {
+                b.texture_cache_entries = entries;
+                __android_log_print(ANDROID_LOG_WARN, "hakuX-vk",
+                                    "diagnostic texture cache override: %lu",
+                                    entries);
+            }
+        }
+    }
+#endif
+
     return b;
 }
 
