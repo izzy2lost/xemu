@@ -257,16 +257,24 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
          * than an 8GB one (it briefly did).
          */
         if (b.memory_class_gib <= 4) {
-            /* 256 was not enough to hold a Forza Motorsport race on a 4GB
-             * Adreno 610: upload_texture_image() ran 6000-14000 times per
-             * sample interval, and because each upload ends the render pass to
-             * issue its transfer, that alone produced ~12000 render pass breaks
-             * -- on a tiler, a full tile store+reload every time. The frame was
-             * ~700ms with the GPU doing 150ms of pure transfer and essentially
-             * no rendering. Entries, not bytes, were the binding constraint:
-             * with DXT stored as blocks the same run reported no memory
-             * pressure trims at all. */
-            b.texture_cache_entries = 1024;
+            /* This tier was briefly raised to 1024 on the strength of a Forza
+             * Motorsport race on a 4GB Adreno 610, where 256 entries meant
+             * upload_texture_image() ran 6000-14000 times per sample interval
+             * and each upload ended the render pass to issue its transfer.
+             *
+             * That measurement assumed DXT would be stored as compressed
+             * blocks, which is where "no memory pressure trims at all" came
+             * from. Adreno has no real BC support (see
+             * device_allows_dxt_blocks()), so DXT is decompressed to RGBA8 and
+             * an entry costs 4-8x what the tier was sized for. At 1024 on a
+             * 3.6GB device the renderer sat pinned at its 512MB soft limit,
+             * trimming caches about twice a second for the whole run, and menu
+             * text and backgrounds stopped rendering.
+             *
+             * Keep 256 here until block storage is actually available on the
+             * device, and raise it from a measurement taken with the real
+             * per-entry cost. debug.xemu.vk.tex_cache overrides it. */
+            b.texture_cache_entries = 256;
             b.image_pool_max = 16;
             b.surface_image_pool_max = 8;
         } else if (b.memory_class_gib <= 6) {
