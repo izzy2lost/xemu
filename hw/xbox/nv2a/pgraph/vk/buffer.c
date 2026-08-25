@@ -278,7 +278,12 @@ static MemoryBudget compute_memory_budget(PGRAPHVkState *r)
             b.image_pool_max = 16;
             b.surface_image_pool_max = 8;
         } else if (b.memory_class_gib <= 6) {
-            b.texture_cache_entries = 1024;
+            /* Raised to 1024 alongside the 4GB tier on the same assumption
+             * that DXT would be stored as compressed blocks. That assumption
+             * does not hold where BC is unavailable, so this is back to 512
+             * until there is a measurement from an actual 6GB device taken
+             * with the real per-entry cost. */
+            b.texture_cache_entries = 512;
             b.image_pool_max = 32;
             b.surface_image_pool_max = 16;
         } else if (b.memory_class_gib <= 8) {
