@@ -16,7 +16,11 @@ foreach m : [
   ['alsa', alsa, files('alsaaudio.c')],
   ['oss', oss, files('ossaudio.c')],
   ['pa', pulse, files('paaudio.c')],
-  ['sdl', sdl, files('sdlaudio.c')],
+  # sdlaudio.c is upstream QEMU's SDL2 audio backend and was never ported when
+  # this fork moved to SDL3: it includes <SDL.h>/<SDL_thread.h> and uses the
+  # SDL2 callback-based audio API, both of which are gone in SDL3. xemu drives
+  # audio through its own path (OpenSL ES on Android), so drop it rather than
+  # port a backend nothing uses.
   ['jack', jack, files('jackaudio.c')],
   ['sndio', sndio, files('sndioaudio.c')],
   ['pipewire', pipewire, files('pwaudio.c')],

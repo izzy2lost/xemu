@@ -8,6 +8,7 @@ tcg_ss.add(files(
   'optimize.c',
   'region.c',
   'tcg.c',
+  'tier1-opt.c',
   'tcg-common.c',
   'tcg-op.c',
   'tcg-op-ldst.c',

@@ -28,6 +28,7 @@
 /* Ported SDL 1.2 code to 2.0 by Dave Airlie. */
 
 #include "qemu/osdep.h"
+#include "hw/xbox/nv2a/debug.h"
 #include <math.h>
 #include "qemu/module.h"
 #include "qemu/thread.h"
@@ -847,6 +848,15 @@ void sdl2_poll_events(struct sdl2_console *scon)
 
         switch (ev->type) {
         case SDL_EVENT_KEY_DOWN:
+            /* Frame capture was only reachable through the Android JNI
+             * binding, leaving the desktop build with no way to trigger it.
+             * F9 is the only free function key here: F1/F2 open menus, F5-F8
+             * are snapshot slots, F10 is RenderDoc, F11 fullscreen and F12 is
+             * already the screenshot action. */
+            if (ev->key.key == SDLK_F9) {
+                nv2a_dbg_trigger_diag_frame();
+                break;
+            }
             if (kbd) break;
             handle_keydown(ev);
             break;
@@ -1789,7 +1799,9 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     android_log_gl_error("refresh-makecurrent");
 #endif
     update_fps();
+#ifdef __ANDROID__
     g_android_frame_counter++;
+#endif
 
     /* XXX: Note that this bypasses the usual VGA path in order to quickly
      * get the surface. This is simple and fast, at the cost of accuracy.

@@ -881,6 +881,23 @@ static bool android_surface_to_texture_rgba8_compatible(
         return false;
     }
 }
+#else
+/* A few call sites below are not themselves inside __ANDROID__ guards. Rather
+ * than wrap each one, give the GL-error logging helpers no-op stubs off
+ * Android, where there is no android_log_print to drain errors into. */
+static inline bool android_log_and_drain_gl_errors(const char *ctx)
+{
+    (void)ctx;
+    return false;
+}
+
+static inline bool android_log_surface_download_errors(
+    const char *ctx, const SurfaceBinding *surface)
+{
+    (void)ctx;
+    (void)surface;
+    return false;
+}
 #endif
 
 static void surface_download(NV2AState *d, SurfaceBinding *surface, bool force);

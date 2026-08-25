@@ -390,6 +390,11 @@ static inline int64_t nv2a_clock_ns(void)
     return (int64_t)(((__uint128_t)cnt * ns_mult) >> ns_shift);
 }
 #else
+/* The aarch64 path above reads cntvct_el0 directly and needs no QEMU timer
+ * API. Everywhere else this falls back to qemu_clock_get_ns(), so pull in its
+ * declaration here -- debug.h is included from C++ UI translation units whose
+ * include chain does not otherwise reach qemu/timer.h. */
+#include "qemu/timer.h"
 static inline int64_t nv2a_clock_ns(void)
 {
     return qemu_clock_get_ns(QEMU_CLOCK_REALTIME);

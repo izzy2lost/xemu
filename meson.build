@@ -1858,7 +1858,10 @@ if not get_option('opengl').auto() or have_system or have_vhost_user_gpu
   elif host_os == 'windows'
     opengl_libs=['-lopengl32', '-lgdi32']
   elif host_os == 'linux'
-    opengl_libs=['-lGL']
+    # -lEGL is needed for the Vulkan renderer's external-memory interop path
+    # (pgraph/vk/display.c), which resolves GL memory-object entry points
+    # through eglGetProcAddress on non-Android hosts.
+    opengl_libs=['-lGL', '-lEGL']
   else
     error('Unknown GL platform')
   endif
