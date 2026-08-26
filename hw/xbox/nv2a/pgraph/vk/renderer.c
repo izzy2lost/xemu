@@ -511,6 +511,11 @@ void nv2a_dbg_trigger_diag_frame(void)
     nv2a_dbg_trigger_diag_frames(1);
 }
 
+const char *nv2a_dbg_diag_dir(void)
+{
+    return diag_session_dir[0] ? diag_session_dir : NULL;
+}
+
 bool nv2a_dbg_diag_frame_active(void)
 {
     return qatomic_read(&diag_frame_active) != 0;
@@ -1112,6 +1117,42 @@ void nv2a_diag_log_draw_call(NV2AState *d, PGRAPHState *pg,
                     blend_en, zfunc, depth_write, cull_str,
                     r->color_binding ? r->color_binding->width : 0,
                     r->color_binding ? r->color_binding->height : 0);
+            /* What each texture unit is actually sampling. draws.txt used
+             * to record only shader and raster state, which cannot
+             * distinguish "the shader is wrong" from "the shader is right
+             * and the texture under it is wrong" -- the case that matters
+             * when one GPU renders a draw correctly and another renders it
+             * flat. */
+            for (int t = 0; t < NV2A_MAX_TEXTURES; t++) {
+                TextureBinding *tb = r->texture_bindings[t];
+                if (!tb || tb == &r->dummy_texture) {
+                    continue;
+                }
+                const TextureShape *ts = &tb->key.state;
+                fprintf(f,
+                        "      tex%-2d vkfmt=%d kelvin=0x%x %ux%ux%u lvls=%u "
+                        "cube=%d dim=%u border=%d surfdirect=%d "
+                        "vram=0x%08" HWADDR_PRIx " len=0x%" HWADDR_PRIx
+                        " layout=%d img=%ux%u mips=%u seq=%" PRIu64 "\n",
+                        t, (int)tb->image_config.format, ts->color_format,
+                        ts->width, ts->height, ts->depth, ts->levels,
+                        ts->cubemap, ts->dimensionality, ts->border,
+                        r->tex_surface_direct[t],
+                        tb->key.texture_vram_offset, tb->key.texture_length,
+                        (int)tb->current_layout,
+                        tb->image_config.width, tb->image_config.height,
+                        tb->image_config.mip_levels, tb->seq);
+                /* Sampler inputs. A correct texture that samples as its own
+                 * average means LOD selection, not data -- these are the
+                 * values that decide it. */
+                fprintf(f,
+                        "            minmip=%u maxmip=%u filter=0x%08x "
+                        "aniso=%u addr=0x%08x\n",
+                        ts->min_mipmap_level, ts->max_mipmap_level,
+                        tb->key.filter, tb->key.max_anisotropy,
+                        tb->key.address);
+            }
+
             /* Per-attribute setup, to tell a bad layout from bad data. */
             for (int a = 0; a < NV2A_VERTEXSHADER_ATTRIBUTES; a++) {
                 VertexAttribute *va = &pg->vertex_attributes[a];

@@ -1944,6 +1944,24 @@ static void destroy_surface_image(PGRAPHVkState *r, SurfaceBinding *surface)
 {
     pgraph_vk_invalidate_framebuffers_for_view(&g_nv2a->pgraph,
                                                surface->image_view);
+    /*
+     * DIAGNOSTIC (not the intended fix -- this is a full GPU stall).
+     *
+     * invalidate_framebuffers_for_view() only ends the current render pass.
+     * It cannot retract commands already recorded into the open command
+     * buffer, which may still reference this view. Destroying it there is
+     * invalid usage and validation reports it as
+     *   "VkCommandBuffer ... is now in an invalid state ... VkImageView was
+     *    destroyed"
+     * roughly 221 times in a single Forza race, after which everything
+     * recorded into that command buffer is undefined. Desktop AMD tolerates
+     * it; a tiler need not.
+     *
+     * Wait for the GPU to drain first so the view is provably unreferenced.
+     * If this makes the affected surfaces render correctly, the real fix is a
+     * deferred-destroy queue retiring views once their submit completes.
+     */
+    pgraph_vk_finish(&g_nv2a->pgraph, VK_FINISH_REASON_SURFACE_DOWN);
     vkDestroyImageView(r->device, surface->image_view, NULL);
     surface->image_view = VK_NULL_HANDLE;
 

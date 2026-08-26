@@ -696,6 +696,37 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
     nv2a_profile_inc_counter(NV2A_PROF_TEX_UPLOAD);
 
     g_autofree TextureLayout *layout = get_texture_layout(pg, texture_idx);
+
+    /*
+     * During a diag capture, write out the CPU-side decoded level 0 exactly as
+     * it is about to be handed to the driver. Every code-path difference
+     * between this device and a desktop has been eliminated, so the remaining
+     * question is simply whether the bytes we upload are correct. This answers
+     * it directly instead of by inference.
+     */
+    if (nv2a_dbg_diag_frame_active()) {
+        const char *ddir = nv2a_dbg_diag_dir();
+        TextureLevel *l0 = &layout->layers[0].levels[0];
+        if (ddir && l0->decoded_data && l0->width && l0->height) {
+            char tp[900];
+            snprintf(tp, sizeof(tp), "%s/tex_%08" HWADDR_PRIx "_f%02x_%ux%u.ppm",
+                     ddir, binding->key.texture_vram_offset,
+                     state->color_format, l0->width, l0->height);
+            FILE *tf = fopen(tp, "wb");
+            if (tf) {
+                fprintf(tf, "P6\n%u %u\n255\n", l0->width, l0->height);
+                const uint8_t *px = l0->decoded_data;
+                size_t npx = (size_t)l0->width * l0->height;
+                /* decoded_data is RGBA8 here; drop alpha for the PPM. */
+                if (l0->decoded_size >= npx * 4) {
+                    for (size_t k = 0; k < npx; k++) {
+                        fwrite(px + k * 4, 1, 3, tf);
+                    }
+                }
+                fclose(tf);
+            }
+        }
+    }
     const int num_layers = state->cubemap ? 6 : 1;
 
     // Calculate decoded texture data size
@@ -793,6 +824,7 @@ static void upload_texture_image(PGRAPHState *pg, int texture_idx,
                                       binding->current_layout,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     binding->current_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
 
     nv2a_profile_inc_counter(NV2A_PROF_QUEUE_SUBMIT_4);
     pgraph_vk_end_debug_marker(r, cmd);
@@ -1147,6 +1179,15 @@ static void copy_zeta_surface_to_texture(PGRAPHState *pg, SurfaceBinding *surfac
 static bool can_bind_surface_direct(PGRAPHVkState *r,
                                     const SurfaceBinding *surface)
 {
+#ifndef __ANDROID__
+    /* Reproduce the mobile surface-to-texture copy path on desktop. */
+    {
+        const char *env = getenv("XEMU_VK_SURF_DIRECT");
+        if (env && env[0] == '0') {
+            return false;
+        }
+    }
+#endif
 #ifdef __ANDROID__
     /* Some mobile drivers dereference transient render-surface views while
      * processing combined-image-sampler descriptor writes.  Mali-G715 r54 and
@@ -2112,6 +2153,20 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     } else if (lod_bias < -r->device_props.limits.maxSamplerLodBias) {
         lod_bias = -r->device_props.limits.maxSamplerLodBias;
     }
+    bool force_lod0 = false;
+#ifdef __ANDROID__
+    {
+        static int flag = -1;
+        if (flag < 0) {
+            char prop[PROP_VALUE_MAX] = {};
+            flag = (__system_property_get("debug.xemu.vk.force_lod0", prop) > 0
+                    && prop[0] == '1');
+            __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                                "force LOD0: %s", flag ? "on" : "off");
+        }
+        force_lod0 = flag;
+    }
+#endif
     uint32_t sampler_max_anisotropy =
         MIN(r->device_props.limits.maxSamplerAnisotropy, max_anisotropy);
 
@@ -2134,8 +2189,19 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
         .compareOp = VK_COMPARE_OP_ALWAYS,
         .mipmapMode = mipmap_nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST :
                                        VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        /*
+         * `setprop debug.xemu.vk.force_lod0 1` clamps sampling to mip 0.
+         *
+         * Diagnostic: a texture that is provably correct on the CPU side and
+         * has a sane sampler, yet renders as its own average colour, is
+         * sampling its smallest mip. That is decided by the texture-coordinate
+         * derivatives at runtime, not by anything set here. Pinning maxLod to
+         * 0 separates "wrong LOD is being chosen" from "the texture is wrong".
+         */
         .minLod = mipmap_en ? MIN(state.min_mipmap_level, state.levels - 1) : 0.0,
-        .maxLod = mipmap_en ? MIN(state.max_mipmap_level, state.levels - 1) : 0.0,
+        .maxLod = force_lod0 ? 0.0f
+                             : (mipmap_en ? MIN(state.max_mipmap_level,
+                                                state.levels - 1) : 0.0),
         .mipLodBias = lod_bias,
         .pNext = sampler_next_struct,
     };
@@ -2632,6 +2698,13 @@ static bool device_allows_dxt_blocks(PGRAPHVkState *r)
 {
 #ifndef __ANDROID__
     (void)r;
+    /* Lets the desktop build exercise the software-decompress path, which is
+     * what mobile GPUs without real BC support always take. Without this the
+     * two paths can only be compared across two different machines. */
+    const char *env = getenv("XEMU_VK_DXT_BLOCKS");
+    if (env && (env[0] == '0' || env[0] == '1')) {
+        return env[0] == '1';
+    }
 #else
     char prop[PROP_VALUE_MAX] = {};
     if (__system_property_get("debug.xemu.vk.dxt_blocks", prop) > 0 &&

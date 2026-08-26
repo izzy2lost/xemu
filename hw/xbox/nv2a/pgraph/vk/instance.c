@@ -578,6 +578,16 @@ static void add_optional_device_extension_names(
             available_extensions, enabled_extension_names,
             VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
     }
+# ifndef __ANDROID__
+    {
+        const char *env = getenv("XEMU_VK_EDS3_BLEND");
+        if (env && env[0] == '0') {
+            r->eds3_blend_supported = false;
+            fprintf(stderr,
+                    "XEMU_VK_EDS3_BLEND=0: dynamic blend (EDS3) disabled\n");
+        }
+    }
+# endif
 #endif
 
 #if OPT_BINDLESS_TEXTURES
@@ -626,6 +636,20 @@ static void add_optional_device_extension_names(
             available_extensions, enabled_extension_names,
             VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
     }
+
+#ifndef __ANDROID__
+    /* Mobile drivers force several paths off that desktop leaves on, so a bug
+     * in a fallback path only ever shows up on a phone. These let the desktop
+     * build run the same configuration and reproduce it locally. */
+    {
+        const char *env = getenv("XEMU_VK_PUSH_DESCRIPTORS");
+        if (env && env[0] == '0') {
+            r->push_descriptors_supported = false;
+            fprintf(stderr,
+                    "XEMU_VK_PUSH_DESCRIPTORS=0: push descriptors disabled\n");
+        }
+    }
+#endif
 }
 
 static bool check_device_support_required_extensions(VkPhysicalDevice device)

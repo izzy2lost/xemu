@@ -28,6 +28,11 @@
 #include <arm_neon.h>
 #endif
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include <sys/system_properties.h>
+#endif
+
 #include "s3tc.h"
 
 static void decode_bc1_colors(uint16_t c0, uint16_t c1, uint8_t r[4],
@@ -107,6 +112,25 @@ static inline void s3tc_store_rgba_row(uint8_t *dst, uint8x8_t r,
                               vreinterpret_u8_u16(rgba_hi)));
 }
 
+static bool s3tc_neon_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = 1;
+#ifdef __ANDROID__
+        char value[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.s3tc.neon", value) > 0 &&
+            value[0] == '0') {
+            enabled = 0;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-s3tc",
+                            "DXT block writer: %s",
+                            enabled ? "NEON" : "scalar (NEON disabled)");
+#endif
+    }
+    return enabled;
+}
+
 static bool write_block_to_texture_neon(uint8_t *converted_data, uint32_t indices,
                                         int i, int j, int width, int height,
                                         int z_pos_factor, const uint8_t r[4],
@@ -162,7 +186,14 @@ static void write_block_to_texture(uint8_t *converted_data, uint32_t indices,
         y1 = y0 + 4;
 
 #ifdef __aarch64__
-    if (write_block_to_texture_neon(converted_data, indices, i, j, width,
+    /*
+     * The NEON block writer only exists on aarch64, so it is never exercised
+     * by an x86 desktop build -- a bug in it can only ever show up on a phone.
+     * `setprop debug.xemu.s3tc.neon 0` falls back to the scalar loop below so
+     * the two can be compared on the same device.
+     */
+    if (s3tc_neon_enabled() &&
+        write_block_to_texture_neon(converted_data, indices, i, j, width,
                                     height, z_pos_factor, r, g, b, a,
                                     separate_alpha)) {
         return;

@@ -439,6 +439,7 @@ void nv2a_dbg_set_rt_dump_path(const char *dir);
 
 void nv2a_dbg_trigger_diag_frames(int num_frames);
 void nv2a_dbg_trigger_diag_frame(void);
+const char *nv2a_dbg_diag_dir(void);
 bool nv2a_dbg_diag_frame_active(void);
 bool nv2a_dbg_diag_frame_pending(void);
 
