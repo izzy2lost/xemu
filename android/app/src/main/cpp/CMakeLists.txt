@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(xemu_android LANGUAGES C CXX)
+project(xemu_android LANGUAGES C CXX ASM)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -772,6 +772,7 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "ui[\\\\/]xemu-os-utils-windows\\.c$
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]aio-win32\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]atomic64\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]coroutine-ucontext\\.c$")
+list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]coroutine-sigaltstack\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]coroutine-wasm\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]coroutine-win32\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "util[\\\\/]coroutine-windows\\.c$")
@@ -1025,6 +1026,8 @@ endif()
 
 add_library(xemu_core STATIC
   ${XEMU_CORE_SOURCES}
+  coroutine-android.c
+  coroutine-android-aarch64.S
 )
 
 if(XEMU_ENABLE_VULKAN)
@@ -1217,6 +1220,23 @@ add_library(gthread-2.0 STATIC IMPORTED)
 set_target_properties(gthread-2.0 PROPERTIES
   IMPORTED_LOCATION "${GLIB_INSTALL_DIR}/lib/libgthread-2.0.a"
 )
+
+# Build explicitly with CMake's --target test-coroutine-android, then run via adb.
+add_executable(test-coroutine-android EXCLUDE_FROM_ALL
+  "${CMAKE_CURRENT_LIST_DIR}/../../test/cpp/test-coroutine-android.c"
+  coroutine-android.c
+  coroutine-android-aarch64.S
+  libintl_stub.c
+)
+target_include_directories(test-coroutine-android PRIVATE
+  $<TARGET_PROPERTY:xemu_core,INCLUDE_DIRECTORIES>
+)
+target_compile_definitions(test-coroutine-android PRIVATE
+  $<TARGET_PROPERTY:xemu_core,COMPILE_DEFINITIONS>
+)
+target_compile_options(test-coroutine-android PRIVATE -UNDEBUG)
+target_link_libraries(test-coroutine-android PRIVATE glib-2.0 log android)
+add_dependencies(test-coroutine-android glib_ep)
 
 add_library(slirp_static STATIC
   ${LIBSLIRP_SOURCES}

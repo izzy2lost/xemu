@@ -54,7 +54,15 @@ static void *qemu_default_main(void *opaque)
     bql_unlock();
     replay_mutex_unlock();
 
+#ifdef __ANDROID__
+    /* Let SDL_main join the emulator thread and terminate with _exit().
+     * exit() runs Android's global destructors while its UI threads are
+     * still alive, racing font/render callbacks against destroyed mutexes.
+     */
+    return GINT_TO_POINTER(status);
+#else
     exit(status);
+#endif
 }
 
 int (*qemu_main)(void);
@@ -68,8 +76,12 @@ static int qemu_xemu_main(void)
     bql_unlock();
     replay_mutex_unlock();
 
+#ifdef __ANDROID__
+    return GPOINTER_TO_INT(qemu_default_main(NULL));
+#else
     qemu_default_main(NULL);
     g_assert_not_reached();
+#endif
 }
 
 int (*qemu_main)(void) = qemu_xemu_main;

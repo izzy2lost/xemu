@@ -29,6 +29,20 @@ From this directory:
 ./gradlew assembleDebug
 ```
 
+The Android ARM64 coroutine backend has an optional native regression test.
+After configuring a build with Gradle, use its CMake build ID below:
+
+```
+cmake --build app/.cxx/RelWithDebInfo/<build-id>/arm64-v8a --target test-coroutine-android
+adb push app/build/intermediates/cxx/RelWithDebInfo/<build-id>/obj/arm64-v8a/test-coroutine-android /data/local/tmp/
+adb shell /data/local/tmp/test-coroutine-android
+```
+
+This checks 1,000 coroutine transfers between threads, nested entry, stack and
+floating-point state, and termination. On hardware with pointer authentication,
+the threads use separate IA keys as Android app threads do. The test is excluded
+from normal APK builds.
+
 For a release-optimized APK that Android Studio can profile without making the
 app debuggable:
 
