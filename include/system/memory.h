@@ -2394,7 +2394,8 @@ void memory_region_enable_lockless_io(MemoryRegion *mr);
  *             synchronization the access needs.
  *
  * Reads the predicate rejects, and all writes, keep their normal BQL
- * serialization.
+ * serialization, and keep the device reentrancy guard -- only the accepted
+ * read bypasses it, for that transaction alone.
  */
 void memory_region_set_lockless_read(MemoryRegion *mr,
                                      MemoryRegionLocklessRead predicate);
@@ -2744,6 +2745,21 @@ MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
                                         uint64_t *pval,
                                         MemOp op,
                                         MemTxAttrs attrs);
+/**
+ * memory_region_dispatch_read_lockless: read with the reentrancy guard
+ *                                       bypassed for this transaction only.
+ *
+ * As memory_region_dispatch_read(), except that the device-wide reentrancy
+ * guard -- which is not safe to manipulate without the BQL -- is skipped.
+ * The caller must already have established that this particular access is
+ * safe without the BQL and without that guard. Every other access to the
+ * same device, reads and writes alike, keeps the guard.
+ */
+MemTxResult memory_region_dispatch_read_lockless(MemoryRegion *mr,
+                                                 hwaddr addr,
+                                                 uint64_t *pval,
+                                                 MemOp op,
+                                                 MemTxAttrs attrs);
 /**
  * memory_region_dispatch_write: perform a write directly to the specified
  * MemoryRegion.

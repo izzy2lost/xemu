@@ -526,7 +526,8 @@ static MemTxResult access_with_adjusted_size(hwaddr addr,
                                                    uint64_t mask,
                                                    MemTxAttrs attrs),
                                       MemoryRegion *mr,
-                                      MemTxAttrs attrs)
+                                      MemTxAttrs attrs,
+                                      bool bypass_reentrancy_guard)
 {
     uint64_t access_mask;
     unsigned access_size;
@@ -543,6 +544,7 @@ static MemTxResult access_with_adjusted_size(hwaddr addr,
 
     /* Do not allow more than one simultaneous access to a device's IO Regions */
     if (mr->dev && !mr->disable_reentrancy_guard &&
+        !bypass_reentrancy_guard &&
         !mr->ram_device && !mr->ram && !mr->rom_device && !mr->readonly) {
         if (mr->dev->mem_reentrancy_guard.engaged_in_io) {
             warn_report_once("Blocked re-entrant IO on MemoryRegion: "
@@ -1444,7 +1446,8 @@ static MemTxResult memory_region_dispatch_read1(MemoryRegion *mr,
                                                 hwaddr addr,
                                                 uint64_t *pval,
                                                 unsigned size,
-                                                MemTxAttrs attrs)
+                                                MemTxAttrs attrs,
+                                                bool bypass_reentrancy_guard)
 {
     *pval = 0;
 
@@ -1453,14 +1456,39 @@ static MemTxResult memory_region_dispatch_read1(MemoryRegion *mr,
                                          mr->ops->impl.min_access_size,
                                          mr->ops->impl.max_access_size,
                                          memory_region_read_accessor,
-                                         mr, attrs);
+                                         mr, attrs,
+                                         bypass_reentrancy_guard);
     } else {
         return access_with_adjusted_size(addr, pval, size,
                                          mr->ops->impl.min_access_size,
                                          mr->ops->impl.max_access_size,
                                          memory_region_read_with_attrs_accessor,
-                                         mr, attrs);
+                                         mr, attrs,
+                                         bypass_reentrancy_guard);
     }
+}
+
+static MemTxResult memory_region_dispatch_read_internal(
+    MemoryRegion *mr, hwaddr addr, uint64_t *pval, MemOp op,
+    MemTxAttrs attrs, bool bypass_reentrancy_guard)
+{
+    unsigned size = memop_size(op);
+    MemTxResult r;
+
+    if (mr->alias) {
+        return memory_region_dispatch_read_internal(
+            mr->alias, mr->alias_offset + addr, pval, op, attrs,
+            bypass_reentrancy_guard);
+    }
+    if (!memory_region_access_valid(mr, addr, size, false, attrs)) {
+        *pval = unassigned_mem_read(mr, addr, size);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    r = memory_region_dispatch_read1(mr, addr, pval, size, attrs,
+                                     bypass_reentrancy_guard);
+    adjust_endianness(mr, pval, op);
+    return r;
 }
 
 MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
@@ -1469,22 +1497,18 @@ MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
                                         MemOp op,
                                         MemTxAttrs attrs)
 {
-    unsigned size = memop_size(op);
-    MemTxResult r;
+    return memory_region_dispatch_read_internal(mr, addr, pval, op, attrs,
+                                                false);
+}
 
-    if (mr->alias) {
-        return memory_region_dispatch_read(mr->alias,
-                                           mr->alias_offset + addr,
-                                           pval, op, attrs);
-    }
-    if (!memory_region_access_valid(mr, addr, size, false, attrs)) {
-        *pval = unassigned_mem_read(mr, addr, size);
-        return MEMTX_DECODE_ERROR;
-    }
-
-    r = memory_region_dispatch_read1(mr, addr, pval, size, attrs);
-    adjust_endianness(mr, pval, op);
-    return r;
+MemTxResult memory_region_dispatch_read_lockless(MemoryRegion *mr,
+                                                 hwaddr addr,
+                                                 uint64_t *pval,
+                                                 MemOp op,
+                                                 MemTxAttrs attrs)
+{
+    return memory_region_dispatch_read_internal(mr, addr, pval, op, attrs,
+                                                true);
 }
 
 /* Return true if an eventfd was signalled */
@@ -1548,14 +1572,14 @@ MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
                                          mr->ops->impl.min_access_size,
                                          mr->ops->impl.max_access_size,
                                          memory_region_write_accessor, mr,
-                                         attrs);
+                                         attrs, false);
     } else {
         return
             access_with_adjusted_size(addr, &data, size,
                                       mr->ops->impl.min_access_size,
                                       mr->ops->impl.max_access_size,
                                       memory_region_write_with_attrs_accessor,
-                                      mr, attrs);
+                                      mr, attrs, false);
     }
 }
 
@@ -2648,12 +2672,6 @@ void memory_region_set_lockless_read(MemoryRegion *mr,
                                      MemoryRegionLocklessRead predicate)
 {
     mr->lockless_read = predicate;
-    /*
-     * As for memory_region_enable_lockless_io(): the reentrancy guard has
-     * per-device scope and is not safe to manipulate concurrently. Accesses
-     * the predicate does not accept stay BQL serialized regardless.
-     */
-    mr->disable_reentrancy_guard = true;
 }
 
 void memory_region_add_eventfd(MemoryRegion *mr,

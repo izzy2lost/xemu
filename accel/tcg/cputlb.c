@@ -2011,7 +2011,8 @@ static void *atomic_mmu_lookup(CPUState *cpu, vaddr addr, MemOpIdx oi,
 static uint64_t int_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
                                 uint64_t ret_be, vaddr addr, int size,
                                 int mmu_idx, MMUAccessType type, uintptr_t ra,
-                                MemoryRegion *mr, hwaddr mr_offset)
+                                MemoryRegion *mr, hwaddr mr_offset,
+                                bool bypass_reentrancy_guard)
 {
     do {
         MemOp this_mop;
@@ -2024,8 +2025,13 @@ static uint64_t int_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
         this_size = 1 << this_mop;
         this_mop |= MO_BE;
 
-        r = memory_region_dispatch_read(mr, mr_offset, &val,
-                                        this_mop, full->attrs);
+        if (bypass_reentrancy_guard) {
+            r = memory_region_dispatch_read_lockless(mr, mr_offset, &val,
+                                                     this_mop, full->attrs);
+        } else {
+            r = memory_region_dispatch_read(mr, mr_offset, &val,
+                                            this_mop, full->attrs);
+        }
         if (unlikely(r != MEMTX_OK)) {
             io_failed(cpu, full, addr, this_size, type, mmu_idx, r, ra);
         }
@@ -2040,19 +2046,6 @@ static uint64_t int_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
     } while (size);
 
     return ret_be;
-}
-
-/*
- * True when this load may run without the BQL: either the whole region is
- * lock-free, or the device nominates this particular access as one it
- * synchronizes itself.
- */
-static inline bool mmio_load_is_lockless(MemoryRegion *mr, hwaddr mr_offset,
-                                         int size)
-{
-    return mr->lockless_io ||
-           (mr->lockless_read &&
-            mr->lockless_read(mr->opaque, mr_offset, size));
 }
 
 static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
@@ -2070,14 +2063,20 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
     section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
     mr = section->mr;
 
-    if (mmio_load_is_lockless(mr, mr_offset, size)) {
+    /* A whole-region lockless device already has the guard disabled. */
+    if (mr->lockless_io) {
         return int_ld_mmio_beN(cpu, full, ret_be, addr, size, mmu_idx,
-                               type, ra, mr, mr_offset);
+                               type, ra, mr, mr_offset, false);
+    }
+
+    if (mr->lockless_read && mr->lockless_read(mr->opaque, mr_offset, size)) {
+        return int_ld_mmio_beN(cpu, full, ret_be, addr, size, mmu_idx,
+                               type, ra, mr, mr_offset, true);
     }
 
     BQL_LOCK_GUARD();
     return int_ld_mmio_beN(cpu, full, ret_be, addr, size, mmu_idx,
-                           type, ra, mr, mr_offset);
+                           type, ra, mr, mr_offset, false);
 }
 
 static Int128 do_ld16_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
@@ -2096,19 +2095,23 @@ static Int128 do_ld16_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
     section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
     mr = section->mr;
 
-    if (mmio_load_is_lockless(mr, mr_offset, size)) {
+    if (mr->lockless_io ||
+        (mr->lockless_read && mr->lockless_read(mr->opaque, mr_offset, size))) {
+        bool bypass = !mr->lockless_io;
+
         a = int_ld_mmio_beN(cpu, full, ret_be, addr, size - 8, mmu_idx,
-                            MMU_DATA_LOAD, ra, mr, mr_offset);
+                            MMU_DATA_LOAD, ra, mr, mr_offset, bypass);
         b = int_ld_mmio_beN(cpu, full, ret_be, addr + size - 8, 8, mmu_idx,
-                            MMU_DATA_LOAD, ra, mr, mr_offset + size - 8);
+                            MMU_DATA_LOAD, ra, mr, mr_offset + size - 8,
+                            bypass);
         return int128_make128(b, a);
     }
 
     BQL_LOCK_GUARD();
     a = int_ld_mmio_beN(cpu, full, ret_be, addr, size - 8, mmu_idx,
-                        MMU_DATA_LOAD, ra, mr, mr_offset);
+                        MMU_DATA_LOAD, ra, mr, mr_offset, false);
     b = int_ld_mmio_beN(cpu, full, ret_be, addr + size - 8, 8, mmu_idx,
-                        MMU_DATA_LOAD, ra, mr, mr_offset + size - 8);
+                        MMU_DATA_LOAD, ra, mr, mr_offset + size - 8, false);
     return int128_make128(b, a);
 }
 
