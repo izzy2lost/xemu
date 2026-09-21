@@ -856,14 +856,24 @@ static inline bool access_callback_address_matches(MemAccessCallback *cb,
     return !(addr > watch_end || cb->addr > access_end);
 }
 
-int mem_access_callback_address_matches(CPUState *cpu, hwaddr addr, hwaddr len)
+int mem_access_callback_address_matches(CPUState *cpu, hwaddr addr, hwaddr len,
+                                        MemAccessCallback **unique)
 {
+    bool multiple = false;
     int ret = 0;
+
+    *unique = NULL;
 
     MemAccessCallback *cb;
     QTAILQ_FOREACH(cb, &cpu->mem_access_callbacks, entry) {
         if (access_callback_address_matches(cb, addr, len)) {
             ret |= BP_MEM_READ | BP_MEM_WRITE;
+            if (*unique != NULL) {
+                *unique = NULL;
+                multiple = true;
+            } else if (!multiple) {
+                *unique = cb;
+            }
         }
     }
 
@@ -914,6 +924,13 @@ static void do_mem_access_callback_remove_by_ref(CPUState *cpu,
 {
     MemAccessCallback *cb = (MemAccessCallback *)data.host_ptr;
     QTAILQ_REMOVE(&cpu->mem_access_callbacks, cb, entry);
+    /*
+     * TLB entries cache this pointer, and the flush queued by
+     * mem_access_callback_remove_by_ref() is a later work item, so drop
+     * them here -- before the free -- rather than leaving a window in
+     * which an entry still points at freed memory.
+     */
+    tlb_flush(cpu);
     g_free(cb);
 }
 
@@ -943,8 +960,22 @@ void mem_check_access_callback_vaddr(CPUState *cpu,
                                      vaddr addr, vaddr len, int flags,
                                      void *tlbentryfull)
 {
-    ram_addr_t ram_addr = (((CPUTLBEntryFull *)tlbentryfull)->xlat_section
-                           & TARGET_PAGE_MASK) + addr;
+    CPUTLBEntryFull *full = (CPUTLBEntryFull *)tlbentryfull;
+    ram_addr_t ram_addr = (full->xlat_section & TARGET_PAGE_MASK) + addr;
+    MemAccessCallback *cb = full->mem_access_callback;
+
+    if (cb != NULL) {
+        /* Exactly one callback covers this page; skip the list walk. */
+        if (access_callback_address_matches(cb, ram_addr, len)) {
+            ram_addr_t ram_addr_base = memory_region_get_ram_addr(cb->mr);
+            assert(ram_addr_base != RAM_ADDR_INVALID);
+            ram_addr_t hit_addr = MAX(ram_addr, cb->addr);
+            hwaddr mr_offset = hit_addr - ram_addr_base;
+            bool is_write = (flags & BP_MEM_WRITE) != 0;
+            cb->func(cb->opaque, cb->mr, mr_offset, len, is_write);
+        }
+        return;
+    }
     mem_check_access_callback_ramaddr(cpu, ram_addr, len, flags);
 }
 
@@ -1074,6 +1105,26 @@ static bool physical_memory_get_dirty(ram_addr_t start, ram_addr_t length,
 bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
 {
     return physical_memory_get_dirty(addr, 1, client);
+}
+
+void physical_memory_get_dirty_word(ram_addr_t addr, unsigned client,
+                                    unsigned long **word,
+                                    unsigned long *mask)
+{
+    DirtyMemoryBlocks *blocks;
+    unsigned long page, idx, offset;
+
+    assert(client < DIRTY_MEMORY_NUM);
+
+    page = addr >> TARGET_PAGE_BITS;
+    idx = page / DIRTY_MEMORY_BLOCK_SIZE;
+    offset = page % DIRTY_MEMORY_BLOCK_SIZE;
+
+    WITH_RCU_READ_LOCK_GUARD() {
+        blocks = qatomic_rcu_read(&ram_list.dirty_memory[client]);
+        *word = blocks->blocks[idx] + BIT_WORD(offset);
+        *mask = BIT_MASK(offset);
+    }
 }
 
 bool physical_memory_is_clean(ram_addr_t addr)
@@ -1229,6 +1280,37 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
 
     if (xen_enabled()) {
         xen_hvm_modified_memory(start, length);
+    }
+}
+
+void physical_memory_set_dirty_range_nocode(ram_addr_t start,
+                                            ram_addr_t length)
+{
+    DirtyMemoryBlocks *blocks;
+    unsigned long page, idx, offset;
+
+    /* Anything crossing a page falls back to the general range setter. */
+    if (xen_enabled() || !length ||
+        length > TARGET_PAGE_SIZE - (start & (TARGET_PAGE_SIZE - 1))) {
+        physical_memory_set_dirty_range(start, length, DIRTY_CLIENTS_NOCODE);
+        return;
+    }
+
+    page = start >> TARGET_PAGE_BITS;
+    idx = page / DIRTY_MEMORY_BLOCK_SIZE;
+    offset = page % DIRTY_MEMORY_BLOCK_SIZE;
+
+    WITH_RCU_READ_LOCK_GUARD() {
+        blocks = qatomic_rcu_read(&ram_list.dirty_memory[DIRTY_MEMORY_VGA]);
+        set_bit_atomic(offset, blocks->blocks[idx]);
+        blocks =
+            qatomic_rcu_read(&ram_list.dirty_memory[DIRTY_MEMORY_MIGRATION]);
+        set_bit_atomic(offset, blocks->blocks[idx]);
+        blocks = qatomic_rcu_read(&ram_list.dirty_memory[DIRTY_MEMORY_NV2A]);
+        set_bit_atomic(offset, blocks->blocks[idx]);
+        blocks =
+            qatomic_rcu_read(&ram_list.dirty_memory[DIRTY_MEMORY_NV2A_TEX]);
+        set_bit_atomic(offset, blocks->blocks[idx]);
     }
 }
 

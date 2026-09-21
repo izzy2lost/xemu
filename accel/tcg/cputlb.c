@@ -1048,6 +1048,12 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
 
     assert_cpu_is_self(cpu);
 
+#ifdef XBOX
+    full->mem_access_callback = NULL;
+    full->code_dirty_word = NULL;
+    full->code_dirty_mask = 0;
+#endif
+
     if (full->lg_page_size <= TARGET_PAGE_BITS) {
         sz = TARGET_PAGE_SIZE;
     } else {
@@ -1095,8 +1101,15 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
         if (prot & PAGE_WRITE) {
             if (section->readonly) {
                 write_flags |= TLB_DISCARD_WRITE;
-            } else if (physical_memory_is_clean(iotlb)) {
-                write_flags |= TLB_NOTDIRTY;
+            } else {
+#ifdef XBOX
+                physical_memory_get_dirty_word(iotlb, DIRTY_MEMORY_CODE,
+                                               &full->code_dirty_word,
+                                               &full->code_dirty_mask);
+#endif
+                if (physical_memory_is_clean(iotlb)) {
+                    write_flags |= TLB_NOTDIRTY;
+                }
             }
         }
     } else {
@@ -1118,7 +1131,8 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
 #ifdef XBOX
     wp_flags |= mem_access_callback_address_matches(cpu,
                                                     iotlb & TARGET_PAGE_MASK,
-                                                    TARGET_PAGE_SIZE);
+                                                    TARGET_PAGE_SIZE,
+                                                    &full->mem_access_callback);
 #endif
 
     index = tlb_index(cpu, mmu_idx, addr_page);
@@ -1354,10 +1368,27 @@ static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
                            CPUTLBEntryFull *full, uintptr_t retaddr)
 {
     ram_addr_t ram_addr = mem_vaddr + full->xlat_section;
+    bool code_dirty;
 
     trace_memory_notdirty_write_access(mem_vaddr, ram_addr, size);
 
-    if (!physical_memory_get_dirty_flag(ram_addr, DIRTY_MEMORY_CODE)) {
+#ifdef XBOX
+    /*
+     * tlb_set_page_full() records the bitmap word for writable RAM pages.
+     * Anything else (and any entry predating this) reads the bitmap the
+     * long way rather than trusting a NULL pointer.
+     */
+    if (likely(full->code_dirty_word != NULL)) {
+        code_dirty = qatomic_read(full->code_dirty_word) &
+                     full->code_dirty_mask;
+    } else
+#endif
+    {
+        code_dirty = physical_memory_get_dirty_flag(ram_addr,
+                                                    DIRTY_MEMORY_CODE);
+    }
+
+    if (!code_dirty) {
         tb_invalidate_phys_range_fast(cpu, ram_addr, size, retaddr);
     }
 
@@ -1365,10 +1396,25 @@ static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
      * Set both VGA and migration bits for simplicity and to remove
      * the notdirty callback faster.
      */
-    physical_memory_set_dirty_range(ram_addr, size, DIRTY_CLIENTS_NOCODE);
+    physical_memory_set_dirty_range_nocode(ram_addr, size);
 
-    /* We remove the notdirty callback only if the code has been flushed. */
-    if (!physical_memory_is_clean(ram_addr)) {
+    /*
+     * We remove the notdirty callback only if the code has been flushed.
+     * Every other client was just dirtied above, so only the code bit can
+     * still be clean -- test it alone instead of re-scanning all of them.
+     */
+#ifdef XBOX
+    if (likely(full->code_dirty_word != NULL)) {
+        code_dirty = qatomic_read(full->code_dirty_word) &
+                     full->code_dirty_mask;
+    } else
+#endif
+    {
+        code_dirty = physical_memory_get_dirty_flag(ram_addr,
+                                                    DIRTY_MEMORY_CODE);
+    }
+
+    if (code_dirty) {
         trace_memory_notdirty_set_dirty(mem_vaddr);
         tlb_set_dirty(cpu, mem_vaddr);
     }

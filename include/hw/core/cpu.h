@@ -223,6 +223,21 @@ struct CPUTLBEntryFull {
      *     + the offset within the target MemoryRegion (otherwise)
      */
     hwaddr xlat_section;
+#ifdef XBOX
+    /*
+     * When exactly one NV2A surface access callback covers this page, cache
+     * it here so that a guest write need not walk cpu->mem_access_callbacks.
+     * NULL means "none, or more than one" and falls back to the list walk.
+     */
+    struct MemAccessCallback *mem_access_callback;
+    /*
+     * The DIRTY_MEMORY_CODE bitmap word covering this page, and the bit
+     * within it.  dirty_memory_extend() reallocates the container but
+     * carries the individual blocks over, so the pointer stays valid.
+     */
+    unsigned long *code_dirty_word;
+    unsigned long code_dirty_mask;
+#endif
 
     /*
      * @phys_addr contains the physical address in the address space
@@ -1207,7 +1222,8 @@ MemAccessCallback *mem_access_callback_insert(CPUState *cpu, MemoryRegion *mr,
                                               MemAccessCallbackFunc func,
                                               void *opaque);
 void mem_access_callback_remove_by_ref(CPUState *cpu, MemAccessCallback *cb);
-int mem_access_callback_address_matches(CPUState *cpu, hwaddr addr, hwaddr len);
+int mem_access_callback_address_matches(CPUState *cpu, hwaddr addr, hwaddr len,
+                                        MemAccessCallback **unique);
 void mem_check_access_callback_ramaddr(CPUState *cpu,
                                        hwaddr ram_addr, vaddr len, int flags);
 void mem_check_access_callback_vaddr(CPUState *cpu, vaddr addr, vaddr len,
