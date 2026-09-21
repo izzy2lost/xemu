@@ -57,5 +57,13 @@ typedef enum {
 bool xbox_eeprom_generate(const char *file, XboxEEPROMVersion ver);
 XboxEEPROMVersion xbox_eeprom_detect_version(const uint8_t *data);
 
+/*
+ * Repair fields that no kernel will accept, rewriting the file in place and
+ * fixing up the checksum.  Returns true if something was changed.  Used to
+ * rescue an EEPROM written by a build that put a bad value in it, rather
+ * than making the user find and delete the file.
+ */
+bool xbox_eeprom_repair(const char *file);
+
 #endif
 

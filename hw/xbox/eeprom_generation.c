@@ -114,6 +114,47 @@ XboxEEPROMVersion xbox_eeprom_detect_version(const uint8_t *data) {
     return (XboxEEPROMVersion)-1;
 }
 
+/*
+ * The only video standard ids the kernel recognises: NTSC-M, NTSC-J, PAL-I
+ * and PAL-M.  Anything else leaves it unable to pick a display mode.
+ */
+static bool xbox_eeprom_video_standard_valid(uint32_t vs)
+{
+    return vs == 0x00400100 || vs == 0x00400200 ||
+           vs == 0x00800300 || vs == 0x00400400;
+}
+
+bool xbox_eeprom_repair(const char *file)
+{
+    XboxEEPROM e;
+
+    FILE *fd = qemu_fopen(file, "rb");
+    if (fd == NULL) {
+        return false;
+    }
+    bool read_ok = fread(&e, sizeof(e), 1, fd) == 1;
+    fclose(fd);
+    if (!read_ok) {
+        return false;
+    }
+
+    if (xbox_eeprom_video_standard_valid(le32_to_cpu(e.video_standard))) {
+        return false;
+    }
+
+    /* Reset to NTSC-M and fix the checksum that covers it (serial..0x5F). */
+    e.video_standard = cpu_to_le32(0x00400100);
+    e.checksum = cpu_to_le32(xbox_eeprom_crc(e.serial, 0x2C));
+
+    fd = qemu_fopen(file, "wb");
+    if (fd == NULL) {
+        return false;
+    }
+    bool ok = fwrite(&e, sizeof(e), 1, fd) == 1;
+    fclose(fd);
+    return ok;
+}
+
 bool xbox_eeprom_generate(const char *file, XboxEEPROMVersion ver) {
     XboxEEPROM e;
     memset(&e, 0, sizeof(e));
@@ -164,13 +205,6 @@ bool xbox_eeprom_generate(const char *file, XboxEEPROMVersion ver) {
 
     bool success = fwrite(&e, sizeof(e), 1, fd) == 1;
     fclose(fd);
-
-    /* Log video_standard value and raw EEPROM bytes at offset 0x58 */
-    uint8_t *raw = (uint8_t *)&e;
-    printf("Chihiro: EEPROM generated — video_standard=0x%08X "
-           "raw[0x58..0x5B]=%02X %02X %02X %02X\n",
-           le32_to_cpu(e.video_standard),
-           raw[0x58], raw[0x59], raw[0x5A], raw[0x5B]);
 
     return success;
 }

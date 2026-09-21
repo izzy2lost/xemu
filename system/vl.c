@@ -2919,6 +2919,30 @@ void qmp_x_exit_preconfig(Error **errp)
     }
 }
 
+/*
+ * Chihiro keeps its EEPROM in a file of its own, alongside the configured
+ * one: "eeprom.bin" -> "eeprom_chihiro.bin".  The two machines want
+ * different contents -- different signing key, and a cabinet that drives
+ * VGA rather than a TV -- and sharing one file meant that switching modes
+ * left the other machine with an EEPROM it could not use.  Keeping them
+ * apart also means each keeps its own serial, MAC, HDD key and settings.
+ */
+static char *chihiro_eeprom_path(const char *path)
+{
+    const char *dot = strrchr(path, '.');
+    const char *slash = strrchr(path, '/');
+#ifdef _WIN32
+    const char *bslash = strrchr(path, '\\');
+    if (bslash > slash) {
+        slash = bslash;
+    }
+#endif
+    if (dot && (!slash || dot > slash)) {
+        return g_strdup_printf("%.*s_chihiro%s", (int)(dot - path), path, dot);
+    }
+    return g_strdup_printf("%s_chihiro", path);
+}
+
 static const char *get_eeprom_path(void)
 {
     const char *path = g_config.sys.files.eeprom_path;
@@ -2935,17 +2959,48 @@ static const char *get_eeprom_path(void)
         xemu_settings_set_string(&g_config.sys.files.eeprom_path, path);
     }
 
-    if (qemu_access(path, F_OK) == 0 && is_chihiro) {
+    /*
+     * Leave g_config pointing at the machine-independent path, so that what
+     * the user picked in the settings is what they see, and only redirect
+     * the file this run actually opens.
+     */
+    if (is_chihiro) {
+        static char *chihiro_path;
+        g_free(chihiro_path);
+        chihiro_path = chihiro_eeprom_path(path);
+        path = chihiro_path;
+    }
+
+    /*
+     * A file carrying the other machine's key is no use here, and the two
+     * now live in separate files, so this only fires when one has been
+     * copied or moved into place by hand. Check both directions.
+     */
+    if (qemu_access(path, F_OK) == 0) {
         FILE *f = qemu_fopen(path, "rb");
         if (f) {
             uint8_t data[256];
             bool valid = fread(data, 1, 256, f) == 256;
             fclose(f);
             if (valid && xbox_eeprom_detect_version(data) != needed) {
-                ANDROID_LOGI("Chihiro: EEPROM has retail key, regenerating "
-                             "with debug key");
+                ANDROID_LOGI("EEPROM carries the wrong key for this machine, "
+                             "regenerating: %s", path);
                 qemu_unlink(path);
             }
+        }
+    }
+
+    /*
+     * Rescue an EEPROM holding a video standard no kernel accepts. Builds
+     * between the Chihiro port and this one wrote one to every generated
+     * EEPROM, retail included, which left the machine unable to pick a
+     * display mode -- a black screen that could only be cleared by deleting
+     * the file. Repair it in place instead, keeping the rest of the file.
+     */
+    if (qemu_access(path, F_OK) == 0 && !is_chihiro) {
+        if (xbox_eeprom_repair(path)) {
+            ANDROID_LOGI("EEPROM had an invalid video standard, reset to "
+                         "NTSC-M: %s", path);
         }
     }
 
