@@ -1598,6 +1598,21 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
         (int32_t)(extent.width - d->present_viewport.extent.width) / 2;
     d->present_viewport.offset.y =
         (int32_t)(extent.height - d->present_viewport.extent.height) / 2;
+
+    /*
+     * Publish the letterboxed game rect (in drawable pixels) so the Chihiro
+     * light gun can map the pointer into guest screen space. On desktop this
+     * is filled in by the ImGui renderer instead; Android skips ui/xui, so
+     * without this the gun would aim against the whole window and be off by
+     * the size of the black bars.
+     */
+    {
+        extern int viewport_coords[4];
+        viewport_coords[0] = d->present_viewport.offset.x;
+        viewport_coords[1] = d->present_viewport.offset.y;
+        viewport_coords[2] = (int)d->present_viewport.extent.width;
+        viewport_coords[3] = (int)d->present_viewport.extent.height;
+    }
     d->image_count = image_count;
     d->width = width;
     d->height = height;
@@ -2585,6 +2600,13 @@ void pgraph_vk_render_display(PGRAPHState *pg)
     if (d->vga.cr[NV_PRMCIO_INTERLACE_MODE] != NV_PRMCIO_INTERLACE_MODE_DISABLED) {
         height *= 2;
     }
+
+    /* Chihiro: clamp display to surface dimensions when the CRTC area
+     * exceeds the framebuffer (e.g. PAL 720x576 CRTC with a 640x480 render
+     * target). On real hardware the TV encoder fills the overscan with
+     * black; xemu has no TV encoder so we just match the surface size. */
+    if (width > surface->width)   width  = surface->width;
+    if (height > surface->height) height = surface->height;
 
     pgraph_apply_scaling_factor(pg, &width, &height);
 

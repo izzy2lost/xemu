@@ -35,6 +35,11 @@
 #include <stdlib.h>
 
 #include "system/blockdev.h"
+#include "hw/xbox/chihiro-jvs.h"
+#include "hw/xbox/chihiro.h"
+
+extern SDL_Window *m_window;
+extern int viewport_coords[4];
 
 // #define DEBUG_INPUT
 
@@ -61,27 +66,27 @@ static void xemu_input_print_controller_state(ControllerState *state)
            "LTrig   = %.3f, RTrig   = %.3f\n"
            "LStickX = %.3f, RStickX = %.3f\n"
            "LStickY = %.3f, RStickY = %.3f\n\n",
-        !!(state->buttons & CONTROLLER_BUTTON_A),
-        !!(state->buttons & CONTROLLER_BUTTON_B),
-        !!(state->buttons & CONTROLLER_BUTTON_X),
-        !!(state->buttons & CONTROLLER_BUTTON_Y),
-        !!(state->buttons & CONTROLLER_BUTTON_DPAD_LEFT),
-        !!(state->buttons & CONTROLLER_BUTTON_DPAD_UP),
-        !!(state->buttons & CONTROLLER_BUTTON_DPAD_RIGHT),
-        !!(state->buttons & CONTROLLER_BUTTON_DPAD_DOWN),
-        !!(state->buttons & CONTROLLER_BUTTON_BACK),
-        !!(state->buttons & CONTROLLER_BUTTON_START),
-        !!(state->buttons & CONTROLLER_BUTTON_WHITE),
-        !!(state->buttons & CONTROLLER_BUTTON_BLACK),
-        !!(state->buttons & CONTROLLER_BUTTON_LSTICK),
-        !!(state->buttons & CONTROLLER_BUTTON_RSTICK),
-        !!(state->buttons & CONTROLLER_BUTTON_GUIDE),
-        state->axis[CONTROLLER_AXIS_LTRIG],
-        state->axis[CONTROLLER_AXIS_RTRIG],
-        state->axis[CONTROLLER_AXIS_LSTICK_X],
-        state->axis[CONTROLLER_AXIS_RSTICK_X],
-        state->axis[CONTROLLER_AXIS_LSTICK_Y],
-        state->axis[CONTROLLER_AXIS_RSTICK_Y]
+        !!(state->gp.buttons & CONTROLLER_BUTTON_A),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_B),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_X),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_Y),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_DPAD_LEFT),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_DPAD_UP),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_DPAD_RIGHT),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_DPAD_DOWN),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_BACK),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_START),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_WHITE),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_BLACK),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_LSTICK),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_RSTICK),
+        !!(state->gp.buttons & CONTROLLER_BUTTON_GUIDE),
+        state->gp.axis[CONTROLLER_AXIS_LTRIG],
+        state->gp.axis[CONTROLLER_AXIS_RTRIG],
+        state->gp.axis[CONTROLLER_AXIS_LSTICK_X],
+        state->gp.axis[CONTROLLER_AXIS_RSTICK_X],
+        state->gp.axis[CONTROLLER_AXIS_LSTICK_Y],
+        state->gp.axis[CONTROLLER_AXIS_RSTICK_Y]
         );
 }
 #endif
@@ -92,6 +97,9 @@ ControllerState *bound_controllers[4] = { NULL, NULL, NULL, NULL };
 const char *bound_drivers[4] = { DRIVER_DUKE, DRIVER_DUKE, DRIVER_DUKE,
                                  DRIVER_DUKE };
 int test_mode;
+
+static float m_mouseX;
+static float m_mouseY;
 
 static ControllerState *xemu_input_find_sdl_controller(SDL_JoystickID id)
 {
@@ -318,6 +326,8 @@ static const char *get_bound_driver(int port)
         return DRIVER_DUKE;
     if (strcmp(driver, DRIVER_S) == 0)
         return DRIVER_S;
+    if (strcmp(driver, DRIVER_LIGHT_GUN) == 0)
+        return DRIVER_LIGHT_GUN;
 
     return DRIVER_DUKE;
 }
@@ -345,6 +355,8 @@ void xemu_input_init(void)
     new_con->peripheral_types[1] = PERIPHERAL_NONE;
     new_con->peripherals[0] = NULL;
     new_con->peripherals[1] = NULL;
+    new_con->lg.scaleX = 1.0f;
+    new_con->lg.scaleY = 1.0f;
 
     for (int i = 0; i < 25; i++) {
         static const char *format_str =
@@ -441,6 +453,8 @@ void xemu_input_process_sdl_events(const SDL_Event *event)
         new_con->peripheral_types[1] = PERIPHERAL_NONE;
         new_con->peripherals[0] = NULL;
         new_con->peripherals[1] = NULL;
+        new_con->lg.scaleX = 1.0f;
+        new_con->lg.scaleY = 1.0f;
 
         char guid_buf[35] = { 0 };
         SDL_GUIDToString(new_con->sdl_joystick_guid, guid_buf, sizeof(guid_buf));
@@ -504,7 +518,7 @@ void xemu_input_process_sdl_events(const SDL_Event *event)
             xemu_input_sdl_button_to_button_id(event->gbutton.button);
 
         if (state && button_id >= 0) {
-            state->button_hold_until_us[button_id] =
+            state->gp.button_hold_until_us[button_id] =
                 qemu_clock_get_us(QEMU_CLOCK_REALTIME) +
                 XEMU_INPUT_MIN_BUTTON_HOLD_US;
         }
@@ -575,6 +589,222 @@ void xemu_input_update_controller(ControllerState *state)
     state->last_input_updated_ts = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 }
 
+/*
+ * Chihiro JVS light gun.
+ *
+ * The arcade I/O board reports the gun position as two absolute analog
+ * channels plus a SCREEN-IN sensor bit, rather than through a USB XID
+ * device. On desktop the pointer comes from the mouse; on Android SDL
+ * synthesises mouse events from touch (SDL_HINT_TOUCH_MOUSE_EVENTS), so
+ * a tap on the screen aims and fires with no extra plumbing.
+ */
+/*
+ * Driving cabinet (Crazy Taxi High Roller, OutRun 2, Wangan Midnight ...).
+ *
+ * The wheel and pedals are JVS analog channels rather than switches:
+ *   ch0 steering, 0x8000 centred    ch1 accelerator    ch2 brake
+ *
+ * That is the same channel 0 the light gun reports its X axis on, so only one
+ * of the two schemes can be live at a time; which one is a setting.
+ */
+static void xemu_input_update_jvs_driving(ChihiroJVSState *jvs)
+{
+    const bool *kbd = SDL_GetKeyboardState(NULL);
+
+    uint16_t pad = 0;
+    int16_t steer = 0, accel = 0, brake = 0;
+    ControllerState *p1 = bound_controllers[0];
+    if (p1) {
+        pad = p1->gp.buttons | p1->lg.buttons;
+        steer = p1->gp.axis[CONTROLLER_AXIS_LSTICK_X];
+        accel = p1->gp.axis[CONTROLLER_AXIS_RTRIG];
+        brake = p1->gp.axis[CONTROLLER_AXIS_LTRIG];
+    }
+
+    /* Keyboard fallback for desktop, so the cabinet is usable without a pad. */
+    if (kbd[SDL_SCANCODE_LEFT])  steer = -32768;
+    if (kbd[SDL_SCANCODE_RIGHT]) steer = 32767;
+    if (kbd[SDL_SCANCODE_UP])    accel = 32767;
+    if (kbd[SDL_SCANCODE_DOWN])  brake = 32767;
+
+    /* The D-pad doubles as steering for anyone without an analog stick. */
+    if (pad & CONTROLLER_BUTTON_DPAD_LEFT)  steer = -32768;
+    if (pad & CONTROLLER_BUTTON_DPAD_RIGHT) steer = 32767;
+
+    /* Signed stick -> 16-bit unsigned, centred; triggers -> 0..0xFFFF. */
+    jvs->analog[0] = (uint16_t)(steer + 32768);
+    jvs->analog[1] = (uint16_t)(accel < 0 ? 0 : accel * 2);
+    jvs->analog[2] = (uint16_t)(brake < 0 ? 0 : brake * 2);
+    jvs->analog[3] = 0x8000;
+
+    uint8_t sw0 = 0;
+    if (kbd[g_config.input.keyboard_controller_scancode_map.start] ||
+        (pad & CONTROLLER_BUTTON_START)) {
+        sw0 |= 0x80;                 /* START */
+    }
+    if (kbd[SDL_SCANCODE_9] || (pad & CONTROLLER_BUTTON_WHITE)) {
+        sw0 |= 0x40;                 /* SERVICE */
+    }
+    /* PUSH1/PUSH2 are the gear lever on Crazy Taxi and the shifter on
+     * OutRun 2; PUSH3 is the view change both of them have. */
+    if (pad & CONTROLLER_BUTTON_A) sw0 |= 0x02;
+    if (pad & CONTROLLER_BUTTON_B) sw0 |= 0x01;
+    jvs->player_switches[0][0] = sw0;
+
+    uint8_t sw1 = 0;
+    if (pad & CONTROLLER_BUTTON_X) sw1 |= 0x80;  /* PUSH3 - view change */
+    if (pad & CONTROLLER_BUTTON_Y) sw1 |= 0x40;  /* PUSH4 */
+    jvs->player_switches[0][1] = sw1;
+
+    jvs->system_switches =
+        (kbd[SDL_SCANCODE_F2] || (pad & CONTROLLER_BUTTON_BLACK)) ? 0x80 : 0x00;
+
+    static bool coin_prev;
+    bool coin_key = kbd[SDL_SCANCODE_5] || (pad & CONTROLLER_BUTTON_BACK);
+    if (coin_key && !coin_prev) {
+        jvs->coin_count[0]++;
+    }
+    coin_prev = coin_key;
+}
+
+static void xemu_input_update_jvs_lightgun(void)
+{
+    if (!chihiro_jvs_global) {
+        return;
+    }
+    ChihiroJVSState *jvs = chihiro_jvs_global;
+
+    if (g_config.sys.chihiro_controls == CONFIG_SYS_CHIHIRO_CONTROLS_DRIVING) {
+        xemu_input_update_jvs_driving(jvs);
+        return;
+    }
+
+    const bool *kbd = SDL_GetKeyboardState(NULL);
+    float mx, my;
+    uint32_t mouseBtn = SDL_GetMouseState(&mx, &my);
+
+    if (!m_window) {
+        return;
+    }
+
+    int32_t winW, winH;
+    SDL_GetWindowSize(m_window, &winW, &winH);
+
+#ifdef __ANDROID__
+    /*
+     * On Android the on-screen controller overlay consumes every touch, so
+     * SDL reports no pointer at all. Touches that miss a control are
+     * forwarded from the view in normalised coordinates instead.
+     */
+    {
+        extern bool xemu_android_lightgun_get(float *x, float *y, bool *down);
+        float nx, ny;
+        bool down;
+        if (xemu_android_lightgun_get(&nx, &ny, &down)) {
+            mx = nx * winW;
+            my = ny * winH;
+            mouseBtn = down ? SDL_BUTTON_MASK(SDL_BUTTON_LEFT) : 0;
+        }
+    }
+#endif
+
+    if (viewport_coords[2] > 0 && viewport_coords[3] > 0) {
+        int32_t drawW, drawH;
+        SDL_GetWindowSizeInPixels(m_window, &drawW, &drawH);
+        if (drawW > 0 && drawH > 0) {
+            float scaleW = (float)winW / (float)drawW;
+            float scaleH = (float)winH / (float)drawH;
+            mx -= viewport_coords[0] * scaleW;
+            my -= viewport_coords[1] * scaleH;
+            winW = (int)(viewport_coords[2] * scaleW);
+            winH = (int)(viewport_coords[3] * scaleH);
+        }
+    }
+
+    if (winW <= 0 || winH <= 0) {
+        return;
+    }
+
+    /*
+     * The cabinet keys are on the keyboard on desktop, but a phone has no
+     * keyboard, so mirror them onto the pad bound to port 1 (which is also
+     * what the on-screen controller drives):
+     *
+     *   Start -> START      Back  -> insert coin
+     *   White -> SERVICE    Black -> TEST        B -> reload
+     *   LT    -> pedal (Virtua Cop 3's ES MODE foot switch)
+     *
+     * Reload matters on a touchscreen: the cabinet reloads by shooting off
+     * screen, and with the display set to Stretch there is no off-screen area
+     * left to shoot into.
+     */
+    uint16_t pad = 0;
+    bool pedal = false;
+    ControllerState *p1 = bound_controllers[0];
+    if (p1) {
+        pad = p1->gp.buttons | p1->lg.buttons;
+        /* The on-screen LT reports as an axis rather than a button. */
+        pedal = p1->gp.axis[CONTROLLER_AXIS_LTRIG] > 8192;
+    }
+    pedal = pedal || kbd[SDL_SCANCODE_LCTRL];
+
+    bool offscreen = !(mx >= 0 && mx <= winW && my >= 0 && my <= winH);
+    bool trigger = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0;
+    bool reload  = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_RIGHT)) != 0 ||
+                   kbd[SDL_SCANCODE_R] ||
+                   (pad & CONTROLLER_BUTTON_B) != 0;
+
+    uint8_t sw0 = 0;
+
+    if (offscreen) {
+        jvs->analog[0] = 0;
+        jvs->analog[1] = 0;
+    } else {
+        jvs->analog[0] = (uint16_t)(mx * 0xFFFF / winW);
+        jvs->analog[1] = (uint16_t)(my * 0xFFFF / winH);
+    }
+
+    /*
+     * Reloading on the real cabinet is pulling the trigger while the gun is
+     * pointed away from the screen, so assert the trigger too and let the
+     * SCREEN-IN bit below go clear.
+     */
+    if (trigger || reload) sw0 |= 0x02;
+    if (reload)            sw0 |= 0x01;
+
+    if (kbd[g_config.input.keyboard_controller_scancode_map.start] ||
+        (pad & CONTROLLER_BUTTON_START)) {
+        sw0 |= 0x80;
+    }
+    if (kbd[SDL_SCANCODE_9] || (pad & CONTROLLER_BUTTON_WHITE)) {
+        sw0 |= 0x40;
+    }
+
+    jvs->player_switches[0][0] = sw0;
+
+    uint8_t sw1 = 0;
+    if (!offscreen && !reload) {
+        /* SCREEN-IN (byte 1 bit 7): the gun sensor can see the screen */
+        sw1 |= 0x80;
+    }
+    if (pedal) {
+        /* PUSH4 (byte 1 bit 6). Virtua Cop 3 is the only one of these
+         * cabinets with a pedal; the others simply never read it. */
+        sw1 |= 0x40;
+    }
+    jvs->player_switches[0][1] = sw1;
+
+    jvs->system_switches =
+        (kbd[SDL_SCANCODE_F2] || (pad & CONTROLLER_BUTTON_BLACK)) ? 0x80 : 0x00;
+
+    static bool coin_prev;
+    bool coin_key = kbd[SDL_SCANCODE_5] || (pad & CONTROLLER_BUTTON_BACK);
+    if (coin_key && !coin_prev) {
+        jvs->coin_count[0]++;
+    }
+    coin_prev = coin_key;
+}
+
 void xemu_input_update_controllers(void)
 {
     ControllerState *iter;
@@ -584,55 +814,169 @@ void xemu_input_update_controllers(void)
     QTAILQ_FOREACH(iter, &available_controllers, entry) {
         xemu_input_update_rumble(iter);
     }
+    xemu_input_update_jvs_lightgun();
+}
+
+/*
+ * Map the pointer into the XID light gun's signed centre-origin coordinate
+ * space. Shared by the keyboard/mouse and touch paths.
+ */
+static void xemu_input_update_lightgun_pointer(ControllerState *state)
+{
+    if (!m_window) {
+        state->lg.status = 0x00;
+        return;
+    }
+
+    int32_t windowWidth, windowHeight;
+    /*
+     * SDL_GetWindowSize matches SDL_GetMouseState's coordinate space (both
+     * logical/window coordinates, not physical/drawable pixels).
+     */
+    SDL_GetWindowSize(m_window, &windowWidth, &windowHeight);
+
+    DPRINTF("[LightGun] Window Coordinates: %.0f, %.0f\n", m_mouseX, m_mouseY);
+
+    /* Adjust to viewport coordinates if available */
+    if (viewport_coords[2] > 0 && viewport_coords[3] > 0) {
+        /*
+         * viewport_coords are in drawable (pixel) space. Scale them to
+         * window (logical) space for HiDPI compatibility.
+         */
+        int32_t drawW, drawH;
+        SDL_GetWindowSizeInPixels(m_window, &drawW, &drawH);
+        if (drawW > 0 && drawH > 0) {
+            float scaleW = (float)windowWidth / (float)drawW;
+            float scaleH = (float)windowHeight / (float)drawH;
+
+            m_mouseX -= viewport_coords[0] * scaleW;
+            m_mouseY -= viewport_coords[1] * scaleH;
+            windowWidth = (int)(viewport_coords[2] * scaleW);
+            windowHeight = (int)(viewport_coords[3] * scaleH);
+        }
+    }
+
+    if (windowWidth <= 0 || windowHeight <= 0) {
+        state->lg.status = 0x00;
+        return;
+    }
+
+    /*
+     * Check bounds AFTER viewport adjustment -- the pointer must be inside
+     * the actual game viewport, not just the window.
+     */
+    if (m_mouseX >= 0 && m_mouseX <= windowWidth &&
+        m_mouseY >= 0 && m_mouseY <= windowHeight) {
+        DPRINTF("[LightGun] Viewport Coordinates: %.0f, %.0f\n",
+                m_mouseX, m_mouseY);
+        /*
+         * Direct linear mapping -- no scale/offset correction needed, the
+         * emulated gun provides pixel-perfect coordinates.
+         */
+        int32_t x = (int32_t)((m_mouseX - (windowWidth / 2)) *
+                              65535 / windowWidth);
+        int32_t y = (int32_t)(((windowHeight / 2) - m_mouseY) *
+                              65535 / windowHeight);
+
+        state->lg.axis[0] = (int16_t)MIN(MAX(x, -32768), 32767);
+        state->lg.axis[1] = (int16_t)MIN(MAX(y, -32768), 32767);
+        state->lg.status = 0x20; /* Light visible */
+
+        DPRINTF("[LightGun] X: %d, Y: %d\n", state->lg.axis[0],
+                state->lg.axis[1]);
+    } else {
+        state->lg.status = 0x00;
+    }
 }
 
 void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
 {
-    state->buttons = 0;
-    memset(state->axis, 0, sizeof(state->axis));
+    state->gp.buttons = 0;
+    state->lg.buttons = 0;
+    memset(state->gp.axis, 0, sizeof(state->gp.axis));
+    memset(state->lg.axis, 0, sizeof(state->lg.axis));
 
     const bool *kbd = SDL_GetKeyboardState(NULL);
+
+    if (state->bound < 0) {
+        return;
+    }
+
+    if (strcmp(get_bound_driver(state->bound), DRIVER_LIGHT_GUN) == 0) {
+        uint32_t mouseBtn = SDL_GetMouseState(&m_mouseX, &m_mouseY);
+
+        xemu_input_update_lightgun_pointer(state);
+
+        /* Left mouse button / touch is the trigger (A), right is B */
+        if (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) {
+            state->lg.buttons |= CONTROLLER_BUTTON_A;
+        }
+        if (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_RIGHT)) {
+            state->lg.buttons |= CONTROLLER_BUTTON_B;
+        }
+
+#define LG_KBD(btn, mask) \
+        if (kbd[g_config.input.keyboard_controller_scancode_map.btn]) \
+            state->lg.buttons |= mask
+
+        LG_KBD(a, CONTROLLER_BUTTON_A);
+        LG_KBD(b, CONTROLLER_BUTTON_B);
+        LG_KBD(x, CONTROLLER_BUTTON_X);
+        LG_KBD(y, CONTROLLER_BUTTON_Y);
+        LG_KBD(start, CONTROLLER_BUTTON_START);
+        LG_KBD(back, CONTROLLER_BUTTON_BACK);
+        LG_KBD(black, CONTROLLER_BUTTON_BLACK);
+        LG_KBD(white, CONTROLLER_BUTTON_WHITE);
+        LG_KBD(dpad_up, CONTROLLER_BUTTON_DPAD_UP);
+        LG_KBD(dpad_down, CONTROLLER_BUTTON_DPAD_DOWN);
+        LG_KBD(dpad_left, CONTROLLER_BUTTON_DPAD_LEFT);
+        LG_KBD(dpad_right, CONTROLLER_BUTTON_DPAD_RIGHT);
+
+#undef LG_KBD
+
+        return;
+    }
 
 #define KBD_STATE(btn) \
     (kbd[g_config.input.keyboard_controller_scancode_map.btn])
 
-    state->buttons |= KBD_STATE(a) << 0;
-    state->buttons |= KBD_STATE(b) << 1;
-    state->buttons |= KBD_STATE(x) << 2;
-    state->buttons |= KBD_STATE(y) << 3;
-    state->buttons |= KBD_STATE(dpad_left) << 4;
-    state->buttons |= KBD_STATE(dpad_up) << 5;
-    state->buttons |= KBD_STATE(dpad_right) << 6;
-    state->buttons |= KBD_STATE(dpad_down) << 7;
-    state->buttons |= KBD_STATE(back) << 8;
-    state->buttons |= KBD_STATE(start) << 9;
-    state->buttons |= KBD_STATE(white) << 10;
-    state->buttons |= KBD_STATE(black) << 11;
-    state->buttons |= KBD_STATE(lstick_btn) << 12;
-    state->buttons |= KBD_STATE(rstick_btn) << 13;
-    state->buttons |= KBD_STATE(guide) << 14;
+    state->gp.buttons |= KBD_STATE(a) << 0;
+    state->gp.buttons |= KBD_STATE(b) << 1;
+    state->gp.buttons |= KBD_STATE(x) << 2;
+    state->gp.buttons |= KBD_STATE(y) << 3;
+    state->gp.buttons |= KBD_STATE(dpad_left) << 4;
+    state->gp.buttons |= KBD_STATE(dpad_up) << 5;
+    state->gp.buttons |= KBD_STATE(dpad_right) << 6;
+    state->gp.buttons |= KBD_STATE(dpad_down) << 7;
+    state->gp.buttons |= KBD_STATE(back) << 8;
+    state->gp.buttons |= KBD_STATE(start) << 9;
+    state->gp.buttons |= KBD_STATE(white) << 10;
+    state->gp.buttons |= KBD_STATE(black) << 11;
+    state->gp.buttons |= KBD_STATE(lstick_btn) << 12;
+    state->gp.buttons |= KBD_STATE(rstick_btn) << 13;
+    state->gp.buttons |= KBD_STATE(guide) << 14;
 
     if (KBD_STATE(lstick_up))
-        state->axis[CONTROLLER_AXIS_LSTICK_Y] = 32767;
+        state->gp.axis[CONTROLLER_AXIS_LSTICK_Y] = 32767;
     if (KBD_STATE(lstick_left))
-        state->axis[CONTROLLER_AXIS_LSTICK_X] = -32768;
+        state->gp.axis[CONTROLLER_AXIS_LSTICK_X] = -32768;
     if (KBD_STATE(lstick_right))
-        state->axis[CONTROLLER_AXIS_LSTICK_X] = 32767;
+        state->gp.axis[CONTROLLER_AXIS_LSTICK_X] = 32767;
     if (KBD_STATE(lstick_down))
-        state->axis[CONTROLLER_AXIS_LSTICK_Y] = -32768;
+        state->gp.axis[CONTROLLER_AXIS_LSTICK_Y] = -32768;
     if (KBD_STATE(ltrigger))
-        state->axis[CONTROLLER_AXIS_LTRIG] = 32767;
+        state->gp.axis[CONTROLLER_AXIS_LTRIG] = 32767;
 
     if (KBD_STATE(rstick_up))
-        state->axis[CONTROLLER_AXIS_RSTICK_Y] = 32767;
+        state->gp.axis[CONTROLLER_AXIS_RSTICK_Y] = 32767;
     if (KBD_STATE(rstick_left))
-        state->axis[CONTROLLER_AXIS_RSTICK_X] = -32768;
+        state->gp.axis[CONTROLLER_AXIS_RSTICK_X] = -32768;
     if (KBD_STATE(rstick_right))
-        state->axis[CONTROLLER_AXIS_RSTICK_X] = 32767;
+        state->gp.axis[CONTROLLER_AXIS_RSTICK_X] = 32767;
     if (KBD_STATE(rstick_down))
-        state->axis[CONTROLLER_AXIS_RSTICK_Y] = -32768;
+        state->gp.axis[CONTROLLER_AXIS_RSTICK_Y] = -32768;
     if (KBD_STATE(rtrigger))
-        state->axis[CONTROLLER_AXIS_RTRIG] = 32767;
+        state->gp.axis[CONTROLLER_AXIS_RTRIG] = 32767;
 
 #undef KBD_STATE
 }
@@ -641,8 +985,41 @@ void xemu_input_update_sdl_controller_state(ControllerState *state)
 {
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 
-    state->buttons = 0;
-    memset(state->axis, 0, sizeof(state->axis));
+    state->gp.buttons = 0;
+    memset(state->gp.axis, 0, sizeof(state->gp.axis));
+
+    if (state->bound >= 0 &&
+        strcmp(get_bound_driver(state->bound), DRIVER_LIGHT_GUN) == 0) {
+        state->lg.buttons = 0;
+
+#define LG_PAD(sdl_btn, mask) \
+        if (SDL_GetGamepadButton(state->sdl_gamecontroller, sdl_btn)) \
+            state->lg.buttons |= mask
+
+        LG_PAD(SDL_GAMEPAD_BUTTON_EAST, CONTROLLER_BUTTON_A);
+        LG_PAD(SDL_GAMEPAD_BUTTON_SOUTH, CONTROLLER_BUTTON_B);
+        LG_PAD(SDL_GAMEPAD_BUTTON_WEST, CONTROLLER_BUTTON_X);
+        LG_PAD(SDL_GAMEPAD_BUTTON_NORTH, CONTROLLER_BUTTON_Y);
+        LG_PAD(SDL_GAMEPAD_BUTTON_START, CONTROLLER_BUTTON_START);
+        LG_PAD(SDL_GAMEPAD_BUTTON_BACK, CONTROLLER_BUTTON_BACK);
+        LG_PAD(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, CONTROLLER_BUTTON_BLACK);
+        LG_PAD(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, CONTROLLER_BUTTON_WHITE);
+        LG_PAD(SDL_GAMEPAD_BUTTON_DPAD_UP, CONTROLLER_BUTTON_DPAD_UP);
+        LG_PAD(SDL_GAMEPAD_BUTTON_DPAD_DOWN, CONTROLLER_BUTTON_DPAD_DOWN);
+        LG_PAD(SDL_GAMEPAD_BUTTON_DPAD_LEFT, CONTROLLER_BUTTON_DPAD_LEFT);
+        LG_PAD(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, CONTROLLER_BUTTON_DPAD_RIGHT);
+
+#undef LG_PAD
+
+        state->lg.axis[0] =
+            SDL_GetGamepadAxis(state->sdl_gamecontroller,
+                               SDL_GAMEPAD_AXIS_LEFTX);
+        state->lg.axis[1] =
+            SDL_GetGamepadAxis(state->sdl_gamecontroller,
+                               SDL_GAMEPAD_AXIS_LEFTY);
+        return;
+    }
+
     if (!state->controller_map) {
         return;
     }
@@ -653,21 +1030,21 @@ void xemu_input_update_sdl_controller_state(ControllerState *state)
          (state)->controller_map->controller_mapping.btn) \
      << idx)
 
-    state->buttons |= XEMU_MASK_BUTTON(state, a, 0);
-    state->buttons |= XEMU_MASK_BUTTON(state, b, 1);
-    state->buttons |= XEMU_MASK_BUTTON(state, x, 2);
-    state->buttons |= XEMU_MASK_BUTTON(state, y, 3);
-    state->buttons |= XEMU_MASK_BUTTON(state, dpad_left, 4);
-    state->buttons |= XEMU_MASK_BUTTON(state, dpad_up, 5);
-    state->buttons |= XEMU_MASK_BUTTON(state, dpad_right, 6);
-    state->buttons |= XEMU_MASK_BUTTON(state, dpad_down, 7);
-    state->buttons |= XEMU_MASK_BUTTON(state, back, 8);
-    state->buttons |= XEMU_MASK_BUTTON(state, start, 9);
-    state->buttons |= XEMU_MASK_BUTTON(state, lshoulder, 10);
-    state->buttons |= XEMU_MASK_BUTTON(state, rshoulder, 11);
-    state->buttons |= XEMU_MASK_BUTTON(state, lstick_btn, 12);
-    state->buttons |= XEMU_MASK_BUTTON(state, rstick_btn, 13);
-    state->buttons |= XEMU_MASK_BUTTON(state, guide, 14);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, a, 0);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, b, 1);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, x, 2);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, y, 3);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, dpad_left, 4);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, dpad_up, 5);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, dpad_right, 6);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, dpad_down, 7);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, back, 8);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, start, 9);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, lshoulder, 10);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, rshoulder, 11);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, lstick_btn, 12);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, rstick_btn, 13);
+    state->gp.buttons |= XEMU_MASK_BUTTON(state, guide, 14);
 
 #undef XEMU_MASK_BUTTON
 
@@ -676,18 +1053,18 @@ void xemu_input_update_sdl_controller_state(ControllerState *state)
         (state)->sdl_gamecontroller, \
         (state)->controller_map->controller_mapping.axis)
 
-    state->axis[0] = SDL_GET_AXIS(state, axis_trigger_left);
-    state->axis[1] = SDL_GET_AXIS(state, axis_trigger_right);
-    state->axis[2] = SDL_GET_AXIS(state, axis_left_x);
-    state->axis[3] = SDL_GET_AXIS(state, axis_left_y);
-    state->axis[4] = SDL_GET_AXIS(state, axis_right_x);
-    state->axis[5] = SDL_GET_AXIS(state, axis_right_y);
+    state->gp.axis[0] = SDL_GET_AXIS(state, axis_trigger_left);
+    state->gp.axis[1] = SDL_GET_AXIS(state, axis_trigger_right);
+    state->gp.axis[2] = SDL_GET_AXIS(state, axis_left_x);
+    state->gp.axis[3] = SDL_GET_AXIS(state, axis_left_y);
+    state->gp.axis[4] = SDL_GET_AXIS(state, axis_right_x);
+    state->gp.axis[5] = SDL_GET_AXIS(state, axis_right_y);
 
 #undef SDL_GET_AXIS
 
 // FIXME: Check range
 #define INVERT_AXIS(controller_axis) \
-    state->axis[controller_axis] = -1 - state->axis[controller_axis]
+    state->gp.axis[controller_axis] = -1 - state->gp.axis[controller_axis]
 
     if (state->controller_map->controller_mapping.invert_axis_left_x) {
         INVERT_AXIS(CONTROLLER_AXIS_LSTICK_X);
@@ -708,10 +1085,10 @@ void xemu_input_update_sdl_controller_state(ControllerState *state)
 #undef INVERT_AXIS
 
     for (int i = 0; i < 15; i++) {
-        if (state->button_hold_until_us[i] > now) {
-            state->buttons |= CONTROLLER_STATE_BUTTON_ID_TO_MASK(i);
+        if (state->gp.button_hold_until_us[i] > now) {
+            state->gp.buttons |= CONTROLLER_STATE_BUTTON_ID_TO_MASK(i);
         } else {
-            state->button_hold_until_us[i] = 0;
+            state->gp.button_hold_until_us[i] = 0;
         }
     }
 
@@ -738,7 +1115,8 @@ void xemu_input_update_rumble(ControllerState *state)
         return;
     }
 
-    SDL_RumbleGamepad(state->sdl_gamecontroller, state->rumble_l, state->rumble_r, 250);
+    SDL_RumbleGamepad(state->sdl_gamecontroller, state->gp.rumble_l,
+                      state->gp.rumble_r, 250);
     state->last_rumble_updated_ts = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 }
 
@@ -804,6 +1182,13 @@ void xemu_input_bind(int index, ControllerState *state, int save)
 
         bound_controllers[index] = state;
         bound_controllers[index]->bound = index;
+
+        /* In Chihiro mode the USB ports belong to the baseboard AN2131
+         * devices, and player input arrives over JVS instead. Skip the
+         * gamepad hub/XID creation entirely. */
+        if (xbox_is_chihiro()) {
+            return;
+        }
 
         char *tmp;
 
@@ -1042,4 +1427,15 @@ void xemu_input_reset_input_mapping(ControllerState *state)
     } else if (state->type == INPUT_DEVICE_SDL_KEYBOARD) {
         xemu_settings_reset_keyboard_mapping();
     }
+}
+
+int xemu_input_lightgun_active(void)
+{
+    for (int i = 0; i < 4; i++) {
+        if (bound_drivers[i] &&
+            strcmp(bound_drivers[i], DRIVER_LIGHT_GUN) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }

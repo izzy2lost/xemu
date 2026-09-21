@@ -66,6 +66,12 @@ typedef enum CONFIG_SYS_MEM_LIMIT {
     CONFIG_SYS_MEM_LIMIT__COUNT,
 } CONFIG_SYS_MEM_LIMIT;
 
+typedef enum CONFIG_SYS_CHIHIRO_CONTROLS {
+    CONFIG_SYS_CHIHIRO_CONTROLS_GUN = 0,
+    CONFIG_SYS_CHIHIRO_CONTROLS_DRIVING,
+    CONFIG_SYS_CHIHIRO_CONTROLS__COUNT,
+} CONFIG_SYS_CHIHIRO_CONTROLS;
+
 typedef enum CONFIG_SYS_AVPACK {
     CONFIG_SYS_AVPACK_SCART = 0,
     CONFIG_SYS_AVPACK_HDTV,
@@ -276,6 +282,8 @@ struct config {
 
     struct sys {
         CONFIG_SYS_MEM_LIMIT mem_limit;
+        bool chihiro;
+        CONFIG_SYS_CHIHIRO_CONTROLS chihiro_controls;
         CONFIG_SYS_AVPACK avpack;
         struct files {
             const char *bootrom_path;

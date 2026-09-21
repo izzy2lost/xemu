@@ -48,6 +48,7 @@
 #include "monitor.hh"
 #include "debug.hh"
 #include "welcome.hh"
+#include "../xemu-input.h"
 #include "menubar.hh"
 #include "compat.hh"
 #if defined(_WIN32)
@@ -292,10 +293,12 @@ void xemu_hud_render(void)
         } else if (ImGui::IsKeyPressed(ImGuiKey_F2)) {
             g_scene_mgr.PushScene(g_popup_menu);
         } else if (menu_button ||
-                   (ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+                   (!xemu_input_lightgun_active() &&
+                    ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
                     !ImGui::IsAnyItemFocused() && !ImGui::IsAnyItemHovered())) {
             g_scene_mgr.PushScene(g_popup_menu);
-        } else if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        } else if (!xemu_input_lightgun_active() &&
+                   ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
             xemu_toggle_fullscreen();
         }
 

@@ -100,6 +100,19 @@ extern "C" bool xemu_android_vulkan_custom_driver_zip_loaded(void)
 #endif
 
 static int g_dvd_fd = -1;
+// QEMU's fdset matches on the exact access mode: a request for O_RDONLY will
+// not accept an O_RDWR descriptor, nor the other way round. media=cdrom asks
+// for O_RDONLY while media=disk (Chihiro) may ask for either, so publish both
+// descriptors in set 0 and let QEMU pick the one it wants.
+static int g_dvd_fd_rw = -1;
+// True when no writable descriptor could be obtained (SAF providers do not
+// always grant one); the drive is then marked readonly=on to match.
+static bool g_dvd_fd_readonly = true;
+
+// Consumed by system/vl.c when it builds the -drive for the disc.
+extern "C" int xemu_android_dvd_fd_is_readonly(void) {
+  return g_dvd_fd_readonly ? 1 : 0;
+}
 static std::atomic_bool g_return_to_library_on_exit{false};
 
 namespace {
@@ -586,7 +599,8 @@ static bool GetPrefBool(JNIEnv* env, jobject activity, const char* key, bool def
   return result;
 }
 
-static int OpenUriAsNativeFd(JNIEnv* env, jobject activity, const std::string& uriString) {
+static int OpenUriAsNativeFd(JNIEnv* env, jobject activity, const std::string& uriString,
+                             const char* openMode = "r") {
   if (uriString.empty()) return -1;
 
   jclass activityClass = env->GetObjectClass(activity);
@@ -608,7 +622,7 @@ static int OpenUriAsNativeFd(JNIEnv* env, jobject activity, const std::string& u
       "(Landroid/net/Uri;Ljava/lang/String;)Landroid/os/ParcelFileDescriptor;");
   if (!openFd) return -1;
 
-  jstring mode = env->NewStringUTF("r");
+  jstring mode = env->NewStringUTF(openMode);
   jobject pfd = env->CallObjectMethod(resolver, openFd, uri, mode);
   env->DeleteLocalRef(mode);
   if (HasException(env, "openFileDescriptor") || !pfd) return -1;
@@ -708,6 +722,8 @@ struct SetupFiles {
 struct DisplaySettings {
   int surface_scale = 1;
   int mem_limit_mib = 64;
+  bool chihiro = false;  // Sega Chihiro arcade board (implies 128 MiB)
+  std::string chihiro_controls = "gun";  // or "driving"
   bool vsync = false;
   bool unlock_framerate = true;
   bool validation_layers = false;
@@ -821,6 +837,8 @@ static bool WriteConfigToml(const std::string& config_path,
   }
 
   sys->insert_or_assign("mem_limit", ds.mem_limit_mib == 128 ? "128" : "64");
+  sys->insert_or_assign("chihiro", ds.chihiro);
+  sys->insert_or_assign("chihiro_controls", ds.chihiro_controls);
 
   files->insert_or_assign("bootrom_path", mcpx);
   files->insert_or_assign("flashrom_path", flash);
@@ -960,6 +978,24 @@ static SetupFiles SyncSetupFiles() {
       close(g_dvd_fd);
       g_dvd_fd = -1;
     }
+    if (g_dvd_fd_rw >= 0) {
+      close(g_dvd_fd_rw);
+      g_dvd_fd_rw = -1;
+    }
+    g_dvd_fd_readonly = true;
+    // In Chihiro mode the disc is attached as an IDE disk rather than a
+    // CD-ROM, so QEMU may want to write to it. Open a second, writable
+    // descriptor for the same fdset when the provider allows it.
+    if (GetPrefBool(env, activity, "setting_chihiro", false)) {
+      g_dvd_fd_rw = OpenUriAsNativeFd(env, activity, dvdUri, "rw");
+      if (g_dvd_fd_rw >= 0) {
+        g_dvd_fd_readonly = false;
+        LogInfoInt("Chihiro: disc also opened read-write via fd %d",
+                   g_dvd_fd_rw);
+      } else {
+        LogInfo("Chihiro: disc is not writable, drive will be read-only");
+      }
+    }
     int fd = OpenUriAsNativeFd(env, activity, dvdUri);
     if (fd >= 0) {
       g_dvd_fd = fd;
@@ -1013,6 +1049,14 @@ static SetupFiles SyncSetupFiles() {
   ds.net_enable = GetPrefBool(env, activity, "setting_network_enable", false);
   ds.mem_limit_mib = GetPrefInt(env, activity, "setting_system_memory_mib",
                                  GetPrefInt(env, activity, "sys_mem_mib", 64));
+  ds.chihiro = GetPrefBool(env, activity, "setting_chihiro", false);
+  {
+    std::string ctl = GetPrefString(env, activity, "setting_chihiro_controls");
+    ds.chihiro_controls = (ctl == "driving") ? "driving" : "gun";
+  }
+  if (ds.chihiro) {
+    ds.mem_limit_mib = 128;  // the baseboard is only wired up on a 128 MiB machine
+  }
   {
     std::string thread = GetPrefString(env, activity, "setting_tcg_thread");
     if (thread.empty()) {
@@ -1272,8 +1316,9 @@ extern "C" int xemu_android_main(int argc, char** argv) {
                       "qemu_init took %llu ms",
                       (unsigned long long)(t_init_end - t_init_start));
 
-  /* qemu_init's cleanup_add_fd already closed the original fd */
+  /* qemu_init's cleanup_add_fd already closed the original fds */
   g_dvd_fd = -1;
+  g_dvd_fd_rw = -1;
 
 #if XEMU_OPT_TB_CACHE_HINTS
   /* Load translation block cache hints for pre-warming */
@@ -1328,6 +1373,10 @@ extern "C" int xemu_android_main(int argc, char** argv) {
   if (g_dvd_fd >= 0) {
     close(g_dvd_fd);
     g_dvd_fd = -1;
+  }
+  if (g_dvd_fd_rw >= 0) {
+    close(g_dvd_fd_rw);
+    g_dvd_fd_rw = -1;
   }
 
   return rc;
@@ -1474,16 +1523,19 @@ extern "C" int SDL_main(int argc, char* argv[]) {
       LogInfo("SDL_main: TCG tuning disabled");
     }
 
-    if (g_dvd_fd >= 0) {
-      int flags = fcntl(g_dvd_fd, F_GETFD);
+    for (int dvd_fd : { g_dvd_fd, g_dvd_fd_rw }) {
+      if (dvd_fd < 0) {
+        continue;
+      }
+      int flags = fcntl(dvd_fd, F_GETFD);
       if (flags != -1 && (flags & FD_CLOEXEC)) {
-        fcntl(g_dvd_fd, F_SETFD, flags & ~FD_CLOEXEC);
+        fcntl(dvd_fd, F_SETFD, flags & ~FD_CLOEXEC);
       }
       char add_fd_arg[64];
-      snprintf(add_fd_arg, sizeof(add_fd_arg), "fd=%d,set=0", g_dvd_fd);
+      snprintf(add_fd_arg, sizeof(add_fd_arg), "fd=%d,set=0", dvd_fd);
       arg_storage.emplace_back("-add-fd");
       arg_storage.emplace_back(add_fd_arg);
-      LogInfoInt("SDL_main: passing DVD fd %d via -add-fd", g_dvd_fd);
+      LogInfoInt("SDL_main: passing DVD fd %d via -add-fd", dvd_fd);
     }
 
     std::vector<char*> xemu_argv;
@@ -1592,6 +1644,42 @@ extern "C" int SDL_main(int argc, char* argv[]) {
   SDL_DestroyWindow(window);
   SDL_Quit();
   return 0;
+}
+
+/*
+ * Light gun pointer, fed from the on-screen controller view.
+ *
+ * The overlay consumes every touch so that it can drive the pads, which means
+ * SDL never sees a pointer and SDL_GetMouseState() -- what the desktop light
+ * gun reads -- stays at the origin with no buttons down. Touches that miss a
+ * control are forwarded here instead, in normalised view coordinates, and
+ * xemu_android_lightgun_get() hands them to the JVS/XID gun code.
+ */
+static float g_lightgun_x = 0.0f;
+static float g_lightgun_y = 0.0f;
+static bool g_lightgun_down = false;
+static bool g_lightgun_active = false;
+
+extern "C" bool xemu_android_lightgun_get(float *x, float *y, bool *down)
+{
+  if (!g_lightgun_active) {
+    return false;
+  }
+  *x = g_lightgun_x;
+  *y = g_lightgun_y;
+  *down = g_lightgun_down;
+  return true;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_x1box_MainActivity_nativeSetLightGun(JNIEnv *, jobject,
+                                                        jfloat x, jfloat y,
+                                                        jboolean down)
+{
+  g_lightgun_x = x;
+  g_lightgun_y = y;
+  g_lightgun_down = (down == JNI_TRUE);
+  g_lightgun_active = true;
 }
 
 extern "C" JNIEXPORT jint JNICALL

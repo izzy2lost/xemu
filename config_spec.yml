@@ -355,6 +355,19 @@ sys:
     type: enum
     values: ['64', '128']
     default: '64'
+  # Sega Chihiro arcade board. Implies 128 MiB of RAM, adds the mediaboard
+  # LPC device, the baseboard USB devices and JVS input, and swaps the retail
+  # EEPROM key for the debug one. Kept separate from mem_limit so that plain
+  # 128 MiB debug/homebrew setups are unaffected.
+  chihiro: bool
+  # Which cabinet the Chihiro controls emulate. The JVS analog channels
+  # mean different things per cabinet -- channel 0 is the gun's X axis on
+  # a light gun game and the steering wheel on a driving one -- so they
+  # cannot both be reported at once.
+  chihiro_controls:
+    type: enum
+    values: [gun, driving]
+    default: gun
   avpack:
     type: enum
     values: [scart, hdtv, vga, rfu, svideo, composite, none]

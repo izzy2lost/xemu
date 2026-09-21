@@ -72,3 +72,79 @@ SDL2 is fetched via CMake (default `release-2.32.10`). To use a local checkout:
 ```
 ./gradlew assembleDebug -Pandroid.experimental.cmake.arguments=-DSDL2_LOCAL_DIR=/path/to/SDL
 ```
+
+## Sega Chihiro (arcade)
+
+The Chihiro baseboard support ported from
+[Tovarichtch/xemu](https://github.com/Tovarichtch/xemu) is built into the
+Android target. It is off by default and is controlled by one setting rather
+than by the RAM size, so plain 128 MiB debug/homebrew configurations behave
+exactly as before.
+
+To run a Chihiro game:
+
+1. **Settings → Sega Chihiro (Arcade) → Enable Chihiro mode.** This forces
+   system memory to 128 MiB, which the baseboard requires.
+2. **Install the media board ROM** with the button in the same section. It
+   accepts `fpr21042_m29w160et.bin` (the Cxbx dump, which the LLE boot path
+   was written against) or `fpr-23887_29lv160te.ic4`. The file is copied next
+   to the BIOS, where `hw/xbox/chihiro.c` looks for it.
+3. **Use a 512 KiB Chihiro BIOS** as the flash/BIOS file. The MCPX overlay is
+   skipped for BIOS images larger than 256 KiB, because a Chihiro BIOS carries
+   its own boot code with a different RC4 key.
+4. **Pick the game.** Either select a `.bin` netboot image in the game library
+   -- on first launch its FATX contents are unpacked to
+   `Android/data/<pkg>/files/x1box/chihiro/<name>/` and reused thereafter --
+   or point **Use Chihiro game folder** at an already-extracted game.
+
+   The emulator consumes a *directory*, not an image: it scans it to build the
+   mbfs FATX in memory and reads `boot.id` from it. SEGABOOT rejects the game
+   with "This game is not acceptable by main board" if `boot.id` never loads.
+
+Cabinet controls are on the pad bound to port 1, which is also what the
+on-screen controller drives:
+
+**Cabinet controls** picks which scheme is live. The JVS analog channels mean
+different things per cabinet -- channel 0 is the gun's X axis on a light gun
+game and the steering wheel on a driving one -- so only one can be reported at
+a time.
+
+Light gun (House of the Dead III, Ghost Squad, Virtua Cop 3):
+
+| On-screen | Pad | Function |
+|---|---|---|
+| touch the screen | - | aim and fire |
+| **B** | B | reload |
+| **LT** | Left trigger | pedal (Virtua Cop 3's ES MODE) |
+
+Driving (Crazy Taxi High Roller, OutRun 2, Wangan Midnight):
+
+| On-screen | Pad | Function |
+|---|---|---|
+| left stick / d-pad | Left stick | steering |
+| **RT** | Right trigger | accelerator |
+| **LT** | Left trigger | brake |
+| **A** / **B** | A / B | gear lever, or shift up/down |
+| **X** | X | view change |
+
+Shared by both:
+
+| On-screen | Pad | Function |
+|---|---|---|
+| **◀** | Back | insert coin |
+| **▶** | Start | start |
+| **WH** | White | service |
+| **BK** | Black | test menu |
+
+The overlay consumes every touch so that it can drive the pads, so SDL never
+sees a pointer of its own; touches that miss a control are forwarded to the
+light gun through `nativeSetLightGun`. Reload needs its own button because the
+cabinet reloads by shooting off screen, and at the default Stretch aspect
+there is no off-screen area left to shoot into.
+
+The EEPROM is regenerated with the debug key on first Chihiro boot — the
+retail key will not boot the arcade kernel.
+
+Input arrives over JVS rather than USB, so the usual gamepad ports are not
+created in Chihiro mode. The light gun reads the pointer; SDL synthesises
+mouse events from touch, so tapping the screen aims and fires.

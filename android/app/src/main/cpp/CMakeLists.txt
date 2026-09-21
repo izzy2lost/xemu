@@ -743,7 +743,9 @@ list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "hw[\\\\/]vfio[\\\\/].*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "hw[\\\\/]vfio-user[\\\\/].*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "hw[\\\\/]virtio[\\\\/].*\\.c$")
 list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "hw[\\\\/]watchdog[\\\\/].*\\.c$")
-list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "hw[\\\\/]xbox[\\\\/]chihiro.*\\.c$")
+# Chihiro (Sega arcade) baseboard support. The glob above already picks up
+# hw/xbox/chihiro*.c, so nothing needs to be listed here -- the exclusion
+# that used to live at this line was removed to enable it.
 if(NOT XEMU_ENABLE_VULKAN)
   list(FILTER XEMU_CORE_SOURCES EXCLUDE REGEX "hw[\\\\/]xbox[\\\\/]nv2a[\\\\/]pgraph[\\\\/]vk[\\\\/].*\\.c$")
 endif()

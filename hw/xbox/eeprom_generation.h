@@ -55,6 +55,7 @@ typedef enum {
 } XboxEEPROMVersion;
 
 bool xbox_eeprom_generate(const char *file, XboxEEPROMVersion ver);
+XboxEEPROMVersion xbox_eeprom_detect_version(const uint8_t *data);
 
 #endif
 

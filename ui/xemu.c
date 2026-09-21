@@ -121,7 +121,11 @@ static int guest_cursor;
 static int guest_x, guest_y;
 static SDL_Cursor *guest_sprite;
 static Notifier mouse_mode_notifier;
-static SDL_Window *m_window;
+SDL_Window *m_window;
+/* Letterboxed game viewport in drawable pixels: x, y, w, h.
+ * Written by the renderer, read by the light gun to map the
+ * pointer into guest screen space. Zeroed means "whole window". */
+int viewport_coords[4];
 static SDL_GLContext m_context;
 static SDL_ThreadID sdl_render_thread_id;
 // struct decal_shader *blit;

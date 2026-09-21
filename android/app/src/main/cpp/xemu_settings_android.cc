@@ -104,6 +104,8 @@ static void xemu_settings_apply_defaults(void)
     g_config.net.udp.remote_addr = xemu_strdup_or_null("1.2.3.4:9368");
 
     g_config.sys.mem_limit = CONFIG_SYS_MEM_LIMIT_64;
+    g_config.sys.chihiro = false;
+    g_config.sys.chihiro_controls = CONFIG_SYS_CHIHIRO_CONTROLS_GUN;
     g_config.sys.avpack = CONFIG_SYS_AVPACK_HDTV;
 
     g_config.perf.fp_jit = true;
@@ -587,6 +589,15 @@ bool xemu_settings_load(void)
             } else {
                 g_config.sys.mem_limit = CONFIG_SYS_MEM_LIMIT_64;
             }
+        }
+
+        if (auto chihiro = sys["chihiro"].value<bool>()) {
+            g_config.sys.chihiro = *chihiro;
+        }
+        if (auto ctl = sys["chihiro_controls"].value<std::string>()) {
+            g_config.sys.chihiro_controls =
+                (*ctl == "driving") ? CONFIG_SYS_CHIHIRO_CONTROLS_DRIVING
+                                    : CONFIG_SYS_CHIHIRO_CONTROLS_GUN;
         }
 
         // System file paths

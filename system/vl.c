@@ -157,6 +157,7 @@
 #include "ui/xemu-net.h"
 #include "ui/xemu-input.h"
 #include "hw/xbox/eeprom_generation.h"
+#include "hw/xbox/chihiro.h"
 
 #define MAX_VIRTIO_CONSOLES 1
 
@@ -2922,13 +2923,34 @@ static const char *get_eeprom_path(void)
 {
     const char *path = g_config.sys.files.eeprom_path;
 
+    /* Chihiro (128MB) needs an EEPROM carrying the debug key; retail Xbox
+     * needs the R1 key. Pick the version up front so the regeneration check
+     * below can spot a mismatched file. */
+    bool is_chihiro = xbox_is_chihiro();
+    XboxEEPROMVersion needed = is_chihiro ? XBOX_EEPROM_VERSION_D
+                                          : XBOX_EEPROM_VERSION_R1;
+
     if (strlen(path) == 0) {
         path = xemu_settings_get_default_eeprom_path();
         xemu_settings_set_string(&g_config.sys.files.eeprom_path, path);
     }
 
+    if (qemu_access(path, F_OK) == 0 && is_chihiro) {
+        FILE *f = qemu_fopen(path, "rb");
+        if (f) {
+            uint8_t data[256];
+            bool valid = fread(data, 1, 256, f) == 256;
+            fclose(f);
+            if (valid && xbox_eeprom_detect_version(data) != needed) {
+                ANDROID_LOGI("Chihiro: EEPROM has retail key, regenerating "
+                             "with debug key");
+                qemu_unlink(path);
+            }
+        }
+    }
+
     if (qemu_access(path, F_OK) == -1) {
-        if (!xbox_eeprom_generate(path, XBOX_EEPROM_VERSION_R1)) {
+        if (!xbox_eeprom_generate(path, needed)) {
             char *msg = g_strdup_printf("Failed to generate EEPROM file '%s'."
                                         "\n\nPlease check machine settings.",
                                         path);
@@ -3072,6 +3094,11 @@ void qemu_init(int argc, char **argv)
     }
 
     int mem = ((int)g_config.sys.mem_limit + 1) * 64;
+    /* The Chihiro baseboard is only wired up on a 128 MiB machine. */
+    if (xbox_is_chihiro() && mem < 128) {
+        ANDROID_LOGI("Chihiro: forcing 128 MiB of RAM (was %d)", mem);
+        mem = 128;
+    }
     fake_argv[fake_argc++] = strdup("-m");
     fake_argv[fake_argc++] = g_strdup_printf("%d", mem);
 
@@ -3106,18 +3133,89 @@ void qemu_init(int argc, char **argv)
 
     // Always populate DVD drive. If disc path is the empty string, drive is
     // connected but no media present.
-    fake_argv[fake_argc++] = strdup("-drive");
+    //
+    // In Chihiro mode (128MB) the media type is auto-detected:
+    //   - .iso        -> DVD/CD-ROM (game disc image)
+    //   - anything else -> IDE disk (baseboard image)
+    // A directory or a bare .xbe gets a zeroed stub image instead; the
+    // in-memory FATX built in xbox_init_common() plus the IDE hooks serve
+    // the real data, the stub only exists so QEMU creates the device.
+    // In Xbox mode, always mount as CD-ROM.
     char *escaped_dvd_path = strdup_double_commas(dvd_path);
-    fake_argv[fake_argc++] = g_strdup_printf("index=1,media=cdrom,file=%s",
-        escaped_dvd_path);
+    const char *dvd_media = "cdrom";
+    const char *format_suffix = "";
+    const char *readonly_suffix = "";
+    if (xbox_is_chihiro() && strlen(dvd_path) > 4) {
+        /*
+         * NOTE: on Android the disc is handed over as "/dev/fdset/N", so the
+         * real filename is not visible here and the extension test below
+         * always falls through to the disk branch. That is the right default
+         * for Chihiro, whose games are .bin netboot images rather than discs.
+         */
+        const char *ext = dvd_path + strlen(dvd_path) - 4;
+        if (g_ascii_strcasecmp(ext, ".iso") != 0) {
+            dvd_media = "disk";
+            format_suffix = ",format=raw";
+        }
+
+        struct stat dvd_st;
+        if (stat(dvd_path, &dvd_st) == 0 &&
+            (S_ISDIR(dvd_st.st_mode) ||
+             g_ascii_strcasecmp(ext, ".xbe") == 0)) {
+            static char stub_path[512];
+            snprintf(stub_path, sizeof(stub_path), "%s%s",
+                     xemu_settings_get_base_path(), "chihiro_stub.img");
+            /* Create a 1MB stub if it doesn't exist */
+            if (access(stub_path, F_OK) != 0) {
+                FILE *sf = fopen(stub_path, "wb");
+                if (sf) {
+                    uint8_t zero[512];
+                    memset(zero, 0, 512);
+                    for (int i = 0; i < 2048; i++) {
+                        fwrite(zero, 1, 512, sf);
+                    }
+                    fclose(sf);
+                }
+            }
+            free(escaped_dvd_path);
+            escaped_dvd_path = strdup_double_commas(stub_path);
+            dvd_media = "disk";
+            format_suffix = ",format=raw";
+        }
+    }
+#ifdef __ANDROID__
+    /*
+     * media=disk makes QEMU ask the fdset for an O_RDWR descriptor. The
+     * Android layer tries to open the disc read-write for Chihiro, but SAF
+     * providers may only grant read access; when that happens the drive has
+     * to be marked read-only or the fdset lookup fails outright with
+     * "Failed to find file descriptor with matching flags=0x2".
+     */
+    if (strcmp(dvd_media, "disk") == 0 &&
+        strncmp(dvd_path, "/dev/fdset/", 11) == 0) {
+        extern int xemu_android_dvd_fd_is_readonly(void);
+        if (xemu_android_dvd_fd_is_readonly()) {
+            readonly_suffix = ",readonly=on";
+            ANDROID_LOGI("Chihiro: disc fd is read-only, adding readonly=on");
+        }
+    }
+#endif
+
+    fake_argv[fake_argc++] = strdup("-drive");
+    fake_argv[fake_argc++] = g_strdup_printf("index=1,media=%s,file=%s%s%s",
+        dvd_media, escaped_dvd_path, format_suffix, readonly_suffix);
     free(escaped_dvd_path);
 
     fake_argv[fake_argc++] = strdup("-display");
     fake_argv[fake_argc++] = strdup("xemu");
 
     // Create USB Daughterboard for 1.0 Xbox. This is connected to Port 1 of the Root hub.
-    fake_argv[fake_argc++] = strdup("-device");
-    fake_argv[fake_argc++] = strdup("usb-hub,port=1,ports=4");
+    // In Chihiro mode (128MB), skip it -- the baseboard AN2131 devices take
+    // these ports instead.
+    if (!xbox_is_chihiro()) {
+        fake_argv[fake_argc++] = strdup("-device");
+        fake_argv[fake_argc++] = strdup("usb-hub,port=1,ports=4");
+    }
 
     for (int i = 1; i < argc; i++) {
         if (argv[i] != NULL) {

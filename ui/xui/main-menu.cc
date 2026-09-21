@@ -195,6 +195,8 @@ void MainMenuInputView::Draw()
         driver = DRIVER_DUKE_DISPLAY_NAME;
     else if (strcmp(driver, DRIVER_S) == 0)
         driver = DRIVER_S_DISPLAY_NAME;
+    else if (strcmp(driver, DRIVER_LIGHT_GUN) == 0)
+        driver = DRIVER_LIGHT_GUN_DISPLAY_NAME;
 
     ImGui::Columns(2, "", false);
     ImGui::SetColumnWidth(0, ImGui::GetWindowWidth()*0.25);
@@ -206,9 +208,14 @@ void MainMenuInputView::Draw()
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::BeginCombo("###InputDrivers", driver,
                           ImGuiComboFlags_NoArrowButton)) {
-        const char *available_drivers[] = { DRIVER_DUKE, DRIVER_S };
-        const char *driver_display_names[] = { DRIVER_DUKE_DISPLAY_NAME,
-                                               DRIVER_S_DISPLAY_NAME };
+        const char *available_drivers[] = { DRIVER_DUKE, DRIVER_S,
+                                            DRIVER_LIGHT_GUN };
+        const char *driver_display_names[] = { 
+            DRIVER_DUKE_DISPLAY_NAME, 
+            DRIVER_S_DISPLAY_NAME, 
+            DRIVER_LIGHT_GUN_DISPLAY_NAME
+        };
+
         bool is_selected = false;
         int num_drivers = sizeof(driver_display_names) / sizeof(driver_display_names[0]);
         for (int i = 0; i < num_drivers; i++) {
@@ -339,16 +346,17 @@ void MainMenuInputView::Draw()
         ImGui::GetCursorPosX() +
         (int)((ImGui::GetColumnWidth() - controller_display_size.x) / 2.0));
 
-    ImGui::Image(id,
-        controller_display_size,
-        ImVec2(0, controller_height/t_h),
-        ImVec2(controller_width/t_w, 0));
+    cur = ImGui::GetCursorPos();
+
+    ImGui::Image(id, controller_display_size,
+                 ImVec2(0, controller_height / t_h),
+                 ImVec2(controller_width / t_w, 0));
     ImVec2 pos = ImGui::GetCursorPos();
     if (!device_selected) {
         const char *msg = "Please select an available input device";
         ImVec2 dim = ImGui::CalcTextSize(msg);
-        ImGui::SetCursorPosX(cur.x + (controller_display_size.x-dim.x)/2);
-        ImGui::SetCursorPosY(cur.y + (controller_display_size.y-dim.y)/2);
+        ImGui::SetCursorPosX(cur.x + (controller_display_size.x - dim.x) / 2);
+        ImGui::SetCursorPosY(cur.y + (controller_display_size.y - dim.y) / 2);
         ImGui::Text("%s", msg);
     }
 
@@ -371,18 +379,19 @@ void MainMenuInputView::Draw()
 
         const char *img_file_filters = ".img Files\0*.img\0All Files\0*.*\0";
         const char *comboLabels[2] = { "###ExpansionSlotA",
-                                       "###ExpansionSlotB" };
+                                        "###ExpansionSlotB" };
         for (int i = 0; i < 2; i++) {
             // Display a combo box to allow the user to choose the type of
             // peripheral they want to use
             enum peripheral_type selected_type =
                 bound_state->peripheral_types[i];
-            const char *peripheral_type_names[2] = { "None", "Memory Unit" };
+            const char *peripheral_type_names[2] = { "None",
+                                                        "Memory Unit" };
             const char *selected_peripheral_type =
                 peripheral_type_names[selected_type];
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (ImGui::BeginCombo(comboLabels[i], selected_peripheral_type,
-                                  ImGuiComboFlags_NoArrowButton)) {
+                                    ImGuiComboFlags_NoArrowButton)) {
                 // Handle all available peripheral types
                 for (int j = 0; j < 2; j++) {
                     bool is_selected = selected_type == j;
@@ -404,7 +413,8 @@ void MainMenuInputView::Draw()
                             bound_state->peripherals[i] = NULL;
                         }
 
-                        // Change the peripheral type to the newly selected type
+                        // Change the peripheral type to the newly selected
+                        // type
                         bound_state->peripheral_types[i] =
                             (enum peripheral_type)j;
 
@@ -582,8 +592,12 @@ void MainMenuInputView::PopulateTableController(ControllerState *state)
     if (!state)
         return;
 
-    // Must match g_keyboard_scancode_map and the controller
-    // button map below.
+    // Check if this controller is bound as a lightgun
+    bool is_lightgun = (state->bound >= 0 && state->bound < 4 &&
+                        strcmp(bound_drivers[state->bound],
+                               DRIVER_LIGHT_GUN) == 0);
+
+    // Face button names for gamepad mode
     static constexpr const char *face_button_index_to_name_map[15] = {
         "A",
         "B",
@@ -594,6 +608,25 @@ void MainMenuInputView::PopulateTableController(ControllerState *state)
         "Start",
         "Left Stick Button",
         "Right Stick Button",
+        "White",
+        "Black",
+        "DPad Up",
+        "DPad Down",
+        "DPad Left",
+        "DPad Right",
+    };
+
+    // Face button names for lightgun mode (renamed for clarity)
+    static constexpr const char *lg_button_names[15] = {
+        "Trigger (A)",
+        "Reload (B)",
+        "X",
+        "Y",
+        "Back",
+        NULL,  // Guide - not on lightgun
+        "Start",
+        NULL,  // Left Stick Button - not on lightgun
+        NULL,  // Right Stick Button - not on lightgun
         "White",
         "Black",
         "DPad Up",
@@ -632,7 +665,11 @@ void MainMenuInputView::PopulateTableController(ControllerState *state)
 
     int num_axis_mappings;
     const char *const *axis_index_to_name_map;
-    if (is_keyboard) {
+    if (is_lightgun) {
+      // Lightgun: no axis mappings (mouse handles position)
+      num_axis_mappings = 0;
+      axis_index_to_name_map = NULL;
+    } else if (is_keyboard) {
       num_axis_mappings = std::size(keyboard_stick_index_to_name_map);
       axis_index_to_name_map = keyboard_stick_index_to_name_map;
     } else {
@@ -640,16 +677,41 @@ void MainMenuInputView::PopulateTableController(ControllerState *state)
       axis_index_to_name_map = gamepad_axis_index_to_name_map;
     }
 
+    // For lightgun, add mouse info row
+    if (is_lightgun) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextDisabled("Aim");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextDisabled("Mouse Movement");
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextDisabled("Fire");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextDisabled("Mouse Left Click");
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextDisabled("Alt Fire / Reload");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextDisabled("Mouse Right Click");
+    }
+
     constexpr int num_face_buttons = std::size(face_button_index_to_name_map);
     const int table_rows = num_axis_mappings + num_face_buttons;
     for (int i = 0; i < table_rows; ++i) {
+        // Skip buttons not relevant to lightgun
+        if (is_lightgun && i < num_face_buttons && lg_button_names[i] == NULL)
+            continue;
+
         ImGui::TableNextRow();
 
         // Button/Axis Name Column
         ImGui::TableSetColumnIndex(0);
 
         if (i < num_face_buttons) {
-          ImGui::Text("%s", face_button_index_to_name_map[i]);
+          const char *name = is_lightgun ? lg_button_names[i]
+                                         : face_button_index_to_name_map[i];
+          ImGui::Text("%s", name);
         } else {
           ImGui::Text("%s", axis_index_to_name_map[i - num_face_buttons]);
         }

@@ -292,7 +292,16 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
 
     // Create input bridge
     controllerBridge = ControllerInputBridge()
-    onScreenController?.setControllerListener(controllerBridge!!)
+    // Wrap the bridge so touches that miss a control reach the light gun; the
+    // overlay consumes every touch, so SDL never sees a pointer of its own.
+    val bridge = controllerBridge!!
+    onScreenController?.setControllerListener(
+      object : OnScreenController.ControllerListener by bridge {
+        override fun onPointerMoved(x: Float, y: Float, down: Boolean) {
+          runCatching { nativeSetLightGun(x, y, down) }
+        }
+      }
+    )
     onScreenController?.onMenuButtonTapped = { showInGameMenu() }
 
     // Add to layout
@@ -613,6 +622,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private external fun nativeLoadSnapshot(name: String): Boolean
   private external fun nativeRebootSystem()
   private external fun nativeGetFps(): Int
+  private external fun nativeSetLightGun(x: Float, y: Float, down: Boolean)
   private external fun nativePauseEmulation()
   private external fun nativeResumeEmulation()
   private external fun nativeSetReturnToLibraryOnExit(enable: Boolean)

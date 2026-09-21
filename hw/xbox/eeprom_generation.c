@@ -90,13 +90,39 @@ static void xbox_sha1_compute(SHA1Context *ctx, XboxEEPROMVersion ver,
     sha1_result(ctx, hash);
 }
 
+XboxEEPROMVersion xbox_eeprom_detect_version(const uint8_t *data) {
+    for (int ver = XBOX_EEPROM_VERSION_D; ver <= XBOX_EEPROM_VERSION_R3; ver++) {
+        RC4Context rctx;
+        SHA1Context sctx;
+        uint8_t seed[20];
+        uint8_t decrypted[28];
+        uint8_t computed_hash[20];
+
+        memcpy(decrypted, data + 0x14, 0x1C);
+
+        xbox_sha1_compute(&sctx, ver, (uint8_t *)data, 20, seed);
+        rc4_init(&rctx, seed, sizeof(seed));
+        rc4_crypt(&rctx, decrypted, 0x1C);
+
+        xbox_sha1_compute(&sctx, ver, decrypted, 0x1C, computed_hash);
+
+        if (memcmp(computed_hash, data, 20) == 0) {
+            return (XboxEEPROMVersion)ver;
+        }
+    }
+    return (XboxEEPROMVersion)-1;
+}
+
 bool xbox_eeprom_generate(const char *file, XboxEEPROMVersion ver) {
     XboxEEPROM e;
     memset(&e, 0, sizeof(e));
 
     // set default North American and NTSC-M region settings
     e.region = cpu_to_le32(1);
-    e.video_standard = cpu_to_le32(0x00400100);
+    e.video_standard = cpu_to_le32(0x00480100); /* NTSC-M + 60Hz + 480p
+                                                  * Chihiro uses VGA (31kHz progressive).
+                                                  * 480p flag → kernel configures NV2A
+                                                  * for progressive scan. */
 
     // randomize hardware information
     qcrypto_random_bytes(e.confounder, sizeof(e.confounder), &error_fatal);
@@ -136,5 +162,13 @@ bool xbox_eeprom_generate(const char *file, XboxEEPROMVersion ver) {
 
     bool success = fwrite(&e, sizeof(e), 1, fd) == 1;
     fclose(fd);
+
+    /* Log video_standard value and raw EEPROM bytes at offset 0x58 */
+    uint8_t *raw = (uint8_t *)&e;
+    printf("Chihiro: EEPROM generated — video_standard=0x%08X "
+           "raw[0x58..0x5B]=%02X %02X %02X %02X\n",
+           le32_to_cpu(e.video_standard),
+           raw[0x58], raw[0x59], raw[0x5A], raw[0x5B]);
+
     return success;
 }

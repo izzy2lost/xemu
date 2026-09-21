@@ -31,6 +31,7 @@
 #include "net/net.h"
 #include "hw/boards.h"
 #include "hw/ide/pci.h"
+#include "ui/xemu-settings.h"
 #include "system/system.h"
 #include "system/kvm.h"
 #include "kvm/kvm_i386.h"
@@ -57,6 +58,8 @@
 
 #include "hw/xbox/xbox.h"
 #include "smbus.h"
+#include "chihiro.h"
+#include "chihiro_fatx.h"
 
 #define MAX_IDE_BUS 2
 
@@ -155,12 +158,23 @@ static void xbox_flash_init(MachineState *ms, MemoryRegion *rom_memory)
             return;
         }
 
-        /* Read in MCPX ROM over last 512 bytes of BIOS data */
-        int fd = qemu_open(filename, O_RDONLY | O_BINARY, NULL);
-        assert(fd >= 0);
-        int rc = read(fd, bios_data + bios_size - bootrom_size, bootrom_size);
-        assert(rc == bootrom_size);
-        close(fd);
+        if (bios_size > 256 * 1024) {
+            /* Chihiro BIOS (512KB) has its own MCPX-compatible boot code
+             * built in at the end of the image. This boot code uses a
+             * different RC4 key than the retail MCPX ROM. Overlaying the
+             * retail MCPX would overwrite the Chihiro boot code and cause
+             * 2BL decryption to fail. Skip the overlay. */
+            printf("Chihiro: 512KB BIOS detected, using built-in boot code "
+                   "(skipping MCPX overlay)\n");
+        } else {
+            /* Standard Xbox BIOS: overlay retail MCPX ROM */
+            int fd = qemu_open(filename, O_RDONLY | O_BINARY, NULL);
+            assert(fd >= 0);
+            int rc = read(fd, bios_data + bios_size - bootrom_size,
+                          bootrom_size);
+            assert(rc == bootrom_size);
+            close(fd);
+        }
         g_free(filename);
     }
 
@@ -297,6 +311,8 @@ void xbox_init_common(MachineState *machine,
     // idebus[1] = qdev_get_child_bus(&dev->qdev, "ide.1");
 
     /* smbus devices */
+    /* Chihiro: SMC default 0x00 maps to VGA in arcade kernel.
+     * No avpack override needed — the kernel handles the mapping. */
     smbus_xbox_smc_init(smbus, 0x10);
 
     const char *video_encoder =
@@ -344,6 +360,103 @@ void xbox_init_common(MachineState *machine,
     }
     if (isa_bus_out) {
         *isa_bus_out = isa_bus;
+    }
+
+    /* A real Chihiro is an Xbox with add-on boards, so the baseboard is
+     * layered on top of the machine that has just been built. The mediaboard
+     * LPC I/O device supplies the XBAM identification string SEGABOOT checks
+     * for. Chihiro also requires 128 MiB, which the caller has arranged. */
+    if (xbox_is_chihiro()) {
+        printf("Chihiro: enabling mediaboard LPC\n");
+        isa_create_simple(isa_bus, "chihiro-lpc");
+
+        /* Chihiro southbridge has revision >= 0xB4. This clears bit 0 of
+         * XboxHardwareInfo in the kernel, selecting PATH_B for USB topology
+         * (direct port mapping instead of hub-based). Without this, the
+         * kernel uses PATH_A which requires device table state=1 that LLE
+         * USB entries never reach. */
+        PCIDevice *lpc = pci_find_device(pci_bus, 0, PCI_DEVFN(1, 0));
+        if (lpc) {
+            pci_config_set_revision(lpc->config, 0xB4);
+            printf("Chihiro: LPC bridge revision set to 0xB4 (PATH_B)\n");
+        }
+
+        /* Load baseboard flash ROM (SEGABOOT) from file.
+         * Searches for fpr-23887/fpr21042 next to the BIOS file. */
+        chihiro_load_flash_rom(g_config.sys.files.flashrom_path);
+
+        /* Build FATX from game directory if dvd_path is a directory.
+         * If dvd_path points to an XBE, use its parent directory. */
+        {
+            const char *dvd = g_config.sys.files.dvd_path;
+            if (dvd && strlen(dvd) > 0) {
+                struct stat st;
+                if (stat(dvd, &st) == 0) {
+                    char game_dir[2048];
+                    if (S_ISDIR(st.st_mode)) {
+                        snprintf(game_dir, sizeof(game_dir), "%s", dvd);
+                    } else {
+                        /* XBE file: use parent directory */
+                        snprintf(game_dir, sizeof(game_dir), "%s", dvd);
+                        char *slash = strrchr(game_dir, '/');
+                        if (!slash) slash = strrchr(game_dir, '\\');
+                        if (slash) *slash = '\0';
+                    }
+                    uint32_t fatx_size = 0;
+                    /* mbfs: partition = DIMM_sectors - 0x8000 (512MB → 0xF8000) */
+                    uint32_t mbfs_sectors = 0x100000 - 0x8000;
+                    uint8_t *fatx = chihiro_fatx_build(game_dir, &fatx_size,
+                                                       mbfs_sectors);
+                    if (fatx) {
+                        printf("Chihiro: FATX built from '%s' (%u MB)\n",
+                               game_dir, fatx_size / (1024*1024));
+                    }
+                    /* Store game dir for boot.id reading at QuickReboot */
+                    {
+                        extern char chihiro_game_dir[1024];
+                        strncpy(chihiro_game_dir, game_dir, 1023);
+                        chihiro_game_dir[1023] = 0;
+                    }
+                }
+            }
+        }
+
+        /* The Chihiro BIOS jamtable writes to SMBus device 0x6A (Focus
+         * FS454 video encoder) during early boot. Without this device,
+         * the SMBus transaction never completes and boot hangs. */
+        smbus_fs454_init(smbus, 0x6A);
+
+        /* Chihiro baseboard USB: AN2131 QC + SC
+         *
+         * On real hardware, the AN2131 chips load firmware from their
+         * I2C EEPROMs (ic10/pc20) at power-up (~200-500ms).
+         * The kernel boots and does its initial USB scan before the
+         * AN2131 chips are ready. They appear as hot-plug devices
+         * AFTER the kernel has started.
+         *
+         * We create the devices with auto_attach=0 (set in realize),
+         * then attach them via a timer 1.5s after boot. */
+        USBBus *usb0_bus = NULL;
+        for (int i = 0; i < 4 && !usb0_bus; i++) {
+            char bn[16]; snprintf(bn, sizeof(bn), "usb-bus.%d", i);
+            BusState *bs = qdev_get_child_bus(DEVICE(usb0), bn);
+            if (bs) usb0_bus = USB_BUS(bs);
+        }
+
+        if (usb0_bus) {
+            /* Create but don't attach (auto_attach=0 in realize) */
+            USBDevice *qc = usb_create_simple(usb0_bus, "chihiro-an2131qc");
+            USBDevice *sc = usb_create_simple(usb0_bus, "chihiro-an2131sc");
+            printf("Chihiro: QC created port=%d (not attached yet)\n",
+                   qc->port ? qc->port->index : -1);
+            printf("Chihiro: SC created port=%d (not attached yet)\n",
+                   sc->port ? sc->port->index : -1);
+
+            /* Store globally for the hotplug timer */
+            chihiro_usb_set_devices(qc, sc);
+        } else {
+            printf("Chihiro: WARNING — could not find USB bus on OHCI\n");
+        }
     }
 }
 

@@ -30,18 +30,23 @@
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/timer.h"
+#define TS_MS ((long long)(qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL)))
 #include "qemu/hw-version.h"
 #include "qemu/memalign.h"
 #include "system/system.h"
 #include "system/blockdev.h"
 #include "system/dma.h"
+#include "system/address-spaces.h"
 #include "hw/block/block.h"
 #include "system/block-backend.h"
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "system/replay.h"
 #include "system/runstate.h"
+#include "exec/watchpoint.h"
 #include "ide-internal.h"
+#include "hw/xbox/chihiro.h"
+bool chihiro_ide_read_sector(uint32_t lba, void *buffer);
 #include "trace.h"
 
 /* These values were based on a Seagate ST3500418AS but have been modified
@@ -821,6 +826,33 @@ static void ide_sector_read(IDEState *s)
 
     trace_ide_sector_read(sector_num, n);
 
+    /*
+     * Chihiro: the mediaboard regions (mbcom mailbox, mbrom, the synthesised
+     * FATX and the zero-filled tail past a short mbfs image) are served by a
+     * hook rather than by the backing image, and the guest reaches some of
+     * them with PIO rather than DMA. Mirror what ide_dma_cb() does, and do it
+     * before ide_sect_range_ok() because those LBAs deliberately sit outside
+     * the image.
+     */
+    if (s->unit == 1 && xbox_is_chihiro()) {
+        uint8_t probe[512];
+        if (chihiro_ide_read_sector((uint32_t)sector_num, probe)) {
+            for (int i = 0; i < n; i++) {
+                uint8_t *dst = s->io_buffer + (size_t)i * BDRV_SECTOR_SIZE;
+                if (!chihiro_ide_read_sector((uint32_t)(sector_num + i), dst)) {
+                    memset(dst, 0, BDRV_SECTOR_SIZE);
+                }
+            }
+            ide_set_sector(s, sector_num + n);
+            s->nsector -= n;
+            s->status &= ~BUSY_STAT;
+            ide_transfer_start(s, s->io_buffer, n * BDRV_SECTOR_SIZE,
+                               ide_sector_read);
+            ide_bus_set_irq(s->bus);
+            return;
+        }
+    }
+
     if (!ide_sect_range_ok(s, sector_num, n)) {
         ide_rw_error(s);
         block_acct_invalid(blk_get_stats(s->blk), BLOCK_ACCT_READ);
@@ -930,6 +962,16 @@ static void ide_dma_cb(void *opaque, int ret)
     if (s->nsector == 0) {
         s->status = READY_STAT | SEEK_STAT;
         ide_bus_set_irq(s->bus);
+
+        /* Chihiro mbcom hook: after a DMA write completes on unit 1,
+         * check if the sector is in the mbcom command range.
+         * If so, process the command and write the response. */
+        if (s->dma_cmd == IDE_DMA_WRITE && s->unit == 1) {
+            extern void chihiro_ide_dma_write_done(BlockBackend *blk,
+                                                    int64_t sector_num);
+            chihiro_ide_dma_write_done(s->blk, sector_num);
+        }
+
         goto eot;
     }
 
@@ -958,6 +1000,79 @@ static void ide_dma_cb(void *opaque, int ret)
 
     trace_ide_dma_cb(s, sector_num, n, IDE_DMA_CMD_str(s->dma_cmd));
 
+    if (s->unit == 1) {
+        static int64_t last_dma_ts = 0;
+        int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+        if (now != last_dma_ts || sector_num > 0x88) {
+            if(0) printf("[%07lld] IDE-DMA-CB: unit=%d cmd=%s LBA=%lu n=%d\n",
+                   now, s->unit, IDE_DMA_CMD_str(s->dma_cmd),
+                   (unsigned long)sector_num, n);
+            last_dma_ts = now;
+        }
+    }
+
+    /* Chihiro: intercept IDE reads on baseboard (unit 1) for mbcom/mbrom sectors.
+     * Must be BEFORE ide_sect_range_ok — mbcom/mbrom LBAs are beyond
+     * the baseboard.img size and would be rejected as out-of-range.
+     * Must handle ALL sectors in multi-sector DMA requests. */
+    if (s->dma_cmd == IDE_DMA_READ && s->unit == 1 && n > 0) {
+        extern bool chihiro_ide_read_sector(uint32_t lba, void *buffer);
+        uint8_t sector_buf[512];
+        if (chihiro_ide_read_sector((uint32_t)sector_num, sector_buf)) {
+            int total = n;
+            int sg_idx = 0;
+            dma_addr_t sg_off = 0;
+            for (int i = 0; i < total; i++) {
+                if (i > 0) {
+                    chihiro_ide_read_sector((uint32_t)(sector_num + i), sector_buf);
+                }
+                int remaining = 512;
+                int buf_pos = 0;
+                while (remaining > 0) {
+                    while (sg_idx < s->sg.nsg && sg_off >= s->sg.sg[sg_idx].len) {
+                        sg_off -= s->sg.sg[sg_idx].len;
+                        sg_idx++;
+                    }
+                    if (sg_idx >= s->sg.nsg) break;
+                    dma_addr_t dest = s->sg.sg[sg_idx].base + sg_off;
+                    dma_addr_t avail = s->sg.sg[sg_idx].len - sg_off;
+                    int chunk = (remaining < (int)avail) ? remaining : (int)avail;
+                    dma_memory_write(&address_space_memory, dest,
+                                     sector_buf + buf_pos, chunk,
+                                     MEMTXATTRS_UNSPECIFIED);
+                    sg_off += chunk;
+                    buf_pos += chunk;
+                    remaining -= chunk;
+                }
+            }
+            sector_num += total;
+            ide_set_sector(s, sector_num);
+            s->nsector -= total;
+            s->status = READY_STAT | SEEK_STAT;
+            ide_bus_set_irq(s->bus);
+            goto eot;
+        }
+    }
+
+    /* Chihiro: intercept IDE writes on baseboard (unit 1) for mbcom sectors */
+    if (s->dma_cmd == IDE_DMA_WRITE && s->unit == 1 && n > 0) {
+        extern bool chihiro_ide_write_sector(uint32_t lba, const void *buffer);
+        uint8_t sector_buf[512];
+        dma_memory_read(&address_space_memory,
+                        s->sg.sg[0].base, sector_buf, 512,
+                        MEMTXATTRS_UNSPECIFIED);
+        if (chihiro_ide_write_sector((uint32_t)sector_num, sector_buf)) {
+            sector_num += 1;
+            ide_set_sector(s, sector_num);
+            s->nsector -= 1;
+            if (s->nsector == 0) {
+                s->status = READY_STAT | SEEK_STAT;
+                ide_bus_set_irq(s->bus);
+                goto eot;
+            }
+        }
+    }
+
     if ((s->dma_cmd == IDE_DMA_READ || s->dma_cmd == IDE_DMA_WRITE) &&
         !ide_sect_range_ok(s, sector_num, n)) {
         ide_dma_error(s);
@@ -966,6 +1081,8 @@ static void ide_dma_cb(void *opaque, int ret)
     }
 
     offset = sector_num << BDRV_SECTOR_BITS;
+    if (s->unit == 1 && s->dma_cmd == IDE_DMA_READ) {
+    }
     switch (s->dma_cmd) {
     case IDE_DMA_READ:
         s->bus->dma->aiocb = dma_blk_read(s->blk, &s->sg, offset,
@@ -1348,6 +1465,26 @@ void ide_ioport_write(void *opaque, uint32_t addr, uint32_t val)
     case ATA_IOPORT_WR_COMMAND:
         ide_clear_hob(bus);
         qemu_irq_lower(bus->irq);
+        /* Chihiro debug: log IDE commands (suppress FC801 polling spam) */
+        {
+            IDEState *active = ide_bus_active_if(bus);
+            int unit = active->unit;
+            int64_t sector = ide_get_sector(active);
+            int nsector = active->nsector ? active->nsector : 256;
+            static uint32_t fc801_count = 0;
+            if (unit == 1 && sector == 0xFC801) {
+                fc801_count++;
+                if (fc801_count <= 15) {
+                    if(0) printf("[%07lld] IDE cmd=0x%02X unit=%d LBA=0x%llX nsect=%d\n",
+                           TS_MS, val, unit, (long long)sector, nsector);
+                } else if (fc801_count == 16) {
+                    if(0) printf("[%07lld] IDE FC801 polling — suppressing further logs\n", TS_MS);
+                }
+            } else {
+                if(0) printf("[%07lld] IDE cmd=0x%02X unit=%d LBA=0x%llX nsect=%d\n",
+                       TS_MS, val, unit, (long long)sector, nsector);
+            }
+        }
         ide_bus_exec_cmd(bus, val);
         break;
     }
@@ -1459,6 +1596,36 @@ static bool cmd_identify(IDEState *s, uint8_t cmd)
         } else {
             ide_cfata_identify(s);
         }
+
+        /* Chihiro: override IDENTIFY for baseboard (unit 1).
+         * MAME's ide_baseboard_device reports CHS 65535/255/255.
+         * The arcdkrnl MediaBoard driver checks this geometry to
+         * distinguish the baseboard from a regular HDD. Without it,
+         * the kernel never creates \Device\MediaBoard partitions. */
+        if (s->unit == 1) {
+            extern bool chihiro_game_running;
+            extern void chihiro_mbcom_init(void);
+            uint16_t *p = (uint16_t *)s->identify_data;
+            put_le16(p + 1, 65535);  /* cylinders */
+            put_le16(p + 3, 255);    /* heads */
+            put_le16(p + 6, 255);    /* sectors per track */
+            put_le16(p + 54, 65535); /* current cylinders */
+            put_le16(p + 55, 255);   /* current heads */
+            put_le16(p + 56, 255);   /* current sectors */
+            padstr((char *)(p + 27), "SEGA CHIHIRO BASEBOARD", 40);
+            /* Report 512MB capacity (0x100000 sectors) so kernel can map
+             * all MediaBoard partitions: mbfs (0xF8000 sectors) + mbcom.
+             * The stub backing file is only 1MB but our IDE hooks intercept
+             * all reads/writes to mbcom/mbrom LBAs beyond the real file. */
+            int64_t bb_sectors = 0x100000;  /* 512MB */
+            put_le16(p + 60, bb_sectors);
+            put_le16(p + 61, bb_sectors >> 16);
+            put_le16(p + 100, bb_sectors);
+            put_le16(p + 101, bb_sectors >> 16);
+            put_le16(p + 102, 0);
+            put_le16(p + 103, 0);
+        }
+
         s->status = READY_STAT | SEEK_STAT;
         ide_transfer_start(s, s->io_buffer, 512, ide_transfer_stop);
         ide_bus_set_irq(s->bus);
@@ -2645,6 +2812,25 @@ int ide_init_drive(IDEState *s, IDEDevice *dev, IDEDriveKind kind, Error **errp)
     s->sectors = s->drive_sectors = dev->conf.secs;
     s->chs_trans = dev->chs_trans;
     s->nb_sectors = nb_sectors;
+
+    /*
+     * Chihiro: the mediaboard tells the kernel the DIMM is 512 MiB, and the
+     * kernel derives the mbcom sector from that (mbcom = (0x40000 << factor)
+     * - 0x8000 = 0xF8000). A netboot mbfs image is usually smaller than the
+     * DIMM it is meant to sit in -- House of the Dead III is 373 MiB -- so
+     * the drive must still present the full DIMM geometry or SEGABOOT finds
+     * no mbcom region and reports "This game is not acceptable by main
+     * board". Reads past the end of the backing image are served as zeros by
+     * the chihiro_ide_read_sector hook, which runs before the range check.
+     */
+    if (kind != IDE_CD && dev->unit == 1 && xbox_is_chihiro()) {
+        const uint64_t dimm_sectors = CHIHIRO_DIMM_SECTORS;
+        if (s->nb_sectors < dimm_sectors) {
+            chihiro_set_disc_sectors(s->nb_sectors);
+            s->nb_sectors = dimm_sectors;
+        }
+    }
+
     s->wwn = dev->wwn;
     /* The SMART values should be preserved across power cycles
        but they aren't.  */

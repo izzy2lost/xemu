@@ -442,6 +442,13 @@ static void render_display(NV2AState *d, SurfaceBinding *surface)
         height *= 2;
     }
 
+    /* Chihiro: clamp display to surface dimensions when the CRTC area
+     * exceeds the framebuffer (e.g. PAL 720x576 CRTC with a 640x480 render
+     * target). On real hardware the TV encoder fills the overscan with
+     * black; xemu has no TV encoder so we just match the surface size. */
+    if (width > surface->width)   width  = surface->width;
+    if (height > surface->height) height = surface->height;
+
     pgraph_apply_scaling_factor(pg, &width, &height);
 
     glBindFramebuffer(GL_FRAMEBUFFER, r->disp_rndr.fbo);

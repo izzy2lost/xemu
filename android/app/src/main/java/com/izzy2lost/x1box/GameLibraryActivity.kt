@@ -100,7 +100,9 @@ class GameLibraryActivity : AppCompatActivity() {
   )
 
   private val prefs by lazy { getSharedPreferences("x1box_prefs", MODE_PRIVATE) }
-  private val gameExts = setOf("iso", "xiso", "cso", "cci")
+  // "bin" is the Sega Chihiro netboot image; it only boots with the
+  // machine set to 128 MB (Chihiro mode) in Settings.
+  private val gameExts = setOf("iso", "xiso", "cso", "cci", "bin")
   private val titleStopWords = setOf("the", "a", "an", "and", "of", "for", "in", "on", "to")
   private val coverRepoBaseUrl = "https://raw.githubusercontent.com/izzy2lost/X1_Covers/main/"
   private val boxArtCache = ConcurrentHashMap<String, String>()
@@ -1396,6 +1398,19 @@ class GameLibraryActivity : AppCompatActivity() {
 
   private fun launchGame(game: GameEntry) {
     persistUriPermission(game.uri)
+
+    // Chihiro wants a directory of loose game files rather than a disc image:
+    // the emulator scans it to build the mbfs FATX and to read boot.id. A
+    // prebuilt mbfs .bin is unpacked into that shape first, once, and reused.
+    if (prefs.getBoolean("setting_chihiro", false) && isFatxImageGame(game)) {
+      prepareChihiroGameFolder(game)
+      return
+    }
+
+    startGame(game, dvdUri = game.uri.toString(), dvdPath = null)
+  }
+
+  private fun startGame(game: GameEntry, dvdUri: String?, dvdPath: String?) {
     // MainActivity runs in :xemu, so the disc selection must be flushed before
     // the other process reads SharedPreferences during startup.
     val launchEditor = prefs.edit()
@@ -1404,13 +1419,76 @@ class GameLibraryActivity : AppCompatActivity() {
       editor = launchEditor,
       relativePath = game.relativePath,
     )
+    if (dvdPath != null) {
+      launchEditor.putString("dvdPath", dvdPath).remove("dvdUri")
+    } else {
+      launchEditor.putString("dvdUri", dvdUri).remove("dvdPath")
+    }
     launchEditor
-      .putString("dvdUri", game.uri.toString())
-      .remove("dvdPath")
       .putBoolean("skip_game_picker", false)
       .commit()
 
     EmulationProcessHandoff.launch(this, Intent(this, MainActivity::class.java))
+  }
+
+  /** The library strips the extension from the title, so use the file name. */
+  private fun gameFileName(game: GameEntry): String =
+    game.relativePath.substringAfterLast('/').ifEmpty { game.title }
+
+  private fun isFatxImageGame(game: GameEntry): Boolean {
+    if (!gameFileName(game).lowercase(Locale.ROOT).endsWith(".bin")) return false
+    return runCatching {
+      contentResolver.openInputStream(game.uri)?.use { ChihiroGameFolder.isFatxImage(it) }
+    }.getOrNull() == true
+  }
+
+  private fun prepareChihiroGameFolder(game: GameEntry) {
+    val dest = ChihiroGameFolder.gameDir(this, gameFileName(game))
+    val marker = File(dest, ".unpacked")
+    if (marker.isFile && dest.isDirectory) {
+      startGame(game, dvdUri = null, dvdPath = dest.absolutePath)
+      return
+    }
+
+    val dialog = android.app.ProgressDialog(this).apply {
+      setMessage(getString(R.string.chihiro_unpacking))
+      setCancelable(false)
+      show()
+    }
+
+    Thread {
+      val result = runCatching {
+        // Stage the image locally first: RandomAccessFile needs a real file and
+        // the source usually lives on removable storage behind SAF.
+        dest.deleteRecursively()
+        dest.mkdirs()
+        val staged = File(dest, ".image.bin")
+        contentResolver.openInputStream(game.uri)!!.use { ins ->
+          staged.outputStream().buffered().use { os -> ins.copyTo(os) }
+        }
+        val n = ChihiroGameFolder.extract(staged, dest) { count, name ->
+          runOnUiThread {
+            dialog.setMessage(getString(R.string.chihiro_unpacking_file, count, name))
+          }
+        }
+        staged.delete()
+        marker.writeText("1")
+        n
+      }
+      runOnUiThread {
+        dialog.dismiss()
+        result.onSuccess { n ->
+          Toast.makeText(this, getString(R.string.chihiro_unpacked, n),
+                         Toast.LENGTH_SHORT).show()
+          startGame(game, dvdUri = null, dvdPath = dest.absolutePath)
+        }.onFailure { e ->
+          dest.deleteRecursively()
+          Toast.makeText(this, getString(R.string.chihiro_unpack_failed,
+                                         e.message ?: "unknown error"),
+                         Toast.LENGTH_LONG).show()
+        }
+      }
+    }.start()
   }
 
   private fun scanFolderForGames(folderUri: Uri): List<GameEntry> {

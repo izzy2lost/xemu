@@ -124,6 +124,14 @@ void cpu_check_watchpoint(CPUState *cpu, vaddr addr, vaddr len,
             }
             cpu->watchpoint_hit = wp;
 
+            /* Chihiro debug: call external watchpoint callback */
+            {
+                extern void (*chihiro_wp_cb)(CPUState *, vaddr, vaddr);
+                if (chihiro_wp_cb) {
+                    chihiro_wp_cb(cpu, addr, len);
+                }
+            }
+
             /* This call also restores vCPU state */
             tb_check_watchpoint(cpu, ra);
             if (wp->flags & BP_STOP_BEFORE_ACCESS) {

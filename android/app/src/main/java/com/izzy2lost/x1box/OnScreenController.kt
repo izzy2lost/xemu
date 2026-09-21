@@ -82,6 +82,13 @@ class OnScreenController @JvmOverloads constructor(
     fun onStickMoved(stick: Stick, x: Float, y: Float)
     fun onStickPressed(stick: Stick)
     fun onStickReleased(stick: Stick)
+
+    /**
+     * A touch that did not land on any control, in normalised view
+     * coordinates. This view consumes every touch so it can drive the pads,
+     * so light gun games would otherwise never see a pointer.
+     */
+    fun onPointerMoved(x: Float, y: Float, down: Boolean) {}
   }
 
   init {
@@ -382,6 +389,25 @@ class OnScreenController @JvmOverloads constructor(
     return true
   }
 
+  /** Pointer currently aiming, -1 when none. */
+  private var aimPointerId: Int = -1
+  private var aimX: Float = 0.5f
+  private var aimY: Float = 0.5f
+
+  private fun reportAim(x: Float, y: Float, down: Boolean) {
+    if (width <= 0 || height <= 0) return
+    aimX = (x / width).coerceIn(0f, 1f)
+    aimY = (y / height).coerceIn(0f, 1f)
+    controllerListener?.onPointerMoved(aimX, aimY, down)
+  }
+
+  /** Let the trigger go but keep the gun pointed where it was. */
+  private fun releaseAim() {
+    if (aimPointerId == -1) return
+    aimPointerId = -1
+    controllerListener?.onPointerMoved(aimX, aimY, false)
+  }
+
   private fun handleTouchDown(x: Float, y: Float, pointerId: Int) {
     // Check menu button first (UI button, not a controller input)
     if (menuButtonPointerId == -1 && isPointInCircle(x, y, menuButtonCenter, menuButtonRadius)) {
@@ -406,9 +432,20 @@ class OnScreenController @JvmOverloads constructor(
         return
       }
     }
+
+    // Nothing else wanted it, so treat it as aiming and firing.
+    if (aimPointerId == -1) {
+      aimPointerId = pointerId
+      reportAim(x, y, true)
+    }
   }
 
   private fun handleTouchMove(x: Float, y: Float, pointerId: Int) {
+    if (aimPointerId == pointerId) {
+      reportAim(x, y, true)
+      return
+    }
+
     if (menuButtonPointerId == pointerId) {
       menuButtonPressed = isPointInCircle(x, y, menuButtonCenter, menuButtonRadius)
       return
@@ -442,6 +479,10 @@ class OnScreenController @JvmOverloads constructor(
   }
 
   private fun handleTouchUp(pointerId: Int) {
+    if (aimPointerId == pointerId) {
+      releaseAim()
+    }
+
     // Release menu button (fire on up = tap semantics)
     if (menuButtonPointerId == pointerId) {
       if (menuButtonPressed) {
@@ -474,6 +515,7 @@ class OnScreenController @JvmOverloads constructor(
 
   private fun handleCancel() {
     swipeUpGestureRecognizer.reset()
+    releaseAim()
 
     if (menuButtonPointerId != -1) {
       menuButtonPressed = false
