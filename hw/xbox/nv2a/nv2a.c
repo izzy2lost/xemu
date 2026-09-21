@@ -137,6 +137,16 @@ const NV2ABlockInfo blocktable[NV_NUM_BLOCKS] = {
 };
 #undef ENTRY
 
+/*
+ * The only PGRAPH read pgraph_read() serves without pg->lock: the fence
+ * register the guest busy-polls, loaded atomically there.
+ */
+static bool pgraph_lockless_read(void *opaque, hwaddr addr, unsigned int size)
+{
+    (void)opaque;
+    return addr == NV_PGRAPH_PATT_COLOR0 && size == sizeof(uint32_t);
+}
+
 static int nv2a_get_bpp(VGACommonState *s)
 {
     NV2AState *d = container_of(s, NV2AState, vga);
@@ -528,6 +538,10 @@ static void nv2a_realize(PCIDevice *dev, Error **errp)
         memory_region_init_io(&d->block_mmio[i], OBJECT(dev),
                               &blocktable[i].ops, d,
                               blocktable[i].name, blocktable[i].size);
+        if (i == NV_PGRAPH) {
+            memory_region_set_lockless_read(&d->block_mmio[i],
+                                            pgraph_lockless_read);
+        }
         memory_region_add_subregion(&d->mmio, blocktable[i].offset,
                                     &d->block_mmio[i]);
     }

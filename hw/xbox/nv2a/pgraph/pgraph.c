@@ -748,6 +748,22 @@ uint64_t pgraph_read(void *opaque, hwaddr addr, unsigned int size)
     NV2AState *d = (NV2AState *)opaque;
     PGRAPHState *pg = &d->pgraph;
 
+    /*
+     * Lock-free fast path for the register the guest busy-polls as a GPU
+     * fence. The D3D runtime spins on NV_PGRAPH_PATT_COLOR0; taking
+     * pg->lock for each poll convoys with the FIFO puller, which needs the
+     * same lock to advance the very value being waited on. A momentarily
+     * stale read is what real hardware gives a CPU polling a register the
+     * GPU updates asynchronously.
+     */
+    if (addr == NV_PGRAPH_PATT_COLOR0 && size == sizeof(uint32_t)) {
+        uint32_t fence = qatomic_read(&pg->regs_[NV_PGRAPH_PATT_COLOR0]);
+        /* Pairs with the smp_wmb() at the fence write site below. */
+        smp_rmb();
+        nv2a_reg_log_read(NV_PGRAPH, addr, size, fence);
+        return fence;
+    }
+
     qemu_mutex_lock(&pg->lock);
 
     uint64_t r = 0;
@@ -1630,6 +1646,11 @@ slow_path:
     case NV_CONTEXT_PATTERN: {
         switch (method) {
         case NV044_SET_MONOCHROME_COLOR0:
+            /*
+             * Read lock-free by pgraph_read(); make the pgraph work that
+             * precedes this fence visible before the new value is.
+             */
+            smp_wmb();
             pgraph_reg_w(pg, NV_PGRAPH_PATT_COLOR0, parameter);
             break;
         default:
