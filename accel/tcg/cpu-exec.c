@@ -686,17 +686,8 @@ static inline bool check_for_breakpoints(CPUState *cpu, vaddr pc,
         check_for_breakpoints_slow(cpu, pc, cflags);
 }
 
-/**
- * helper_lookup_tb_ptr: quick check for next tb
- * @env: current cpu state
- *
- * Look for an existing TB matching the current cpu state.
- * If found, return the code pointer.  If not found, return
- * the tcg epilogue so that we return into cpu_tb_exec.
- */
-const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+static const void *lookup_tb_ptr_common(CPUState *cpu, TCGTBCPUState s)
 {
-    CPUState *cpu = env_cpu(env);
     TranslationBlock *tb;
 
     /*
@@ -707,9 +698,6 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
      * The next TB, if we chain to it, will clear the flag again.
      */
     cpu->neg.can_do_io = true;
-
-    TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
-    s.cflags = curr_cflags(cpu);
 
     if (check_for_breakpoints(cpu, s.pc, &s.cflags)) {
         cpu_loop_exit(cpu);
@@ -725,6 +713,46 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     }
 
     return tb->tc.ptr;
+}
+
+/**
+ * helper_lookup_tb_ptr: quick check for next tb
+ * @env: current cpu state
+ *
+ * Look for an existing TB matching the current cpu state.
+ * If found, return the code pointer.  If not found, return
+ * the tcg epilogue so that we return into cpu_tb_exec.
+ */
+const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+{
+    CPUState *cpu = env_cpu(env);
+    TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+
+    s.cflags = curr_cflags(cpu);
+    return lookup_tb_ptr_common(cpu, s);
+}
+
+/**
+ * helper_lookup_tb_ptr_i32: as above, with the state supplied by the caller
+ *
+ * A near jump on a 32-bit target leaves cs_base and the translation flags
+ * alone, and the front end already holds both, so the whole of
+ * get_tb_cpu_state() -- which reads hflags and recomputes eflags -- can be
+ * skipped.  The front end is responsible for only using this where that
+ * really holds; see gen_eob() in target/i386.
+ */
+const void *HELPER(lookup_tb_ptr_i32)(CPUArchState *env, uint32_t eip,
+                                      uint64_t cs_base, uint32_t flags)
+{
+    CPUState *cpu = env_cpu(env);
+    TCGTBCPUState s = {
+        .pc = (uint32_t)(cs_base + eip),
+        .flags = flags,
+        .cflags = curr_cflags(cpu),
+        .cs_base = cs_base,
+    };
+
+    return lookup_tb_ptr_common(cpu, s);
 }
 
 /* Return the current PC from CPU, which may be cached in TB. */

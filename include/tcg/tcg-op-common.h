@@ -79,6 +79,14 @@ void tcg_gen_goto_tb(unsigned idx);
  */
 void tcg_gen_lookup_and_goto_ptr(void);
 
+/*
+ * As above, but for a 32-bit target whose front end already knows the
+ * destination EIP and the TB state that survives the jump, so the target
+ * callback need not reconstruct them.
+ */
+void tcg_gen_lookup_and_goto_ptr_i32(TCGv_i32 eip, uint64_t cs_base,
+                                     uint32_t flags);
+
 void tcg_gen_plugin_cb(unsigned from);
 void tcg_gen_plugin_mem_cb(TCGv_i64 addr, unsigned meminfo);
 
