@@ -110,6 +110,34 @@ class GameLibraryActivity : AppCompatActivity() {
   private val persistedCoverWrites = ConcurrentHashMap.newKeySet<String>()
   private val coverIndex = ConcurrentHashMap<String, String>()
   private val coverCollapsedIndex = ConcurrentHashMap<String, String>()
+  /*
+   * Bridges what a Chihiro image calls itself to the cover named after the
+   * release: boot.id says "CrazyTaxi HighRoller" and "OutRun2", the covers
+   * are "Crazy Taxi 3 High Roller" and "Outrun 2". Also catches a dump
+   * whose boot.id cannot be read, where the filename is all we have. Keys
+   * are collapsed (lowercase, alphanumerics only), so "CT3", "ct-3" and
+   * "ct 3" all land on the same entry.
+   *
+   * Consulted only for Chihiro entries, which matters where an arcade title
+   * shares a name with its Xbox port: OutRun 2 and Crazy Taxi 3 exist in
+   * both, and a disc image should still get the Xbox box art.
+   */
+  private val chihiroCoverAliases: Map<String, List<String>> = mapOf(
+    "Crazy Taxi 3 High Roller.png" to listOf(
+      "ct3", "ctx3", "crazytaxi3", "crazytaxi3highroller",
+      "crazytaxihighroller"
+    ),
+    "Ghost Squad.png" to listOf("gsquad", "ghostsquad", "ghostsquadevolution"),
+    "Ollie King.png" to listOf("ollie", "ollieking"),
+    "Outrun 2.png" to listOf("outr2", "outrun2", "or2"),
+    "The House Of The Dead 3.png" to listOf(
+      "hotd3", "hod3", "houseofthedead3", "thehouseofthedead3"
+    ),
+    "Virtua Cop 3.png" to listOf("vcop3", "vc3", "virtuacop3"),
+  )
+  private val chihiroCoverIndex = ConcurrentHashMap<String, String>()
+  /* Titles read out of Chihiro images, keyed by uri + size. */
+  private val chihiroTitleCache = ConcurrentHashMap<String, String>()
   private val coverEntries = ArrayList<CoverEntry>()
   private val coverIndexLock = Any()
   private val discFormatCacheLock = Any()
@@ -739,7 +767,12 @@ class GameLibraryActivity : AppCompatActivity() {
       return
     }
 
-    val url = lookupBoxArtUrl(game.title) ?: return
+    val chihiroUrl = if (isChihiroEntry(game)) {
+      lookupChihiroCoverUrl(game.title)
+    } else {
+      null
+    }
+    val url = chihiroUrl ?: lookupBoxArtUrl(game.title) ?: return
     boxArtCache[key] = url
     if (coverView.tag == game.uri.toString()) {
       applyBoxArtToView(coverView, key, url)
@@ -842,6 +875,22 @@ class GameLibraryActivity : AppCompatActivity() {
     } catch (_: RuntimeException) {
       persistedCoverWrites.remove(coverKey)
     }
+  }
+
+  /*
+   * A Chihiro netboot image is a .bin; every other supported extension is a
+   * disc image for the console.
+   */
+  private fun isChihiroEntry(game: GameEntry): Boolean =
+    game.relativePath.substringAfterLast('.', "").equals("bin", ignoreCase = true)
+
+  private fun lookupChihiroCoverUrl(title: String): String? {
+    ensureCoverIndexLoaded()
+    val collapsed = collapseCoverKey(normalizeLookupTitle(title))
+    if (collapsed.isBlank()) {
+      return null
+    }
+    return chihiroCoverIndex[collapsed]
   }
 
   private fun lookupBoxArtUrl(title: String): String? {
@@ -955,6 +1004,21 @@ class GameLibraryActivity : AppCompatActivity() {
         }
       } catch (_: Exception) {
         // Keep empty index; grid will show placeholders if the asset is unavailable.
+      }
+      /*
+       * Outside the read above: the Chihiro aliases are built from a table
+       * in this file, so they should still resolve even if the bundled
+       * index cannot be read.
+       */
+      for ((fileName, aliases) in chihiroCoverAliases) {
+        val encoded = URLEncoder.encode(fileName, "UTF-8").replace("+", "%20")
+        val url = coverRepoBaseUrl + encoded
+        for (alias in aliases) {
+          val key = collapseCoverKey(alias)
+          if (key.isNotEmpty()) {
+            chihiroCoverIndex[key] = url
+          }
+        }
       }
       coverIndexLoaded = true
     }
@@ -1517,7 +1581,7 @@ class GameLibraryActivity : AppCompatActivity() {
         val sizeBytes = child.length()
         games.add(
           GameEntry(
-            title = toGameTitle(name),
+            title = chihiroImageTitle(child.uri, name, sizeBytes) ?: toGameTitle(name),
             uri = child.uri,
             relativePath = prefix + name,
             sizeBytes = sizeBytes,
@@ -1605,6 +1669,23 @@ class GameLibraryActivity : AppCompatActivity() {
 
   private fun discFormatCacheKey(uri: Uri, sizeBytes: Long): String =
     uri.toString() + "\t" + sizeBytes
+
+  /*
+   * A Chihiro netboot image is named for the board -- "CT3.bin", "ghostsqu"
+   * -- but the game's own name is inside it, in boot.id. Prefer that over
+   * the filename, so the label and the cover match whatever the dump is
+   * called.
+   */
+  private fun chihiroImageTitle(uri: Uri, fileName: String, sizeBytes: Long): String? {
+    if (!fileName.endsWith(".bin", ignoreCase = true)) {
+      return null
+    }
+    val key = "$uri|$sizeBytes"
+    chihiroTitleCache[key]?.let { return it.ifEmpty { null } }
+    val title = ChihiroGameFolder.readTitle(this, uri)
+    chihiroTitleCache[key] = title.orEmpty()
+    return title
+  }
 
   private fun resolveDiscImageFormat(
     uri: Uri,
