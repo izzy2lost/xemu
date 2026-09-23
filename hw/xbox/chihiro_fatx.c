@@ -15,6 +15,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/error-report.h"
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -28,7 +29,13 @@
 #define FATX_DIRENTS_PER_CLUSTER (FATX_CLUSTER_SIZE / FATX_DIRENT_SIZE)
 #define FATX_FAT_END        0xFFFF
 #define FATX_FAT_FREE       0x0000
-#define FATX_MAX_FILES      512
+/*
+ * Upper bound on entries, as a guard against a runaway directory rather
+ * than a working limit: the table grows to fit. Ghost Squad alone holds
+ * over 1300 files, and a fixed 512 silently dropped the rest, leaving an
+ * image the game could not boot from.
+ */
+#define FATX_MAX_FILES      65536
 #define FATX_MAX_NAME       42
 
 /* File entry for building */
@@ -46,8 +53,10 @@ uint32_t fatx_diag_lba = 0; /* LBA of XBE section 11 critical sector (extern) */
 uint32_t fatx_diag_lba_sec0 = 0; /* LBA of XBE section 0 critical sector (VA 0x135000) */
 static uint8_t *fatx_image = NULL;
 static uint32_t fatx_image_size = 0;
-static FATXFileEntry fatx_files[FATX_MAX_FILES];
+static FATXFileEntry *fatx_files = NULL;
 static int fatx_file_count = 0;
+static int fatx_file_capacity = 0;
+static bool fatx_files_truncated = false;
 static uint32_t fatx_next_cluster = 1;
 static uint16_t *fatx_fat = NULL;
 static uint32_t fatx_total_clusters = 0;
@@ -68,6 +77,18 @@ static uint32_t fatx_alloc_chain(uint32_t size)
         }
     }
     return first;
+}
+
+/* How many entries a directory holds, so it can be sized correctly. */
+static int fatx_count_children(int parent_idx)
+{
+    int n = 0;
+    for (int i = 0; i < fatx_file_count; i++) {
+        if (fatx_files[i].parent_idx == parent_idx) {
+            n++;
+        }
+    }
+    return n;
 }
 
 /* Get byte offset in image for a given cluster (1-indexed: cluster 1 = first data cluster) */
@@ -115,6 +136,87 @@ static void fatx_write_dirent(uint32_t offset, const char *name,
     e[62] = 0x81; e[63] = 0x2D;
 }
 
+/*
+ * The cluster holding entry @index of a directory, walking the chain so a
+ * directory spanning more than one cluster stays inside its own storage.
+ */
+static uint32_t fatx_dir_cluster_for(uint32_t first_cluster, int index)
+{
+    uint32_t cluster = first_cluster;
+    int skip = index / FATX_DIRENTS_PER_CLUSTER;
+
+    while (skip-- > 0) {
+        if (cluster >= fatx_total_clusters) {
+            return cluster;
+        }
+        uint16_t next = fatx_fat[cluster];
+        if (next == FATX_FAT_END || next == FATX_FAT_FREE) {
+            return cluster;
+        }
+        cluster = next;
+    }
+    return cluster;
+}
+
+/* Clear every cluster of a directory before its entries are written. */
+static void fatx_clear_dir(uint32_t first_cluster, int entries)
+{
+    int clusters = (entries + FATX_DIRENTS_PER_CLUSTER - 1) /
+                   FATX_DIRENTS_PER_CLUSTER;
+    if (clusters < 1) {
+        clusters = 1;
+    }
+    uint32_t cluster = first_cluster;
+    for (int i = 0; i < clusters; i++) {
+        memset(fatx_image + fatx_cluster_offset(cluster), 0xFF,
+               FATX_CLUSTER_SIZE);
+        if (cluster >= fatx_total_clusters) {
+            break;
+        }
+        uint16_t next = fatx_fat[cluster];
+        if (next == FATX_FAT_END || next == FATX_FAT_FREE) {
+            break;
+        }
+        cluster = next;
+    }
+}
+
+/* Write entry @index of a directory, following its cluster chain. */
+static void fatx_write_dir_entry(uint32_t first_cluster, int index,
+                                 const char *name, uint32_t cluster,
+                                 uint32_t size, int is_dir)
+{
+    uint32_t dir_cluster = fatx_dir_cluster_for(first_cluster, index);
+    uint32_t slot = (uint32_t)(index % FATX_DIRENTS_PER_CLUSTER);
+    fatx_write_dirent(fatx_cluster_offset(dir_cluster) +
+                      slot * FATX_DIRENT_SIZE,
+                      name, cluster, size, is_dir);
+}
+
+/*
+ * Next free entry, growing the table as needed. Returns NULL only at the
+ * sanity limit, which the caller reports rather than silently truncating.
+ *
+ * Note the table moves when it grows, so a FATXFileEntry * is only valid
+ * until the next call.
+ */
+static FATXFileEntry *fatx_files_next(void)
+{
+    if (fatx_file_count >= FATX_MAX_FILES) {
+        fatx_files_truncated = true;
+        return NULL;
+    }
+    if (fatx_file_count == fatx_file_capacity) {
+        int next = fatx_file_capacity ? fatx_file_capacity * 2 : 512;
+        if (next > FATX_MAX_FILES) {
+            next = FATX_MAX_FILES;
+        }
+        fatx_files = g_realloc_n(fatx_files, next, sizeof(*fatx_files));
+        fatx_file_capacity = next;
+    }
+    return &fatx_files[fatx_file_count];
+}
+
 /* Scan host directory recursively, add files to fatx_files[] */
 static int fatx_scan_dir(const char *host_dir, int parent_idx)
 {
@@ -124,9 +226,11 @@ static int fatx_scan_dir(const char *host_dir, int parent_idx)
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;  /* skip . .. .hidden */
-        if (fatx_file_count >= FATX_MAX_FILES) break;
 
-        FATXFileEntry *fe = &fatx_files[fatx_file_count];
+        FATXFileEntry *fe = fatx_files_next();
+        if (!fe) {
+            break;
+        }
         memset(fe, 0, sizeof(*fe));
 
         strncpy(fe->name, ent->d_name, FATX_MAX_NAME);
@@ -140,7 +244,13 @@ static int fatx_scan_dir(const char *host_dir, int parent_idx)
             fe->is_dir = 1;
             fe->size = 0;
             int my_idx = fatx_file_count++;
-            fatx_scan_dir(fe->host_path, my_idx);
+            /*
+             * fe points into a table that moves when it grows, and the
+             * recursion below will grow it, so take a copy of the path.
+             */
+            char child_path[sizeof(fe->host_path)];
+            memcpy(child_path, fe->host_path, sizeof(child_path));
+            fatx_scan_dir(child_path, my_idx);
         } else if (S_ISREG(st.st_mode)) {
             fe->is_dir = 0;
             fe->size = (uint32_t)st.st_size;
@@ -161,14 +271,24 @@ uint8_t *chihiro_fatx_build(const char *game_dir, uint32_t *out_size,
 {
     fatx_file_count = 0;
     fatx_next_cluster = 1;
+    fatx_files_truncated = false;
 
     /* Phase 1: Scan directory */
-    printf("[FATX] Scanning: %s\n", game_dir);
+    error_report("[FATX] Scanning: %s", game_dir);
     if (fatx_scan_dir(game_dir, -1) < 0) {
-        printf("[FATX] ERROR: cannot open directory '%s'\n", game_dir);
+        error_report("[FATX] ERROR: cannot open directory '%s'", game_dir);
         return NULL;
     }
-    printf("[FATX] Found %d files/dirs\n", fatx_file_count);
+    error_report("[FATX] Found %d files/dirs", fatx_file_count);
+    if (fatx_files_truncated) {
+        error_report("[FATX] ERROR: more than %d entries; the image would "
+                     "be incomplete and the game would not boot",
+                     FATX_MAX_FILES);
+        g_free(fatx_files);
+        fatx_files = NULL;
+        fatx_file_capacity = 0;
+        return NULL;
+    }
 
     /* Phase 2: Calculate layout to match kernel expectations.
      * The kernel calculates FAT size from the FULL partition, not file data.
@@ -198,9 +318,9 @@ uint8_t *chihiro_fatx_build(const char *game_dir, uint32_t *out_size,
         (uint32_t)(file_data / FATX_CLUSTER_SIZE) + 256;
     fatx_image_size = fatx_data_offset + needed_clusters * FATX_CLUSTER_SIZE;
 
-    printf("[FATX] Clusters: %u, FAT: %u bytes, Image: %u bytes (%.1f MB)\n",
-           fatx_total_clusters, fat_bytes, fatx_image_size,
-           fatx_image_size / (1024.0 * 1024.0));
+    error_report("[FATX] Clusters: %u, FAT: %u bytes, Image: %u bytes (%.1f MB)",
+                 fatx_total_clusters, fat_bytes, fatx_image_size,
+                 fatx_image_size / (1024.0 * 1024.0));
 
     /* Allocate image */
     fatx_image = (uint8_t *)g_malloc0(fatx_image_size);
@@ -221,8 +341,16 @@ uint8_t *chihiro_fatx_build(const char *game_dir, uint32_t *out_size,
     for (int i = 0; i < fatx_file_count; i++) {
         FATXFileEntry *fe = &fatx_files[i];
         if (fe->is_dir) {
-            /* Directory: allocate 1 cluster for entries (will fill later) */
-            fe->first_cluster = fatx_alloc_chain(FATX_CLUSTER_SIZE);
+            /*
+             * A directory needs room for every entry it holds, not one
+             * cluster: a cluster is only FATX_DIRENTS_PER_CLUSTER entries,
+             * and Ghost Squad's media\\voice alone holds 891. One cluster
+             * meant the rest were written straight past its end, over
+             * whatever came next.
+             */
+            int children = fatx_count_children(i);
+            fe->first_cluster =
+                fatx_alloc_chain((uint32_t)children * FATX_DIRENT_SIZE);
         } else {
             /* File: allocate chain, read data */
             fe->first_cluster = fatx_alloc_chain(fe->size > 0 ? fe->size : 1);
@@ -319,19 +447,25 @@ uint8_t *chihiro_fatx_build(const char *game_dir, uint32_t *out_size,
                           fatx_files[i].size, fatx_files[i].is_dir);
         root_entry++;
     }
+    if (root_entry > FATX_DIRENTS_PER_CLUSTER) {
+        error_report("[FATX] ERROR: root holds %d entries, more than the %d "
+                     "a single cluster fits", root_entry,
+                     FATX_DIRENTS_PER_CLUSTER);
+    }
 
     /* Subdirectory entries */
     for (int i = 0; i < fatx_file_count; i++) {
         if (!fatx_files[i].is_dir) continue;
-        uint32_t dir_off = fatx_cluster_offset(fatx_files[i].first_cluster);
-        memset(fatx_image + dir_off, 0xFF, FATX_CLUSTER_SIZE);
+        uint32_t dir_first = fatx_files[i].first_cluster;
+        fatx_clear_dir(dir_first, fatx_count_children(i));
         int entry = 0;
 
         for (int j = 0; j < fatx_file_count; j++) {
             if (fatx_files[j].parent_idx != i) continue;
-            fatx_write_dirent(dir_off + entry * FATX_DIRENT_SIZE,
-                              fatx_files[j].name, fatx_files[j].first_cluster,
-                              fatx_files[j].size, fatx_files[j].is_dir);
+            fatx_write_dir_entry(dir_first, entry,
+                                 fatx_files[j].name,
+                                 fatx_files[j].first_cluster,
+                                 fatx_files[j].size, fatx_files[j].is_dir);
             entry++;
         }
     }
@@ -378,14 +512,15 @@ uint8_t *chihiro_fatx_build(const char *game_dir, uint32_t *out_size,
         /* Re-write subdirectory entries */
         for (int i = 0; i < fatx_file_count; i++) {
             if (!fatx_files[i].is_dir) continue;
-            uint32_t dir_off = fatx_cluster_offset(fatx_files[i].first_cluster);
-            memset(fatx_image + dir_off, 0xFF, FATX_CLUSTER_SIZE);
+            uint32_t dir_first = fatx_files[i].first_cluster;
+            fatx_clear_dir(dir_first, fatx_count_children(i));
             int entry = 0;
             for (int j = 0; j < fatx_file_count; j++) {
                 if (fatx_files[j].parent_idx != i) continue;
-                fatx_write_dirent(dir_off + entry * FATX_DIRENT_SIZE,
-                                  fatx_files[j].name, fatx_files[j].first_cluster,
-                                  fatx_files[j].size, fatx_files[j].is_dir);
+                fatx_write_dir_entry(dir_first, entry,
+                                     fatx_files[j].name,
+                                     fatx_files[j].first_cluster,
+                                     fatx_files[j].size, fatx_files[j].is_dir);
                 entry++;
             }
         }
@@ -412,6 +547,10 @@ uint8_t *chihiro_fatx_build(const char *game_dir, uint32_t *out_size,
                    i, namelen, attr, fc, sz, (char*)(e+2));
         }
     }
+
+    g_free(fatx_files);
+    fatx_files = NULL;
+    fatx_file_capacity = 0;
 
     *out_size = fatx_image_size;
     return fatx_image;
