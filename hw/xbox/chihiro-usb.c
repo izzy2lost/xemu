@@ -18,6 +18,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/error-report.h"
 #include "hw/hw.h"
 #include "ui/console.h"
 #include "hw/usb.h"
@@ -669,8 +670,8 @@ static void handle_control(USBDevice *dev, USBPacket *p,
         if(0) printf("[%07lld] chihiro-usb [%s]: SET PORTB val=0x%04X (stub)\n", TS_MS, id, value);
         break;
     default:
-        if(0) printf("[%07lld] chihiro-usb [%s]: UNHANDLED vendor req 0x%02X val=0x%04X idx=0x%04X len=%d → accepting\n",
-               TS_MS, id, bRequest, value, index, length);
+        error_report("[CHIHIRO-USB %s] unhandled vendor req 0x%02X val=0x%04X "
+                     "idx=0x%04X len=%d", id, bRequest, value, index, length);
         break;
     }
 

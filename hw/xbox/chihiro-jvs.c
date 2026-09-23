@@ -7,6 +7,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/error-report.h"
 #include "qemu/timer.h"
 #include "chihiro-jvs.h"
 #include <string.h>
@@ -268,6 +269,7 @@ static int jvs_handle_command(ChihiroJVSState *s,
     default:
         /* Unknown command — return InvalidParameter (NOT UnsupportedCommand,
          * which would trigger Error 11 in the game) */
+        error_report("[JVS] unhandled command 0x%02X", cmd[0]);
         PUT(JVS_REPORT_PARAM);
         *rpos = rp;
         return 1;

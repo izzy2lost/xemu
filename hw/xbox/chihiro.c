@@ -1605,6 +1605,7 @@ static void chihiro_diag_timer_cb(void *opaque)
 
     /* Detect bootstate changes between ticks (guard against garbage VAs) */
     if (bootstate != s->last_bootstate && bootstate < 100 && s->last_bootstate < 100) {
+        error_report("[CHIHIRO] bootstate %u -> %u", s->last_bootstate, bootstate);
         if (bootstate == 3) {
             chihiro_boot3_reached = true;
             /* Save game filename from boot.id (loaded by SEGABOOT at PA 0x4F000).
@@ -1628,6 +1629,8 @@ static void chihiro_diag_timer_cb(void *opaque)
                         if (name[0] && strlen(name) < 60) {
                             strncpy(chihiro_game_filename, name, 63);
                             chihiro_game_filename[63] = 0;
+                            error_report("[CHIHIRO] boot.id names '%s'",
+                                         chihiro_game_filename);
                             if(0) printf("[%07lld] Chihiro: game filename from boot.id: '%s'\n",
                                    TS_MS, chihiro_game_filename);
                         }
@@ -1828,6 +1831,30 @@ static void chihiro_diag_timer_cb(void *opaque)
                            msbuf[8], msbuf[9], msbuf[10], msbuf[11]);
                 }
             }
+        }
+    }
+
+    /*
+     * A summary of the real mediaboard traffic, which unlike the guest-memory
+     * probes above does not depend on a particular SEGABOOT build. Logged
+     * only while it is still changing, so a booted game goes quiet.
+     */
+    {
+        static uint32_t last_sig;
+        uint32_t sig = s->lpc_401e_reads + s->lpc_40f0_reads * 7 +
+                       s->dimm_cmd_count * 31 +
+                       (s->mbcom_handshake_done ? 1u << 24 : 0) +
+                       (s->usb_poll_patched ? 1u << 25 : 0) +
+                       (chihiro_boot3_reached ? 1u << 26 : 0) +
+                       (chihiro_game_running ? 1u << 27 : 0);
+        if (sig != last_sig) {
+            last_sig = sig;
+            error_report("[CHIHIRO] 401e=%u 40f0=%u dimm_cmds=%u "
+                         "handshake=%d usb_patched=%d boot3=%d running=%d",
+                         s->lpc_401e_reads, s->lpc_40f0_reads,
+                         s->dimm_cmd_count, s->mbcom_handshake_done,
+                         s->usb_poll_patched, chihiro_boot3_reached,
+                         chihiro_game_running);
         }
     }
 
@@ -2212,6 +2239,73 @@ bool chihiro_intercept_reset(void)
  *
  * TODO: Replace with proper PIC16 emulation running
  * sp5001.bin firmware for upstream LLE integration. */
+
+/* Report each distinct mediaboard command opcode once, so an unhandled one
+ * is visible rather than being answered with zero and retried forever. */
+
+/*
+ * The slot scan finds commands by a heuristic at addresses hardcoded for two
+ * SEGABOOT builds, so on any other build it can land somewhere else entirely.
+ * Ghost Squad's build puts live code there: the scan read "opcode 0xC734" out
+ * of the middle of an instruction and then wrote its reply over the code.
+ *
+ * Only act on an opcode the mediaboard actually defines. Anything else is not
+ * a command and must be left alone -- writing a reply into it corrupts
+ * whatever it really was.
+ */
+static bool chihiro_mbcom_opcode_known(uint16_t opcode)
+{
+    switch (opcode) {
+    case 0x0001:
+    case 0x0100:
+    case 0x0101:
+    case 0x0102:
+    case 0x0103:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void chihiro_note_opcode(uint16_t opcode, bool handled,
+                                uint32_t data_pa, uint32_t meta_pa)
+{
+    static uint64_t seen[1024];
+    unsigned idx = opcode >> 6;
+    uint64_t bit = 1ull << (opcode & 63);
+    if (idx < ARRAY_SIZE(seen) && (seen[idx] & bit)) {
+        return;
+    }
+    if (idx < ARRAY_SIZE(seen)) {
+        seen[idx] |= bit;
+    }
+    error_report("[CHIHIRO] mediaboard command 0x%04X (%s)", opcode,
+                 handled ? "handled" : "NOT HANDLED, answered with zero");
+    if (!handled) {
+        uint8_t buf[32];
+        cpu_physical_memory_read(data_pa, buf, sizeof(buf));
+        error_report("[CHIHIRO]   slot pa=0x%06X: "
+                     "%02X %02X %02X %02X %02X %02X %02X %02X "
+                     "%02X %02X %02X %02X %02X %02X %02X %02X",
+                     data_pa, buf[0], buf[1], buf[2], buf[3], buf[4],
+                     buf[5], buf[6], buf[7], buf[8], buf[9], buf[10],
+                     buf[11], buf[12], buf[13], buf[14], buf[15]);
+        error_report("[CHIHIRO]   slot +16    : "
+                     "%02X %02X %02X %02X %02X %02X %02X %02X "
+                     "%02X %02X %02X %02X %02X %02X %02X %02X",
+                     buf[16], buf[17], buf[18], buf[19], buf[20], buf[21],
+                     buf[22], buf[23], buf[24], buf[25], buf[26], buf[27],
+                     buf[28], buf[29], buf[30], buf[31]);
+        cpu_physical_memory_read(meta_pa, buf, 16);
+        error_report("[CHIHIRO]   meta pa=0x%06X: "
+                     "%02X %02X %02X %02X %02X %02X %02X %02X "
+                     "%02X %02X %02X %02X %02X %02X %02X %02X",
+                     meta_pa, buf[0], buf[1], buf[2], buf[3], buf[4],
+                     buf[5], buf[6], buf[7], buf[8], buf[9], buf[10],
+                     buf[11], buf[12], buf[13], buf[14], buf[15]);
+    }
+}
+
 static void chihiro_dimm_event_timer_cb(void *opaque)
 {
     perf_cnt_dimm_cb++;
@@ -2253,15 +2347,22 @@ static void chihiro_dimm_event_timer_cb(void *opaque)
             uint16_t cmd_opcode = 0;
             cpu_physical_memory_read(data_pa + 2, &cmd_opcode, 2);
 
+            if (!chihiro_mbcom_opcode_known(cmd_opcode)) {
+                chihiro_note_opcode(cmd_opcode, false, data_pa, meta_pa);
+                continue;   /* not a command: do not write into it */
+            }
+
             uint32_t resp_data = 0, resp_data2 = 0;
+            bool handled = true;
             switch (cmd_opcode) {
             case 0x0001: resp_data = 0x20000000; break;
             case 0x0100: resp_data = 5; resp_data2 = 100; break;
             case 0x0101: resp_data = 0x0317; break;
             case 0x0102: resp_data = 0x8002; break;
             case 0x0103: resp_data = 0x6261632D; break;
-            default: break;
+            default: handled = false; break;
             }
+            chihiro_note_opcode(cmd_opcode, handled, data_pa, meta_pa);
 
             meta_marker = 0x0001;
             cpu_physical_memory_write(meta_pa + 2, &meta_marker, 2);
@@ -2689,6 +2790,9 @@ static void chihiro_irq10_timer_cb(void *opaque)
                     if (segaboot_entry == 0) {
                         segaboot_entry = cur_entry;
                     } else if (cur_entry != segaboot_entry) {
+                        error_report("[CHIHIRO] game XBE entry changed "
+                                     "0x%08X -> 0x%08X: game running",
+                                     segaboot_entry, cur_entry);
                         chihiro_game_running = true;
                     }
                 }
@@ -2722,15 +2826,22 @@ static void chihiro_irq10_timer_cb(void *opaque)
                 if (data_byte0 == 0 || meta_marker != 0) continue;
                 uint16_t cmd_opcode = 0;
                 cpu_physical_memory_read(data_pa + 2, &cmd_opcode, 2);
+                if (!chihiro_mbcom_opcode_known(cmd_opcode)) {
+                    chihiro_note_opcode(cmd_opcode, false, data_pa, meta_pa);
+                    continue;   /* not a command: do not write into it */
+                }
+
                 uint32_t resp_data = 0, resp_data2 = 0;
+                bool handled = true;
                 switch (cmd_opcode) {
                 case 0x0001: resp_data = 0x20000000; break;
                 case 0x0100: resp_data = 5; resp_data2 = 100; break;
                 case 0x0101: resp_data = 0x0317; break;
                 case 0x0102: resp_data = 0x8002; break;
                 case 0x0103: resp_data = 0x6261632D; break;
-                default: resp_data = 0; break;
+                default: resp_data = 0; handled = false; break;
                 }
+                chihiro_note_opcode(cmd_opcode, handled, data_pa, meta_pa);
                 meta_marker = 0x0001;
                 cpu_physical_memory_write(meta_pa + 2, &meta_marker, 2);
                 cpu_physical_memory_write(meta_pa + 4, &resp_data, 4);
