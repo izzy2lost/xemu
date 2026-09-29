@@ -3043,6 +3043,21 @@ void pgraph_vk_end_nondraw_commands(PGRAPHState *pg, VkCommandBuffer cmd)
 // buffer. For other reasons though (like descriptor set amount, surface
 // changes, etc) we do flush often.
 
+/*
+ * Transform constants and the lighting context live outside the register
+ * file, so writing them never bumps any_reg_gen. A draw that skips the
+ * uniform update (the super fast path, a merged draw) must still take it
+ * when they changed, or it renders with the previous draw's constants: an
+ * object keeps its shape but loses its lighting for a frame or two, seen as
+ * intermittent flicker in many games. These are the flags
+ * pgraph_vk_update_shader_uniforms() consumes.
+ */
+static bool draw_constants_dirty(PGRAPHState *pg)
+{
+    return pg->vsh_constants_any_dirty || pg->ltctxa_any_dirty ||
+           pg->ltctxb_any_dirty || pg->ltc1_any_dirty;
+}
+
 static void begin_pre_draw(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -3070,6 +3085,7 @@ static void begin_pre_draw(PGRAPHState *pg)
         else if (r->pipeline_state_dirty) { OPT_STAT_INC(sfp_miss_pipe_dirty); sfp_ok = false; }
         else if (r->need_descriptor_rebind) { OPT_STAT_INC(sfp_miss_desc_rebind); sfp_ok = false; }
         else if (r->uniforms_changed)    { OPT_STAT_INC(sfp_miss_uniforms); sfp_ok = false; }
+        else if (draw_constants_dirty(pg)) { OPT_STAT_INC(sfp_miss_uniforms); sfp_ok = false; }
 #if OPT_BINDLESS_TEXTURES
         else if (r->bindless_textures_supported
                      ? (r->ubo_descriptor_set_index <= 0)
@@ -3281,6 +3297,7 @@ static void begin_pre_draw(PGRAPHState *pg)
         !r->pipeline_state_dirty &&
         !r->need_descriptor_rebind &&
         !r->uniforms_changed &&
+        !draw_constants_dirty(pg) &&
         !pg->program_data_dirty &&
         pg->primitive_mode == r->shader_binding->state.geom.primitive_mode &&
         pg->non_dynamic_reg_gen == r->last_non_dynamic_reg_gen &&
@@ -4061,9 +4078,28 @@ static bool check_draw_mergeable(PGRAPHState *pg, DrawQueue *q)
         return false;
     }
 
+    /*
+     * A merged draw is replayed with the first draw's vertex attributes
+     * (q->saved_vertex_attrs). An attribute with no array is a constant for
+     * the whole draw, set by SET_VERTEX_DATA* into inline_value without
+     * bumping vertex_attr_gen; games use it for an object's colour or normal.
+     * If it differs, the draw must not merge, or it renders with the
+     * previous object's value: an object flickered darker for a frame or
+     * two in many games until draw merging was turned off.
+     */
+    for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
+        if (pg->vertex_attributes[i].count == 0 &&
+            memcmp(pg->vertex_attributes[i].inline_value,
+                   q->saved_vertex_attrs[i].inline_value,
+                   sizeof(pg->vertex_attributes[i].inline_value))) {
+            return false;
+        }
+    }
+
     if (pgraph_reg_r(pg, NV_PGRAPH_CONTROL_0) != q->dyn_control_0 ||
         pgraph_reg_r(pg, NV_PGRAPH_CONTROL_1) != q->dyn_control_1 ||
         pgraph_reg_r(pg, NV_PGRAPH_CONTROL_2) != q->dyn_control_2 ||
+        pgraph_reg_r(pg, NV_PGRAPH_CONTROL_3) != q->dyn_control_3 ||
         pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) != q->dyn_setupraster ||
         pgraph_reg_r(pg, NV_PGRAPH_BLEND) != q->dyn_blend ||
         pgraph_reg_r(pg, NV_PGRAPH_BLENDCOLOR) != q->dyn_blendcolor) {
@@ -4082,7 +4118,8 @@ static bool try_enqueue_draw_arrays(PGRAPHState *pg, DrawQueue *q)
     }
 
     bool uniforms_changed = (q->count > 0 &&
-                             pg->any_reg_gen != q->any_reg_gen);
+                             (pg->any_reg_gen != q->any_reg_gen ||
+                              draw_constants_dirty(pg)));
 
     size_t ubo_offsets[2];
     if (uniforms_changed || (q->count == 0 && r->shader_binding)) {
@@ -4196,7 +4233,8 @@ static bool try_enqueue_draw_indexed(PGRAPHState *pg, DrawQueue *q)
     }
 
     bool uniforms_changed = (q->count > 0 &&
-                             pg->any_reg_gen != q->any_reg_gen);
+                             (pg->any_reg_gen != q->any_reg_gen ||
+                              draw_constants_dirty(pg)));
 
     size_t ubo_offsets[2];
     if (uniforms_changed || (q->count == 0 && r->shader_binding)) {

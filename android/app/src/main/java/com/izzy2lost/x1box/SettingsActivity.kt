@@ -497,7 +497,7 @@ class SettingsActivity : AppCompatActivity() {
     switchSkipBootAnim.isChecked =
       prefs.getBoolean("setting_skip_boot_anim", true)
     switchDrawReorder.isChecked  = prefs.getBoolean("draw_reorder", false)
-    switchDrawMerge.isChecked    = prefs.getBoolean("draw_merge", true)
+    switchDrawMerge.isChecked    = prefs.getBoolean("draw_merge_v2", false)
     switchAsyncCompile.isChecked = prefs.getBoolean("async_compile", false)
     switchShowFps.isChecked      = prefs.getBoolean("show_fps", false)
     switchDebugLogs.isChecked =
@@ -599,7 +599,7 @@ class SettingsActivity : AppCompatActivity() {
         .putBoolean("setting_vsync", switchVsync.isChecked)
         .putBoolean("setting_skip_boot_anim", switchSkipBootAnim.isChecked)
         .putBoolean("draw_reorder", switchDrawReorder.isChecked)
-        .putBoolean("draw_merge", switchDrawMerge.isChecked)
+        .putBoolean("draw_merge_v2", switchDrawMerge.isChecked)
         .putBoolean("async_compile", switchAsyncCompile.isChecked)
         .putBoolean("show_fps", switchShowFps.isChecked)
         .putBoolean(DebugLog.PREF_ENABLED, enableDebugLogs)
@@ -696,7 +696,7 @@ class SettingsActivity : AppCompatActivity() {
 
     if (!prefs.contains("setting_skip_boot_anim")) editor.putBoolean("setting_skip_boot_anim", true)
     if (!prefs.contains("draw_reorder")) editor.putBoolean("draw_reorder", false)
-    if (!prefs.contains("draw_merge")) editor.putBoolean("draw_merge", true)
+    if (!prefs.contains("draw_merge_v2")) editor.putBoolean("draw_merge_v2", false)
     if (!prefs.contains("async_compile")) editor.putBoolean("async_compile", false)
     if (!prefs.contains("setting_cache_shaders")) editor.putBoolean("setting_cache_shaders", true)
     if (!prefs.contains("setting_hard_fpu")) editor.putBoolean("setting_hard_fpu", true)

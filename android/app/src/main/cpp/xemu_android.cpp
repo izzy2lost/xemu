@@ -1097,7 +1097,14 @@ static SetupFiles SyncSetupFiles() {
   __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                       "draw reorder: %s", draw_reorder ? "ON" : "OFF");
 
-  bool draw_merge = GetPrefBool(env, activity, "draw_merge", true);
+  /*
+   * Draw merging replays a batch of draws with the first draw's state, and
+   * state it does not track (inline vertex attributes, shader constants)
+   * made objects flicker darker for a frame or two in many games. hakuX, where
+   * it came from, ships it off. Off by default; the key was renamed from
+   * "draw_merge" so installs that stored the old "on" default start off.
+   */
+  bool draw_merge = GetPrefBool(env, activity, "draw_merge_v2", false);
   xemu_set_draw_merge(draw_merge);
   __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                       "draw merge: %s", draw_merge ? "ON" : "OFF");

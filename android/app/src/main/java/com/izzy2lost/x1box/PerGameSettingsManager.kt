@@ -30,7 +30,7 @@ object PerGameSettingsManager {
     "setting_audio_driver",
     "setting_network_enable",
     "draw_reorder",
-    "draw_merge",
+    "draw_merge_v2",
     "async_compile",
   )
 
