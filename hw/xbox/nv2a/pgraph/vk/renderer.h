@@ -522,6 +522,7 @@ typedef struct RenderCommandSnapshot {
     uint16_t compressed_attrs;
     uint16_t uniform_attrs;
     uint16_t swizzle_attrs;
+    uint16_t int16_attrs;
 
     SurfaceShape surface_shape;
     struct {
@@ -1263,6 +1264,10 @@ typedef struct PGRAPHVkState {
     uint32_t cached_compressed_attrs;
     uint32_t cached_uniform_attrs;
     uint32_t cached_swizzle_attrs;
+    uint32_t cached_int16_attrs;
+    /* Whether R16*_SSCALED can be fetched from vertex buffers; see
+     * pgraph_vk_init_vertex_formats(). */
+    bool sscaled_vertex_supported;
 
     ram_addr_t vram_ram_addr;
     VkDeviceSize vertex_ram_flush_min;
@@ -1578,6 +1583,7 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
                                       unsigned int inline_stride,
                                       unsigned int provoking_element);
 void pgraph_vk_bind_vertex_attributes_inline(NV2AState *d);
+void pgraph_vk_init_vertex_formats(PGRAPHVkState *r);
 void pgraph_vk_update_vertex_ram_buffer(PGRAPHState *pg, hwaddr offset, void *data,
                                     VkDeviceSize size);
 VkDeviceSize pgraph_vk_update_index_buffer(PGRAPHState *pg, void *data,

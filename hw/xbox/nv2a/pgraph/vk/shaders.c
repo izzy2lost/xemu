@@ -1308,7 +1308,7 @@ static bool shader_module_warmup_in_progress;
  * Bump SHADER_MODULE_KEY_FILE_VERSION whenever the key layout changes.
  */
 #define SHADER_MODULE_KEY_FILE_MAGIC   0x584D4B53u /* 'SKMX' */
-#define SHADER_MODULE_KEY_FILE_VERSION 1u
+#define SHADER_MODULE_KEY_FILE_VERSION 2u /* 2: VshState.int16_attrs */
 
 typedef struct ShaderModuleKeyFileHeader {
     uint32_t magic;
@@ -1711,6 +1711,7 @@ void pgraph_vk_bind_shaders(PGRAPHState *pg)
             new_state.vsh.compressed_attrs = pg->compressed_attrs;
             new_state.vsh.uniform_attrs = pg->uniform_attrs;
             new_state.vsh.swizzle_attrs = pg->swizzle_attrs;
+            new_state.vsh.int16_attrs = pg->int16_attrs;
         } else {
             new_state = pgraph_glsl_get_shader_state(pg);
             r->cached_shader_state = new_state;

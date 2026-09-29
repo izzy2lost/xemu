@@ -131,6 +131,53 @@ static const VkFormat s32k_to_count[] = {
     VK_FORMAT_R16G16B16A16_SSCALED,
 };
 
+/* The same bits read as integers, for devices without SSCALED vertex fetch.
+ * The shader converts them (see VshState.int16_attrs), which is exactly what
+ * SSCALED does: the signed value as a float, not normalized. */
+static const VkFormat s32k_int_to_count[] = {
+    VK_FORMAT_R16_SINT,
+    VK_FORMAT_R16G16_SINT,
+    VK_FORMAT_R16G16B16_SINT,
+    VK_FORMAT_R16G16B16A16_SINT,
+};
+
+/*
+ * SSCALED vertex formats are optional in Vulkan. Qualcomm's stock Adreno 610
+ * driver (512.615.86) reports no VERTEX_BUFFER support for any of them, while
+ * the 512.805 blob does. Without the fallback every S32K attribute on that
+ * driver was fetched as garbage: Forza Motorsport passes its world texture
+ * coordinates as S32K, so the road, sky and grandstands each sampled a single
+ * texel and drew as flat colour, while cars (float texcoords) were fine.
+ */
+void pgraph_vk_init_vertex_formats(PGRAPHVkState *r)
+{
+    r->sscaled_vertex_supported = true;
+    for (int i = 0; i < ARRAY_SIZE(s32k_to_count); i++) {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(r->physical_device,
+                                            s32k_to_count[i], &props);
+        if (!(props.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) {
+            r->sscaled_vertex_supported = false;
+        }
+    }
+#ifndef __ANDROID__
+    /* Lets the desktop build exercise the fallback. */
+    const char *env = getenv("XEMU_VK_SSCALED_VERTEX");
+    if (env && env[0] == '0') {
+        r->sscaled_vertex_supported = false;
+    }
+#endif
+    if (!r->sscaled_vertex_supported) {
+        fprintf(stderr, "SSCALED vertex formats unsupported: converting S32K "
+                        "attributes in the vertex shader\n");
+#ifdef __ANDROID__
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "SSCALED vertex formats unsupported: converting "
+                            "S32K attributes in the vertex shader");
+#endif
+    }
+}
+
 static char const * const vertex_data_array_format_to_str[] = {
     [NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_UB_D3D] = "UB_D3D",
     [NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_UB_OGL] = "UB_OGL",
@@ -159,6 +206,7 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
         pg->compressed_attrs = r->cached_compressed_attrs;
         pg->uniform_attrs = r->cached_uniform_attrs;
         pg->swizzle_attrs = r->cached_swizzle_attrs;
+        pg->int16_attrs = r->cached_int16_attrs;
         r->num_active_vertex_attribute_descriptions = r->cached_num_active_attrs;
         r->num_active_vertex_binding_descriptions = r->cached_num_active_bindings;
         memcpy(r->vertex_attribute_descriptions, r->cached_attr_descs,
@@ -192,6 +240,7 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
     pg->compressed_attrs = 0;
     pg->uniform_attrs = 0;
     pg->swizzle_attrs = 0;
+    pg->int16_attrs = 0;
 
     r->num_active_vertex_attribute_descriptions = 0;
     r->num_active_vertex_binding_descriptions = 0;
@@ -216,6 +265,7 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
         VkFormat vk_format;
         bool needs_conversion = false;
         bool d3d_swizzle = false;
+        bool int16_attr = false;
 
         switch (attr->format) {
         case NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_UB_D3D:
@@ -236,7 +286,12 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
             break;
         case NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_S32K:
             assert(attr->count <= ARRAY_SIZE(s32k_to_count));
-            vk_format = s32k_to_count[attr->count - 1];
+            if (r->sscaled_vertex_supported) {
+                vk_format = s32k_to_count[attr->count - 1];
+            } else {
+                vk_format = s32k_int_to_count[attr->count - 1];
+                int16_attr = true;
+            }
             break;
         case NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_CMP:
             vk_format =
@@ -330,6 +385,9 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
         if (d3d_swizzle) {
             pg->swizzle_attrs |= (1 << i);
         }
+        if (int16_attr) {
+            pg->int16_attrs |= (1 << i);
+        }
 
         NV2A_VK_DGROUP_END();
     }
@@ -350,6 +408,7 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
         r->cached_compressed_attrs = pg->compressed_attrs;
         r->cached_uniform_attrs = pg->uniform_attrs;
         r->cached_swizzle_attrs = pg->swizzle_attrs;
+        r->cached_int16_attrs = pg->int16_attrs;
     }
 
     NV2A_VK_DGROUP_END();
@@ -365,6 +424,7 @@ void pgraph_vk_bind_vertex_attributes_inline(NV2AState *d)
     pg->compressed_attrs = 0;
     pg->uniform_attrs = 0;
     pg->swizzle_attrs = 0;
+    pg->int16_attrs = 0;
 
     r->num_active_vertex_attribute_descriptions = 0;
     r->num_active_vertex_binding_descriptions = 0;

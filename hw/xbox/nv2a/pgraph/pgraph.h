@@ -246,6 +246,7 @@ typedef struct PGRAPHState {
     uint16_t compressed_attrs;
     uint16_t uniform_attrs;
     uint16_t swizzle_attrs;
+    uint16_t int16_attrs;
 
     unsigned int inline_array_length;
     uint32_t inline_array[NV2A_MAX_BATCH_LENGTH];

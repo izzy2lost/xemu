@@ -120,6 +120,7 @@ bool pgraph_glsl_check_shader_state_dirty(PGRAPHState *pg,
 
     if (pg->uniform_attrs != state->vsh.uniform_attrs ||
         pg->swizzle_attrs != state->vsh.swizzle_attrs ||
+        pg->int16_attrs != state->vsh.int16_attrs ||
         pg->compressed_attrs != state->vsh.compressed_attrs ||
         pg->primitive_mode != state->geom.primitive_mode ||
         pg->surface_scale_factor != state->vsh.surface_scale_factor ||

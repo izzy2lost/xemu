@@ -53,6 +53,9 @@ typedef struct {
     uint16_t compressed_attrs;
     uint16_t uniform_attrs;
     uint16_t swizzle_attrs;
+    /* S32K attributes bound as R16*_SINT, converted to float in the shader,
+     * because the device cannot fetch R16*_SSCALED. */
+    uint16_t int16_attrs;
 
     bool fog_enable;
     enum VshFogMode fog_mode;

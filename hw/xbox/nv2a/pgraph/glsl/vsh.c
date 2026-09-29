@@ -114,6 +114,7 @@ void pgraph_glsl_set_vsh_state(PGRAPHState *pg, VshState *vsh)
     vsh->compressed_attrs = pg->compressed_attrs;
     vsh->uniform_attrs = pg->uniform_attrs;
     vsh->swizzle_attrs = pg->swizzle_attrs;
+    vsh->int16_attrs = pg->int16_attrs;
 
     vsh->specular_enable = GET_MASK(pgraph_reg_r(pg, NV_PGRAPH_CSV0_C),
                                     NV_PGRAPH_CSV0_C_SPECULAR_ENABLE);
@@ -277,6 +278,10 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
             } else if (state->swizzle_attrs & (1 << i)) {
                 mstring_append_fmt(header, "layout(location = %d) in vec4 v%d_sw;\n",
                                    i, i);
+            } else if (state->int16_attrs & (1 << i)) {
+                mstring_append_fmt(header,
+                                   "layout(location = %d) in ivec4 v%d_i16;\n",
+                                   i, i);
             } else {
                 mstring_append_fmt(header, "layout(location = %d) in vec4 v%d;\n",
                                    i, i);
@@ -296,6 +301,10 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
 
         if (state->swizzle_attrs & (1 << i)) {
             mstring_append_fmt(body, "vec4 v%d = v%d_sw.bgra;\n", i, i);
+        }
+
+        if (state->int16_attrs & (1 << i)) {
+            mstring_append_fmt(body, "vec4 v%d = vec4(v%d_i16);\n", i, i);
         }
 
     }

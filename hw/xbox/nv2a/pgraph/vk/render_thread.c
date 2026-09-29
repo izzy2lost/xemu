@@ -43,6 +43,7 @@ void pgraph_vk_snapshot_state(PGRAPHState *pg, RenderCommandSnapshot *snap)
     snap->compressed_attrs = pg->compressed_attrs;
     snap->uniform_attrs = pg->uniform_attrs;
     snap->swizzle_attrs = pg->swizzle_attrs;
+    snap->int16_attrs = pg->int16_attrs;
 
     snap->surface_shape = pg->surface_shape;
     snap->surface_binding_dim.clip_x = pg->surface_binding_dim.clip_x;

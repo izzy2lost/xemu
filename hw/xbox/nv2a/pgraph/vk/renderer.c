@@ -216,6 +216,7 @@ static void pgraph_vk_init(NV2AState *d, Error **errp)
     VK_LOG_ERROR("init: surfaces");
     pgraph_vk_init_surfaces(pg);
     pgraph_vk_surface_image_pool_init(pg->vk_renderer_state);
+    pgraph_vk_init_vertex_formats(pg->vk_renderer_state);
     VK_LOG_ERROR("init: shaders");
     pgraph_vk_init_shaders(pg);
     VK_LOG_ERROR("init: pipelines");
