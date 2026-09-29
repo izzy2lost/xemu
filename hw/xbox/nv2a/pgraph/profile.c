@@ -45,6 +45,24 @@ void nv2a_profile_increment(void)
         ts = now;
         frame_count = 0;
     }
+
+#ifdef __ANDROID__
+    /* Flips per 5 s window in logcat (tag xemu-fps), so A/B runs can be
+     * compared without reading the overlay. */
+    static int64_t window_start = 0;
+    static int64_t window_flips = 0;
+    window_flips++;
+    if (!window_start) {
+        window_start = now;
+    } else if (now - window_start >= 5000000) {
+        __android_log_print(ANDROID_LOG_INFO, "xemu-fps",
+                            "%.2f fps (%" PRId64 " flips in %" PRId64 " ms)",
+                            window_flips * 1e6 / (now - window_start),
+                            window_flips, (now - window_start) / 1000);
+        window_start = now;
+        window_flips = 0;
+    }
+#endif
 }
 
 static void snapshot_phase_timing(void)

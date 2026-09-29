@@ -1855,8 +1855,17 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
     void *texture_data = (char*)d->vram_ptr + texture_vram_offset;
     void *palette_data = (char*)d->vram_ptr + texture_palette_vram_offset;
 
+    /*
+     * A cached texture last filled from a render surface (draw_time set) is
+     * stale once the range is no longer a compatible surface: re-read memory
+     * instead of reusing the surface's copy. Tron 2.0 clears a swizzled
+     * texture by briefly making it a linear render target (upstream PR
+     * #3064).
+     */
+    bool was_surface_copy = binding_found && snode->draw_time;
+
     uint64_t content_hash = 0;
-    if (!surface_to_texture && possibly_dirty) {
+    if (!surface_to_texture && (was_surface_copy || possibly_dirty)) {
         content_hash = fast_hash(texture_data, texture_length);
         if (is_indexed) {
             content_hash ^= fast_hash(palette_data, texture_palette_data_size);
@@ -1920,12 +1929,14 @@ static void create_texture(PGRAPHState *pg, int texture_idx)
                     surface->image_view;
             }
         } else {
-            if (possibly_dirty && content_hash != snode->hash) {
+            if (was_surface_copy ||
+                (possibly_dirty && content_hash != snode->hash)) {
                 if (snode->submit_time + r->num_active_frames > r->submit_count) {
                     pgraph_vk_flush_all_frames(pg);
                 }
                 upload_texture_image(pg, texture_idx, snode);
                 snode->hash = content_hash;
+                snode->draw_time = 0;
                 did_upload = true;
             }
             snode->possibly_dirty = false;

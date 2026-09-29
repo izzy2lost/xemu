@@ -35,6 +35,10 @@
 
 #include "exec/log.h"
 
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
+
 static int g_use_fp_jit;
 
 #if defined(XBOX)
@@ -264,6 +268,13 @@ typedef struct DisasContext {
     int fpstt_delta;
     TCGv_fp fpregs[8];
     TCGv_fp ft0;
+
+    /* x87 FIP/FDP stores waiting for gen_flush_fip() */
+    bool fip_pend;
+    int fdp_pend_seg; /* -1 = none */
+    TCGv fip_val;
+    TCGv fdp_val;
+    TCGv_i32 fip_sel; /* the flush's own register, never the instruction's */
 } DisasContext;
 
 /*
@@ -1816,11 +1827,75 @@ static void gen_mov64i_f64(TCGv_f64 ret, TCGv_i64 arg)
 #define fp_pc_wrapper(f) \
     (fpu_using_double_precision(s) ? glue(f, _f64) : glue(f, _f32))
 
+/*
+ * Whether the x87 FIP/FCS and FDP/FDS stores are deferred (see
+ * gen_flush_fip). On by default; XEMU_TCG_DEFER_FIP=0, or on Android
+ * `setprop debug.xemu.tcg.defer_fip 0`, stores them per instruction as before.
+ */
+static bool defer_fip_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = 1;
+#ifdef __ANDROID__
+        char value[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.tcg.defer_fip", value) > 0 &&
+            value[0] == '0') {
+            enabled = 0;
+        }
+#else
+        const char *env = getenv("XEMU_TCG_DEFER_FIP");
+        if (env && env[0] == '0') {
+            enabled = 0;
+        }
+#endif
+    }
+    return enabled;
+}
+
+/*
+ * FIP/FCS and FDP/FDS, set by every x87 instruction, are read only by
+ * helpers (fstenv, fsave, fxsave). gen_flush_fip() runs from
+ * gen_bb_epilogue(), before every helper call and at each basic-block end,
+ * so those helpers always see current values and the stores cost one set
+ * per block instead of one per instruction. Only a fault raised inside the
+ * block without a helper call sees them stale, as it already does the
+ * cached ST(i) registers. Ported from Tovarichtch/xemu's CPU boost.
+ *
+ * It runs while s->tmp* may hold a helper's arguments, so it never uses
+ * them: fip_sel, one temp per block, carries both selectors.
+ */
+static void gen_flush_fip(DisasContext *s)
+{
+    if (!s->fip_pend && s->fdp_pend_seg < 0) {
+        return;
+    }
+    if (!s->fip_sel) {
+        s->fip_sel = tcg_temp_new_i32();
+    }
+    if (s->fip_pend) {
+        s->fip_pend = false;
+        tcg_gen_ld_i32(s->fip_sel, tcg_env,
+                       offsetof(CPUX86State, segs[R_CS].selector));
+        tcg_gen_st16_i32(s->fip_sel, tcg_env, offsetof(CPUX86State, fpcs));
+        tcg_gen_st_tl(s->fip_val, tcg_env, offsetof(CPUX86State, fpip));
+    }
+    if (s->fdp_pend_seg >= 0) {
+        tcg_gen_ld_i32(s->fip_sel, tcg_env,
+                       offsetof(CPUX86State,
+                                segs[s->fdp_pend_seg].selector));
+        s->fdp_pend_seg = -1;
+        tcg_gen_st16_i32(s->fip_sel, tcg_env, offsetof(CPUX86State, fpds));
+        tcg_gen_st_tl(s->fdp_val, tcg_env, offsetof(CPUX86State, fpdp));
+    }
+}
+
 static void gen_flush_fp(DisasContext *s)
 {
     fp_pc_wrapper(flush_fp_regs)(s);
     s->fpstt_delta = 0;
     s->flcr_set = false;
+    gen_flush_fip(s);
 }
 
 /*
@@ -3361,13 +3436,21 @@ static void gen_x87(DisasContext *s, X86DecodedInsn *decode)
         if (update_fdp) {
             int last_seg = s->override >= 0 ? s->override : decode->mem.def_seg;
 
-            tcg_gen_ld_i32(s->tmp2_i32, tcg_env,
-                           offsetof(CPUX86State,
-                                    segs[last_seg].selector));
-            tcg_gen_st16_i32(s->tmp2_i32, tcg_env,
-                             offsetof(CPUX86State, fpds));
-            tcg_gen_st_tl(last_addr, tcg_env,
-                          offsetof(CPUX86State, fpdp));
+            if (defer_fip_enabled()) {
+                if (!s->fdp_val) {
+                    s->fdp_val = tcg_temp_new();
+                }
+                tcg_gen_mov_tl(s->fdp_val, last_addr);
+                s->fdp_pend_seg = last_seg;
+            } else {
+                tcg_gen_ld_i32(s->tmp2_i32, tcg_env,
+                               offsetof(CPUX86State,
+                                        segs[last_seg].selector));
+                tcg_gen_st16_i32(s->tmp2_i32, tcg_env,
+                                 offsetof(CPUX86State, fpds));
+                tcg_gen_st_tl(last_addr, tcg_env,
+                              offsetof(CPUX86State, fpdp));
+            }
         }
     } else {
         /* register float ops */
@@ -3690,12 +3773,20 @@ static void gen_x87(DisasContext *s, X86DecodedInsn *decode)
     }
 
     if (update_fip) {
-        tcg_gen_ld_i32(s->tmp2_i32, tcg_env,
-                       offsetof(CPUX86State, segs[R_CS].selector));
-        tcg_gen_st16_i32(s->tmp2_i32, tcg_env,
-                         offsetof(CPUX86State, fpcs));
-        tcg_gen_st_tl(eip_cur_tl(s),
-                      tcg_env, offsetof(CPUX86State, fpip));
+        if (defer_fip_enabled()) {
+            if (!s->fip_val) {
+                s->fip_val = tcg_temp_new();
+            }
+            tcg_gen_mov_tl(s->fip_val, eip_cur_tl(s));
+            s->fip_pend = true;
+        } else {
+            tcg_gen_ld_i32(s->tmp2_i32, tcg_env,
+                           offsetof(CPUX86State, segs[R_CS].selector));
+            tcg_gen_st16_i32(s->tmp2_i32, tcg_env,
+                             offsetof(CPUX86State, fpcs));
+            tcg_gen_st_tl(eip_cur_tl(s),
+                          tcg_env, offsetof(CPUX86State, fpip));
+        }
     }
     return;
 
@@ -4501,6 +4592,11 @@ static void i386_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     dc->fpstt_delta = 0;
     dc->ft0 = NULL;
     dc->flcr_set = false;
+    dc->fip_pend = false;
+    dc->fdp_pend_seg = -1;
+    dc->fip_val = NULL;
+    dc->fdp_val = NULL;
+    dc->fip_sel = NULL;
 }
 
 static void i386_tr_tb_start(DisasContextBase *db, CPUState *cpu)

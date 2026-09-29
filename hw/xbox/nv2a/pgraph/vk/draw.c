@@ -4429,7 +4429,7 @@ static void flush_draw_queue_internal(NV2AState *d)
         if (r->async_draw_skip) {
             goto flush_dq_restore;
         }
-        copy_remapped_attributes_to_inline_buffer(pg, remap, 0,
+        copy_remapped_attributes_to_inline_buffer(pg, remap, min_element,
                                                   max_element + 1);
         pgraph_vk_begin_debug_marker(r, r->command_buffer, RGBA_BLUE,
                                      "Merged Indexed (%d)", entry_count);
@@ -4517,7 +4517,7 @@ static void flush_draw_queue_internal(NV2AState *d)
         if (r->async_draw_skip) {
             goto flush_dq_restore;
         }
-        copy_remapped_attributes_to_inline_buffer(pg, remap, 0, max_end);
+        copy_remapped_attributes_to_inline_buffer(pg, remap, min_start, max_end);
         pgraph_vk_begin_debug_marker(r, r->command_buffer, RGBA_BLUE,
                                      "Merged Draw Arrays (%d)", entry_count);
         begin_draw(pg);
@@ -4837,7 +4837,9 @@ static bool try_snapshot_draw_arrays(NV2AState *d, ReorderWindowEntry *e)
 #if OPT_ASYNC_COMPILE
     if (r->async_draw_skip) return false;
 #endif
-    copy_remapped_attributes_to_inline_buffer(pg, remap, 0, max_element);
+    copy_remapped_attributes_to_inline_buffer(pg, remap,
+                                              pg->draw_arrays_min_start,
+                                              max_element);
 
     e->pipeline_binding = r->pipeline_binding;
     e->layout = r->pipeline_binding->layout;
@@ -4984,7 +4986,8 @@ static bool try_snapshot_inline_elements(NV2AState *d, ReorderWindowEntry *e)
 #if OPT_ASYNC_COMPILE
     if (r->async_draw_skip) return false;
 #endif
-    copy_remapped_attributes_to_inline_buffer(pg, remap, 0, max_element + 1);
+    copy_remapped_attributes_to_inline_buffer(pg, remap, min_element,
+                                              max_element + 1);
 
     e->pipeline_binding = r->pipeline_binding;
     e->layout = r->pipeline_binding->layout;
@@ -6260,6 +6263,22 @@ static VertexBufferRemap remap_unaligned_attributes(PGRAPHState *pg,
     return remap;
 }
 
+/*
+ * One memcpy per vertex with a size known only at run time costs more than
+ * moving the 4-16 bytes, so the common strides get a loop with a
+ * compile-time size (upstream PR #2997: on a Raspberry Pi 5 in Halo 2 the
+ * function went from 12.18% to 5.79% of process time).
+ */
+#define COPY_REMAPPED_ATTRS(n)                                    \
+    do {                                                          \
+        for (uint32_t vertex_id = 0; vertex_id < copy_count;      \
+             vertex_id++) {                                       \
+            memcpy(out_ptr, in_ptr, (n));                         \
+            out_ptr += (n);                                       \
+            in_ptr += old_stride;                                 \
+        }                                                         \
+    } while (0)
+
 static void copy_remapped_attributes_to_inline_buffer(PGRAPHState *pg,
                                                       VertexBufferRemap remap,
                                                       uint32_t start_vertex,
@@ -6276,11 +6295,20 @@ static void copy_remapped_attributes_to_inline_buffer(PGRAPHState *pg,
     assert(pgraph_vk_buffer_has_space_for(pg, BUFFER_VERTEX_INLINE_STAGING,
                                           remap.buffer_space_required, 256));
 
-    // FIXME: SIMD memcpy
     // FIXME: Caching
-    // FIXME: Account for only what is drawn
-    assert(start_vertex == 0);
     assert(buffer->mapped);
+
+    /*
+     * Only the vertices from start_vertex on are read by the draw. The space
+     * for the whole range stays reserved and the bound offset is unchanged,
+     * so every attribute keeps its indexing; the leading vertices nothing
+     * reads are just not written (upstream PR #2997 measured 44% of the copy
+     * wasted in Halo 2 and 57% in GTA San Andreas).
+     */
+    if (start_vertex > num_vertices) {
+        start_vertex = num_vertices;
+    }
+    uint32_t copy_count = num_vertices - start_vertex;
 
     // Copy vertex data
     for (int attr_id = 0; attr_id < NV2A_VERTEXSHADER_ATTRIBUTES; attr_id++) {
@@ -6291,13 +6319,33 @@ static void copy_remapped_attributes_to_inline_buffer(PGRAPHState *pg,
         VkDeviceSize attr_buffer_offset =
             buffer->buffer_offset + remap.map[attr_id].offset;
 
-        uint8_t *out_ptr = buffer->mapped + attr_buffer_offset;
-        uint8_t *in_ptr = d->vram_ptr + r->vertex_attribute_offsets[attr_id];
+        size_t new_stride = remap.map[attr_id].new_stride;
+        size_t old_stride = remap.map[attr_id].old_stride;
+        uint8_t *out_ptr = buffer->mapped + attr_buffer_offset +
+                           (size_t)start_vertex * new_stride;
+        uint8_t *in_ptr = d->vram_ptr + r->vertex_attribute_offsets[attr_id] +
+                          (size_t)start_vertex * old_stride;
 
-        for (int vertex_id = 0; vertex_id < num_vertices; vertex_id++) {
-            memcpy(out_ptr, in_ptr, remap.map[attr_id].new_stride);
-            out_ptr += remap.map[attr_id].new_stride;
-            in_ptr += remap.map[attr_id].old_stride;
+        switch (new_stride) {
+        case 4:
+            COPY_REMAPPED_ATTRS(4);
+            break;
+        case 8:
+            COPY_REMAPPED_ATTRS(8);
+            break;
+        case 12:
+            COPY_REMAPPED_ATTRS(12);
+            break;
+        case 16:
+            COPY_REMAPPED_ATTRS(16);
+            break;
+        default:
+            for (uint32_t vertex_id = 0; vertex_id < copy_count; vertex_id++) {
+                memcpy(out_ptr, in_ptr, new_stride);
+                out_ptr += new_stride;
+                in_ptr += old_stride;
+            }
+            break;
         }
 
         r->vertex_attribute_offsets[attr_id] = attr_buffer_offset;
@@ -6397,7 +6445,8 @@ void pgraph_vk_flush_draw(NV2AState *d)
         if (r->async_draw_skip) goto draw_arrays_done;
 #endif
         NV2A_PHASE_TIMER_BEGIN(draw_setup);
-        copy_remapped_attributes_to_inline_buffer(pg, remap, 0, max_element);
+        copy_remapped_attributes_to_inline_buffer(pg, remap, min_element,
+                                                  max_element);
         pgraph_vk_begin_debug_marker(r, r->command_buffer, RGBA_BLUE,
                                      "Draw Arrays");
         begin_draw(pg);
@@ -6506,7 +6555,8 @@ draw_arrays_done:
         if (r->async_draw_skip) goto inline_elements_done;
 #endif
         NV2A_PHASE_TIMER_BEGIN(draw_setup);
-        copy_remapped_attributes_to_inline_buffer(pg, remap, 0, max_element + 1);
+        copy_remapped_attributes_to_inline_buffer(pg, remap, min_element,
+                                                  max_element + 1);
         VkDeviceSize buffer_offset = pgraph_vk_update_index_buffer(
             pg, draw_indices, index_data_size);
         pgraph_vk_begin_debug_marker(r, r->command_buffer, RGBA_BLUE,

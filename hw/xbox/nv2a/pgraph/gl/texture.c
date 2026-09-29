@@ -763,12 +763,35 @@ void pgraph_gl_bind_textures(NV2AState *d)
         bool possibly_dirty_checked = false;
 
         SurfaceBinding *surface = pgraph_gl_surface_get(d, texture_vram_offset);
+
+        /*
+         * Check active surfaces to see if this texture was a render target.
+         * Decided before the reuse test: a binding copied from a surface is
+         * only reusable while the range is still a compatible surface, and
+         * one that no longer is must re-read memory (Tron 2.0 clears a
+         * swizzled texture by briefly making it a linear render target;
+         * upstream PR #3064).
+         */
+        bool surf_to_tex = false;
+        if (surface != NULL) {
+            surf_to_tex = pgraph_gl_check_surface_to_texture_compatibility(
+                    surface, &state);
+
+            if (surf_to_tex && surface->upload_pending) {
+                pgraph_gl_upload_surface_data(d, surface, false);
+#ifdef __ANDROID__
+                android_log_texture_stage_errors(i, "surface_upload_pending",
+                                                 &state, GL_TEXTURE_2D);
+#endif
+            }
+        }
+
         TextureBinding *tbind = r->texture_binding[i];
         if (!pg->texture_dirty[i] && tbind) {
             bool reusable = false;
-            if (surface && tbind->draw_time == surface->draw_time) {
-                reusable = true;
-            } else if (!surface) {
+            if (surf_to_tex) {
+                reusable = tbind->draw_time == surface->draw_time;
+            } else if (!tbind->draw_time) {
                 possibly_dirty = check_texture_possibly_dirty(
                         d,
                         texture_vram_offset,
@@ -805,34 +828,18 @@ void pgraph_gl_bind_textures(NV2AState *d)
             }
         }
 
-        /*
-         * Check active surfaces to see if this texture was a render target
-         */
-        bool surf_to_tex = false;
-        if (surface != NULL) {
-            surf_to_tex = pgraph_gl_check_surface_to_texture_compatibility(
-                    surface, &state);
-
-            if (surf_to_tex && surface->upload_pending) {
-                pgraph_gl_upload_surface_data(d, surface, false);
-#ifdef __ANDROID__
-                android_log_texture_stage_errors(i, "surface_upload_pending",
-                                                 &state, GL_TEXTURE_2D);
-#endif
-            }
-        }
-
         if (!surf_to_tex) {
             // FIXME: Restructure to support rendering surfaces to cubemap faces
 
             // Writeback any surfaces which this texture may index
             hwaddr tex_vram_end = texture_vram_offset + length - 1;
-            QTAILQ_FOREACH(surface, &r->surfaces, entry) {
-                hwaddr surf_vram_end = surface->vram_addr + surface->size - 1;
-                bool overlapping = !(surface->vram_addr >= tex_vram_end
+            SurfaceBinding *surf_it;
+            QTAILQ_FOREACH(surf_it, &r->surfaces, entry) {
+                hwaddr surf_vram_end = surf_it->vram_addr + surf_it->size - 1;
+                bool overlapping = !(surf_it->vram_addr >= tex_vram_end
                                      || texture_vram_offset >= surf_vram_end);
                 if (overlapping) {
-                    pgraph_gl_surface_download_if_dirty(d, surface);
+                    pgraph_gl_surface_download_if_dirty(d, surf_it);
 #ifdef __ANDROID__
                     android_log_texture_stage_errors(i, "download_overlap",
                                                      &state, GL_TEXTURE_2D);
@@ -872,7 +879,8 @@ void pgraph_gl_bind_textures(NV2AState *d)
         void *palette_data = (char*)d->vram_ptr + palette_vram_offset;
 
         uint64_t tex_data_hash = 0;
-        if (!surf_to_tex && possibly_dirty) {
+        if (!surf_to_tex && (!key_out->binding || key_out->binding->draw_time ||
+                             possibly_dirty)) {
             tex_data_hash = fast_hash(texture_data, length);
             if (is_indexed) {
                 tex_data_hash ^= fast_hash(palette_data, palette_length);
@@ -880,9 +888,12 @@ void pgraph_gl_bind_textures(NV2AState *d)
         }
 
         // Free existing binding, if texture data has changed
-        bool must_destroy = (key_out->binding != NULL)
-                            && possibly_dirty
-                            && (key_out->binding->data_hash != tex_data_hash);
+        bool must_destroy = false;
+        if (key_out->binding && !surf_to_tex) {
+            must_destroy = key_out->binding->draw_time ||
+                           (possibly_dirty &&
+                            (key_out->binding->data_hash != tex_data_hash));
+        }
         if (must_destroy) {
             texture_binding_destroy(key_out->binding);
             key_out->binding = NULL;

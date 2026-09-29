@@ -980,15 +980,35 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
         hwaddr addr = d->regs[NV_PAPU_VPSSLADDR] + page * 8;
         segment_offset = apu_ldl_le(d, addr);
         segment_length = apu_ldl_le(d, addr + 4);
-        assert(segment_offset != 0);
         assert(segment_length != 0);
+        if (segment_offset == 0) {
+            /*
+             * The guest has not filled this SSL entry in yet (a timing race):
+             * skip this cycle instead of aborting. The assert this replaces
+             * is xemu-project/xemu#380, hit by Advent Rising, Dead Man's
+             * Hand, Top Spin and Dave Mirra Freestyle BMX 2 (upstream PR
+             * #3072).
+             */
+            DPRINTF("Voice %d: SSL entry page %d not ready\n", v, page);
+            return -1;
+        }
         seg_len = (segment_length >> 0) & 0xffff;
         seg_cs = (segment_length >> 16) & 3;
         seg_spb = (segment_length >> 18) & 0x1f;
         seg_s = (segment_length >> 23) & 1;
         assert(seg_cs == container_size_index);
         assert((seg_spb + 1) == samples_per_block);
-        assert(seg_s == stereo);
+        if (seg_s != stereo) {
+            /*
+             * Surround-configured audio can give a segment a channel layout
+             * the voice does not have; the APU emulation has no surround
+             * support, so keep the voice's layout instead of aborting
+             * (xemu-project/xemu#1581, upstream PR #3074).
+             */
+            DPRINTF("Voice %d: segment stereo=%d, voice stereo=%d\n", v,
+                    seg_s, stereo);
+            seg_s = stereo;
+        }
         container_size_index = seg_cs;
         if (seg_cs == NV_PAVS_VOICE_CFG_FMT_CONTAINER_SIZE_ADPCM) {
             sample_size = NV_PAVS_VOICE_CFG_FMT_SAMPLE_SIZE_S24;
