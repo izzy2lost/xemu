@@ -328,6 +328,12 @@ typedef struct SurfaceBinding {
 
     bool initialized;
     int invalidation_frame;
+    /* Frame that was open when this surface was retired (invalidated or taken
+     * off the shelf). Unlike invalidation_frame this is set unconditionally:
+     * a surface can be sampled or read back in the open command buffer without
+     * being drawn to, and its view must outlive that command buffer. Gates
+     * destruction only, not reuse. */
+    int retire_frame;
 } SurfaceBinding;
 
 #define MAX_DEFERRED_DOWNLOADS 64
@@ -1070,6 +1076,9 @@ typedef struct PGRAPHVkState {
     VkPhysicalDevice physical_device;
     VkPhysicalDeviceFeatures enabled_physical_device_features;
     VkPhysicalDeviceProperties device_props;
+    /* VkPhysicalDeviceDriverProperties::driverID, or 0 when the device is
+     * older than Vulkan 1.2 and cannot report it. */
+    VkDriverId driver_id;
     VkDevice device;
     VmaAllocator allocator;
     uint32_t allocator_last_submit_index;
@@ -1435,6 +1444,26 @@ static inline StorageBuffer *get_staging_buffer(PGRAPHVkState *r, int buffer_id)
 static inline unsigned long *get_uploaded_bitmap(PGRAPHVkState *r)
 {
     return r->frame_staging[r->current_frame].uploaded_bitmap;
+}
+
+/*
+ * Whether this is Qualcomm's own Adreno driver -- the stock one, or a
+ * side-loaded Qualcomm blob from a custom driver ZIP.
+ *
+ * vendorID alone cannot answer this: Mesa's Turnip reports Qualcomm's vendor
+ * ID (0x5143) too, and it is the custom driver most Snapdragon users install.
+ * The Adreno workarounds exist for bugs in Qualcomm's blob (EDS3 blend and
+ * push-descriptor crashes, descriptor writes on transient views, advertised
+ * but missing BC decode). Turnip has none of them, and applying them to it
+ * cost Turnip users native DXT upload, dynamic blend, push descriptors and
+ * direct surface binding at once.
+ *
+ * A device that cannot report a driver ID (pre-1.2) is assumed to be the blob.
+ */
+static inline bool pgraph_vk_is_qualcomm_blob(const PGRAPHVkState *r)
+{
+    return r->device_props.vendorID == 0x5143u &&
+           r->driver_id != VK_DRIVER_ID_MESA_TURNIP;
 }
 
 /*

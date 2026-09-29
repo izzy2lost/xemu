@@ -1195,9 +1195,9 @@ static bool can_bind_surface_direct(PGRAPHVkState *r,
      * push_descriptor_set/vkUpdateDescriptorSets.  Use the existing
      * surface-to-texture copy so descriptors reference cache-owned views.
      *
-     * This applies to side-loaded custom Adreno drivers as well: they are
-     * arbitrary blobs, often built for a different GPU generation than the
-     * part they end up running on.
+     * This applies to side-loaded Qualcomm blobs as well: they are often built
+     * for a different GPU generation than the part they end up running on.
+     * Turnip does not have the bug and binds directly.
      *
      * The copy is not cheap: a Forza race issues ~8 surface-to-texture copies
      * per frame, each one also ending the render pass to record its transfer.
@@ -1217,7 +1217,7 @@ static bool can_bind_surface_direct(PGRAPHVkState *r,
                                          : "off (driver workaround)");
     }
     if (!force_direct && (r->device_props.vendorID == 0x13B5u ||
-                          r->device_props.vendorID == 0x5143u)) {
+                          pgraph_vk_is_qualcomm_blob(r))) {
         return false;
     }
 #endif
@@ -2725,12 +2725,12 @@ static bool device_allows_dxt_blocks(PGRAPHVkState *r)
      * Observed on an Adreno 610 (driver 0615.86, Snapdragon 662): with BC
      * images in use, the textures that go through this path -- the sky and the
      * road in Forza Motorsport, both large mipmapped DXT -- stop rendering.
-     * Keep the software decompress on Adreno; correctness outranks the upload
-     * saving.
+     * Keep the software decompress on Qualcomm's driver; correctness outranks
+     * the upload saving. Turnip decodes BC properly and keeps block upload.
      */
-    if (r->device_props.vendorID == 0x5143u) {
+    if (pgraph_vk_is_qualcomm_blob(r)) {
         __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
-                            "DXT block upload: disabled on Adreno "
+                            "DXT block upload: disabled on Qualcomm driver "
                             "(no hardware BC despite advertised support)");
         return false;
     }

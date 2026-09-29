@@ -33,6 +33,7 @@ const int num_invalid_surfaces_to_keep = 10;  // FIXME: Make automatic
 const int max_surface_frame_time_delta = 5;
 
 static void destroy_surface_image(PGRAPHVkState *r, SurfaceBinding *surface);
+static void retire_shelved_surface(PGRAPHVkState *r, SurfaceBinding *surface);
 static void download_surface_deferred(NV2AState *d, SurfaceBinding *surface);
 /* Forward declaration — defined below, also called from texture.c */
 
@@ -1537,6 +1538,7 @@ static void invalidate_surface(NV2AState *d, SurfaceBinding *surface)
     } else {
         surface->invalidation_frame = -1;
     }
+    surface->retire_frame = r->current_frame;
 
     if (surface == r->color_binding) {
         assert(d->pgraph.surface_color.buffer_dirty);
@@ -1649,10 +1651,7 @@ static void invalidate_overlapping_surfaces(NV2AState *d,
         if (check_surfaces_overlap(surface, other_surface)) {
             OPT_STAT_INC(dif_overlap_sh);
             pgraph_vk_surface_download_if_dirty(d, other_surface);
-            QTAILQ_REMOVE(&r->shelved_surfaces, other_surface, entry);
-            deferred_downloads_clear_surface(r, other_surface);
-            destroy_surface_image(r, other_surface);
-            g_free(other_surface);
+            retire_shelved_surface(r, other_surface);
         }
     }
 }
@@ -1945,23 +1944,13 @@ static void destroy_surface_image(PGRAPHVkState *r, SurfaceBinding *surface)
     pgraph_vk_invalidate_framebuffers_for_view(&g_nv2a->pgraph,
                                                surface->image_view);
     /*
-     * DIAGNOSTIC (not the intended fix -- this is a full GPU stall).
-     *
-     * invalidate_framebuffers_for_view() only ends the current render pass.
-     * It cannot retract commands already recorded into the open command
-     * buffer, which may still reference this view. Destroying it there is
-     * invalid usage and validation reports it as
-     *   "VkCommandBuffer ... is now in an invalid state ... VkImageView was
-     *    destroyed"
-     * roughly 221 times in a single Forza race, after which everything
-     * recorded into that command buffer is undefined. Desktop AMD tolerates
-     * it; a tiler need not.
-     *
-     * Wait for the GPU to drain first so the view is provably unreferenced.
-     * If this makes the affected surfaces render correctly, the real fix is a
-     * deferred-destroy queue retiring views once their submit completes.
+     * The caller guarantees no submitted or open command buffer still
+     * references this surface: per frame it only gets here through
+     * prune_invalid_surfaces(), which waits out retire_frame, and
+     * pgraph_vk_surface_flush() drains the GPU first. Destroying a view that a
+     * recorded command buffer uses is invalid usage and was seen ~221 times
+     * per Forza race before retirement was deferred.
      */
-    pgraph_vk_finish(&g_nv2a->pgraph, VK_FINISH_REASON_SURFACE_DOWN);
     vkDestroyImageView(r->device, surface->image_view, NULL);
     surface->image_view = VK_NULL_HANDLE;
 
@@ -2006,6 +1995,32 @@ static bool surface_in_flight(PGRAPHVkState *r, SurfaceBinding *surface)
     return f >= 0 && (f == r->current_frame || r->frame_submitted[f]);
 }
 
+/* Whether a command buffer that may reference this surface's image or view
+ * has yet to complete. Frames retire in order, so waiting on the frame that
+ * was current at retirement covers every earlier one too. */
+static bool surface_retire_pending(PGRAPHVkState *r, SurfaceBinding *surface)
+{
+    int f = surface->retire_frame;
+    return f >= 0 && (f == r->current_frame || r->frame_submitted[f]);
+}
+
+/*
+ * Take a surface off the shelf for good. It may have been rendered to, sampled
+ * or read back by commands still in flight, so it goes on the invalid list,
+ * where prune_invalid_surfaces() destroys it once those have completed --
+ * instead of stalling the GPU to destroy it here.
+ */
+static void retire_shelved_surface(PGRAPHVkState *r, SurfaceBinding *surface)
+{
+    QTAILQ_REMOVE(&r->shelved_surfaces, surface, entry);
+    /* The struct can be recycled for another binding from the invalid list,
+     * so a pending download must not later clear that binding's flags. */
+    deferred_downloads_clear_surface(r, surface);
+    surface->invalidation_frame = r->current_frame;
+    surface->retire_frame = r->current_frame;
+    QTAILQ_INSERT_HEAD(&r->invalid_surfaces, surface, entry);
+}
+
 static SurfaceBinding *
 get_any_compatible_invalid_surface(PGRAPHVkState *r, SurfaceBinding *target)
 {
@@ -2023,7 +2038,9 @@ get_any_compatible_invalid_surface(PGRAPHVkState *r, SurfaceBinding *target)
     return NULL;
 }
 
-static void prune_invalid_surfaces(PGRAPHVkState *r, int keep)
+/* `drained` means the caller has just waited for the GPU to go idle, so
+ * nothing is in flight and every surface past `keep` can go. */
+static void prune_invalid_surfaces(PGRAPHVkState *r, int keep, bool drained)
 {
     int num_surfaces = 0;
 
@@ -2031,7 +2048,8 @@ static void prune_invalid_surfaces(PGRAPHVkState *r, int keep)
     QTAILQ_FOREACH_SAFE(surface, &r->invalid_surfaces, entry, next) {
         num_surfaces += 1;
         if (num_surfaces > keep) {
-            if (surface_in_flight(r, surface)) {
+            if (!drained && (surface_in_flight(r, surface) ||
+                             surface_retire_pending(r, surface))) {
                 continue;
             }
             QTAILQ_REMOVE(&r->invalid_surfaces, surface, entry);
@@ -2066,10 +2084,7 @@ static void expire_old_surfaces(NV2AState *d)
             shelved_count >= max_shelved_surfaces) {
             OPT_STAT_INC(dif_expire_sh);
             pgraph_vk_surface_download_if_dirty(d, s);
-            QTAILQ_REMOVE(&r->shelved_surfaces, s, entry);
-            deferred_downloads_clear_surface(r, s);
-            destroy_surface_image(r, s);
-            g_free(s);
+            retire_shelved_surface(r, s);
         } else {
             shelved_count++;
         }
@@ -2665,6 +2680,7 @@ static void update_surface_part(NV2AState *d, bool upload, bool color)
     SurfaceBinding target;
     memset(&target, 0, sizeof(target));
     target.invalidation_frame = -1;
+    target.retire_frame = -1;
     populate_surface_binding_target(d, color, &target);
     g_nv2a_stats.surf_working.populate_ns += nv2a_clock_ns() - _st0;
 
@@ -3026,7 +3042,7 @@ void pgraph_vk_surface_update(NV2AState *d, bool upload, bool color_write,
     {
         int64_t _se0 = nv2a_clock_ns();
         expire_old_surfaces(d);
-        prune_invalid_surfaces(r, num_invalid_surfaces_to_keep);
+        prune_invalid_surfaces(r, num_invalid_surfaces_to_keep, false);
         g_nv2a_stats.surf_working.expire_ns += nv2a_clock_ns() - _se0;
     }
 
@@ -3155,13 +3171,15 @@ void pgraph_vk_surface_flush(NV2AState *d)
     QTAILQ_FOREACH_SAFE(s, &r->shelved_surfaces, entry, next) {
         OPT_STAT_INC(dif_flush);
         pgraph_vk_surface_download_if_dirty(d, s);
-        QTAILQ_REMOVE(&r->shelved_surfaces, s, entry);
-        deferred_downloads_clear_surface(r, s);
-        destroy_surface_image(r, s);
-        g_free(s);
+        retire_shelved_surface(r, s);
     }
 
-    prune_invalid_surfaces(r, 0);
+    /* Everything is about to be destroyed rather than recycled; drain the GPU
+     * once so nothing in flight still references it. */
+    if (!QTAILQ_EMPTY(&r->invalid_surfaces)) {
+        pgraph_vk_finish(pg, VK_FINISH_REASON_FLUSH);
+    }
+    prune_invalid_surfaces(r, 0, true);
     pgraph_vk_surface_image_pool_drain(r);
 
     pgraph_vk_reload_surface_scale_factor(pg);

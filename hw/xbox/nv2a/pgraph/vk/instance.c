@@ -562,10 +562,13 @@ static void add_optional_device_extension_names(
      * not hold: the ZIP is an arbitrary Adreno blob a user side-loaded, and it
      * is frequently built for a different GPU generation than the one it is
      * running on, which makes it *more* likely to fault than the stock driver,
-     * not less. Treat every Adreno driver the same.
+     * not less. Treat every Qualcomm blob the same.
+     *
+     * Turnip is not a Qualcomm blob and is exempt; see
+     * pgraph_vk_is_qualcomm_blob().
      */
 # ifdef __ANDROID__
-    if (r->device_props.vendorID == 0x5143u) {
+    if (pgraph_vk_is_qualcomm_blob(r)) {
         r->eds3_blend_supported = false;
         fprintf(stderr, "Qualcomm GPU: omitting %s (use static blend for driver compatibility)\n",
                 VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
@@ -618,7 +621,7 @@ static void add_optional_device_extension_names(
                 VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
         __android_log_print(ANDROID_LOG_INFO, "hakuX",
                             "Mali driver: push descriptors disabled");
-    } else if (r->device_props.vendorID == 0x5143u) {
+    } else if (pgraph_vk_is_qualcomm_blob(r)) {
         /* Adreno drivers fault inside qglinternal::vkCmdPushDescriptorSet
          * while writing a combined image sampler. Observed on an Adreno 610
          * running a side-loaded Adreno 805 blob (DriverVer 512.805.0): SIGSEGV
@@ -738,6 +741,7 @@ static bool select_physical_device(PGRAPHState *pg, Error **errp)
     }
 
     vkGetPhysicalDeviceProperties(r->physical_device, &r->device_props);
+    r->driver_id = 0;
     xemu_settings_set_string(&g_config.display.vulkan.preferred_physical_device,
                              r->device_props.deviceName);
 
@@ -756,6 +760,7 @@ static bool select_physical_device(PGRAPHState *pg, Error **errp)
             .pNext = &drv,
         };
         vkGetPhysicalDeviceProperties2(r->physical_device, &props2);
+        r->driver_id = drv.driverID;
 
         fprintf(stderr,
                 "Selected physical device: %s\n"
