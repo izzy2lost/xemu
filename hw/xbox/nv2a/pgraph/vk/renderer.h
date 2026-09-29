@@ -89,6 +89,8 @@ struct OptBisectStats {
     int vtx_cache_misses;
     int desc_rebind_skips;
     int desc_rebind_full;
+    int desc_cache_hits;
+    int desc_cache_misses;
     int multi_draw_indirect;
     int multi_draw_loop;
     int reorder_windows_flushed;
@@ -1182,6 +1184,28 @@ typedef struct PGRAPHVkState {
     int descriptor_set_base_count;
     bool need_descriptor_rebind;
 
+    /* Sets already written since the ring last reset, keyed by what was
+     * written, so a binding seen earlier in the lap reuses its set instead of
+     * writing a new one. Only the plain descriptor-set path uses it (push
+     * descriptors are off on Adreno and Mali, so that is the phones' path).
+     * An entry is live only while its epoch is current; the epoch advances on
+     * every ring reset and whenever a view or sampler a set can reference is
+     * destroyed, because a recycled handle would otherwise match a set that
+     * still points at the old object. */
+#define DESC_SET_CACHE_SIZE 128
+    struct {
+        struct DescSetCacheKey {
+            VkBuffer ubo_buffer;
+            VkDeviceSize ubo_range[2];
+            VkImageView views[NV2A_MAX_TEXTURES];
+            VkSampler samplers[NV2A_MAX_TEXTURES];
+            VkImageLayout layouts[NV2A_MAX_TEXTURES];
+        } key;
+        uint64_t epoch;
+        int index;
+    } desc_set_cache[DESC_SET_CACHE_SIZE];
+    uint64_t desc_set_cache_epoch;
+
     GArray *descriptor_overflow_pools;
 
 #if OPT_BINDLESS_TEXTURES
@@ -1661,6 +1685,12 @@ bool pgraph_vk_uses_fixed_function_depth(PGRAPHVkState *r,
 bool pgraph_vk_needs_hw_depth_bias(PGRAPHVkState *r,
                                    const ShaderState *state);
 void pgraph_vk_reclaim_descriptor_overflow(PGRAPHVkState *r);
+
+/* Forget every cached descriptor set; see desc_set_cache. */
+static inline void pgraph_vk_invalidate_desc_set_cache(PGRAPHVkState *r)
+{
+    r->desc_set_cache_epoch++;
+}
 void pgraph_vk_update_shader_uniforms(PGRAPHState *pg);
 
 // reports.c

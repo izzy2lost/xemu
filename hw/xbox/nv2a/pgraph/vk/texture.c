@@ -2536,6 +2536,7 @@ static void image_pool_drain(PGRAPHVkState *r)
 
 static void texture_cache_release_node_resources(PGRAPHVkState *r, TextureBinding *snode)
 {
+    pgraph_vk_invalidate_desc_set_cache(r);
     vkDestroySampler(r->device, snode->sampler, NULL);
     snode->sampler = VK_NULL_HANDLE;
 

@@ -23,6 +23,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/thread.h"
 
 #ifdef __aarch64__
 #include <arm_neon.h>
@@ -291,47 +292,144 @@ static void decompress_dxt5_block(const uint8_t block_data[16],
                            r, g, b, a, true);
 }
 
-uint8_t *s3tc_decompress_3d(enum S3TC_DECOMPRESS_FORMAT color_format,
-                            const uint8_t *data, unsigned int width,
-                            unsigned int height, unsigned int depth)
+/*
+ * A band of block rows within one slab of up to four depth slices. A 3D
+ * texture stores each slab's blocks row by row, with a column's slices
+ * adjacent (block_base + (j * num_blocks_x + i) * block_depth + slice); a 2D
+ * texture is the single-slice case of the same layout.
+ */
+typedef struct S3tcRows {
+    enum S3TC_DECOMPRESS_FORMAT color_format;
+    const uint8_t *data;
+    uint8_t *converted_data;
+    unsigned int width, height;
+    int num_blocks_x;
+    int j_start, j_end;
+    int block_base, block_depth, depth_start;
+} S3tcRows;
+
+static void decompress_rows(const S3tcRows *rows)
 {
-    assert(width > 0);
-    assert(height > 0);
-    assert(depth > 0);
-    unsigned int physical_width = (width + 3) & ~3,
-                 physical_height = (height + 3) & ~3;
-    int num_blocks_x = physical_width/4,
-        num_blocks_y = physical_height/4,
-        num_blocks_z = (depth + 3)/4;
-    uint8_t *converted_data = (uint8_t*)g_malloc(width * height * depth * 4);
-    int cur_depth = 0;
-    int sub_block_index = 0;
-    for (int k = 0; k < num_blocks_z; k++) {
-        int residual_depth = depth - cur_depth;
-        int block_depth = MIN(residual_depth, 4);
-        for (int j = 0; j < num_blocks_y; j++) {
-            for (int i = 0; i < num_blocks_x; i++) {
-                for (int slice = 0; slice < block_depth; slice++) {
-                    int z_pos_factor = (cur_depth + slice) * width * height;
-                    if (color_format == S3TC_DECOMPRESS_FORMAT_DXT1) {
-                        decompress_dxt1_block(data + 8 * sub_block_index, converted_data,
-                                              i, j, width, height, z_pos_factor);
-                    } else if (color_format == S3TC_DECOMPRESS_FORMAT_DXT3) {
-                        decompress_dxt3_block(data + 16 * sub_block_index, converted_data,
-                                              i, j, width, height, z_pos_factor);
-                    } else if (color_format == S3TC_DECOMPRESS_FORMAT_DXT5) {
-                        decompress_dxt5_block(data + 16 * sub_block_index, converted_data,
-                                              i, j, width, height, z_pos_factor);
-                    } else {
-                        assert(false);
-                    }
-                    sub_block_index++;
+    for (int j = rows->j_start; j < rows->j_end; j++) {
+        for (int i = 0; i < rows->num_blocks_x; i++) {
+            for (int slice = 0; slice < rows->block_depth; slice++) {
+                int block_index =
+                    rows->block_base +
+                    (j * rows->num_blocks_x + i) * rows->block_depth + slice;
+                int z_pos_factor =
+                    (rows->depth_start + slice) * rows->width * rows->height;
+                if (rows->color_format == S3TC_DECOMPRESS_FORMAT_DXT1) {
+                    decompress_dxt1_block(rows->data + 8 * block_index,
+                                          rows->converted_data, i, j,
+                                          rows->width, rows->height,
+                                          z_pos_factor);
+                } else if (rows->color_format == S3TC_DECOMPRESS_FORMAT_DXT3) {
+                    decompress_dxt3_block(rows->data + 16 * block_index,
+                                          rows->converted_data, i, j,
+                                          rows->width, rows->height,
+                                          z_pos_factor);
+                } else if (rows->color_format == S3TC_DECOMPRESS_FORMAT_DXT5) {
+                    decompress_dxt5_block(rows->data + 16 * block_index,
+                                          rows->converted_data, i, j,
+                                          rows->width, rows->height,
+                                          z_pos_factor);
+                } else {
+                    assert(false);
                 }
             }
         }
-        cur_depth += block_depth;
     }
-    return converted_data;
+}
+
+/*
+ * Large textures are split into bands of block rows, decoded in parallel.
+ * Each block writes only its own 4x4 texels, so bands never overlap.
+ *
+ * GPUs without usable BC support (Adreno's blob among them) take this path on
+ * every DXT texture cache miss, so the decode sits directly in the upload.
+ * hakuX measured a 512x512 DXT5 at ~500us single-threaded and ~150us on four
+ * threads. The workers are persistent: waking one costs a few microseconds,
+ * where creating a thread per texture costs more than decoding a small one,
+ * hence also the size threshold.
+ */
+#define S3TC_MT_MIN_BLOCKS 2048 /* 128x256; ~60us single-threaded on arm64 */
+#define S3TC_MT_WORKERS 3       /* plus the calling thread */
+
+typedef struct S3tcWorker {
+    QemuThread thread;
+    QemuSemaphore go;
+    S3tcRows rows;
+} S3tcWorker;
+
+static struct {
+    S3tcWorker workers[S3TC_MT_WORKERS];
+    QemuSemaphore done;
+    /* Held for the duration of one parallel decode; a second caller decodes
+     * on its own thread instead of waiting. */
+    QemuMutex busy;
+} s3tc_pool;
+
+static void *s3tc_worker_thread(void *opaque)
+{
+    S3tcWorker *w = opaque;
+    for (;;) {
+        qemu_sem_wait(&w->go);
+        decompress_rows(&w->rows);
+        qemu_sem_post(&s3tc_pool.done);
+    }
+    return NULL;
+}
+
+static void s3tc_pool_init(void)
+{
+    qemu_sem_init(&s3tc_pool.done, 0);
+    qemu_mutex_init(&s3tc_pool.busy);
+    for (int t = 0; t < S3TC_MT_WORKERS; t++) {
+        S3tcWorker *w = &s3tc_pool.workers[t];
+        qemu_sem_init(&w->go, 0);
+        qemu_thread_create(&w->thread, "s3tc-decode", s3tc_worker_thread, w,
+                           QEMU_THREAD_DETACHED);
+    }
+}
+
+static bool decompress_parallel(const S3tcRows *all, int num_blocks_y)
+{
+    static gsize initialized;
+    if (g_once_init_enter(&initialized)) {
+        s3tc_pool_init();
+        g_once_init_leave(&initialized, 1);
+    }
+    if (qemu_mutex_trylock(&s3tc_pool.busy)) {
+        return false;
+    }
+
+#ifdef __aarch64__
+    /* Settle the lazily-read NEON choice before the workers race to it. */
+    (void)s3tc_neon_enabled();
+#endif
+
+    const int bands = S3TC_MT_WORKERS + 1;
+    int rows_per_band = num_blocks_y / bands, remainder = num_blocks_y % bands;
+    S3tcRows mine = *all;
+    int j = 0;
+    for (int t = 0; t < bands; t++) {
+        S3tcRows *rows = t < S3TC_MT_WORKERS ? &s3tc_pool.workers[t].rows
+                                             : &mine;
+        *rows = *all;
+        rows->j_start = j;
+        j += rows_per_band + (t < remainder ? 1 : 0);
+        rows->j_end = j;
+        if (t < S3TC_MT_WORKERS) {
+            qemu_sem_post(&s3tc_pool.workers[t].go);
+        }
+    }
+    decompress_rows(&mine);
+    for (int t = 0; t < S3TC_MT_WORKERS; t++) {
+        qemu_sem_wait(&s3tc_pool.done);
+    }
+
+    qemu_mutex_unlock(&s3tc_pool.busy);
+    return true;
 }
 
 uint8_t *s3tc_decompress_2d(enum S3TC_DECOMPRESS_FORMAT color_format,
@@ -344,22 +442,60 @@ uint8_t *s3tc_decompress_2d(enum S3TC_DECOMPRESS_FORMAT color_format,
                  physical_height = (height + 3) & ~3;
     int num_blocks_x = physical_width / 4, num_blocks_y = physical_height / 4;
     uint8_t *converted_data = (uint8_t *)g_malloc(width * height * 4);
-    for (int j = 0; j < num_blocks_y; j++) {
-        for (int i = 0; i < num_blocks_x; i++) {
-            int block_index = j * num_blocks_x + i;
-            if (color_format == S3TC_DECOMPRESS_FORMAT_DXT1) {
-                decompress_dxt1_block(data + 8 * block_index,
-                                      converted_data, i, j, width, height, 0);
-            } else if (color_format == S3TC_DECOMPRESS_FORMAT_DXT3) {
-                decompress_dxt3_block(data + 16 * block_index,
-                                      converted_data, i, j, width, height, 0);
-            } else if (color_format == S3TC_DECOMPRESS_FORMAT_DXT5) {
-                decompress_dxt5_block(data + 16 * block_index,
-                                      converted_data, i, j, width, height, 0);
-            } else {
-                assert(false);
-            }
+    S3tcRows rows = {
+        .color_format = color_format,
+        .data = data,
+        .converted_data = converted_data,
+        .width = width,
+        .height = height,
+        .num_blocks_x = num_blocks_x,
+        .j_start = 0,
+        .j_end = num_blocks_y,
+        .block_depth = 1,
+    };
+    if (num_blocks_x * num_blocks_y < S3TC_MT_MIN_BLOCKS ||
+        !decompress_parallel(&rows, num_blocks_y)) {
+        decompress_rows(&rows);
+    }
+    return converted_data;
+}
+
+uint8_t *s3tc_decompress_3d(enum S3TC_DECOMPRESS_FORMAT color_format,
+                            const uint8_t *data, unsigned int width,
+                            unsigned int height, unsigned int depth)
+{
+    assert(width > 0);
+    assert(height > 0);
+    assert(depth > 0);
+    unsigned int physical_width = (width + 3) & ~3,
+                 physical_height = (height + 3) & ~3;
+    int num_blocks_x = physical_width / 4, num_blocks_y = physical_height / 4,
+        num_blocks_z = (depth + 3) / 4;
+    uint8_t *converted_data = (uint8_t *)g_malloc(width * height * depth * 4);
+    int cur_depth = 0;
+    int block_base = 0;
+    for (int k = 0; k < num_blocks_z; k++) {
+        int block_depth = MIN(depth - cur_depth, 4);
+        S3tcRows rows = {
+            .color_format = color_format,
+            .data = data,
+            .converted_data = converted_data,
+            .width = width,
+            .height = height,
+            .num_blocks_x = num_blocks_x,
+            .j_start = 0,
+            .j_end = num_blocks_y,
+            .block_base = block_base,
+            .block_depth = block_depth,
+            .depth_start = cur_depth,
+        };
+        int slab_blocks = num_blocks_x * num_blocks_y * block_depth;
+        if (slab_blocks < S3TC_MT_MIN_BLOCKS ||
+            !decompress_parallel(&rows, num_blocks_y)) {
+            decompress_rows(&rows);
         }
+        block_base += slab_blocks;
+        cur_depth += block_depth;
     }
     return converted_data;
 }

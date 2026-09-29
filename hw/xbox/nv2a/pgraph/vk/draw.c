@@ -312,13 +312,16 @@ static void opt_stats_log_and_reset(void)
                 g_opt_stats.dif_dds_fb,
                 g_opt_stats.dif_other);
         __android_log_print(ANDROID_LOG_INFO, "hakuX-stall",
-                "buf_detail: ds%d ubo%d fb%d stg%d comp%d vtx%d",
+                "buf_detail: ds%d ubo%d fb%d stg%d comp%d vtx%d "
+                "desc_cache hit%d miss%d",
                 g_opt_stats.buf_ds_full,
                 g_opt_stats.buf_ubo_full,
                 g_opt_stats.buf_fb_full,
                 g_opt_stats.buf_stg_full,
                 g_opt_stats.buf_compute_full,
-                g_opt_stats.buf_vtx_full);
+                g_opt_stats.buf_vtx_full,
+                g_opt_stats.desc_cache_hits,
+                g_opt_stats.desc_cache_misses);
         {
             extern struct FPUProfileCounters {
                 int x87_arith, x87_load_store, x87_transcendental, x87_stack;
@@ -2443,6 +2446,7 @@ void pgraph_vk_flush_all_frames(PGRAPHState *pg)
 
     // All GPU work is complete — safe to reuse all descriptor sets
     r->descriptor_set_index = 0;
+    pgraph_vk_invalidate_desc_set_cache(r);
     r->push_ubo_set_index = 0;
 #if OPT_BINDLESS_TEXTURES
     r->ubo_descriptor_set_index = 0;
@@ -2676,6 +2680,7 @@ void pgraph_vk_finish(PGRAPHState *pg, FinishReason finish_reason)
                 /* Immediate submit: GPU done, descriptor sets safe to
                  * reuse */
                 r->descriptor_set_index = 0;
+                pgraph_vk_invalidate_desc_set_cache(r);
                 r->push_ubo_set_index = 0;
 #if OPT_BINDLESS_TEXTURES
                 r->ubo_descriptor_set_index = 0;
@@ -2748,6 +2753,7 @@ void pgraph_vk_finish(PGRAPHState *pg, FinishReason finish_reason)
 
                 /* Non-deferred: GPU done, descriptor sets safe to reuse */
                 r->descriptor_set_index = 0;
+                pgraph_vk_invalidate_desc_set_cache(r);
                 r->push_ubo_set_index = 0;
 #if OPT_BINDLESS_TEXTURES
                 r->ubo_descriptor_set_index = 0;
@@ -2843,6 +2849,7 @@ void pgraph_vk_finish(PGRAPHState *pg, FinishReason finish_reason)
                 }
                 if (!any_in_flight) {
                     r->descriptor_set_index = 0;
+                    pgraph_vk_invalidate_desc_set_cache(r);
                     r->push_ubo_set_index = 0;
 #if OPT_BINDLESS_TEXTURES
                     r->ubo_descriptor_set_index = 0;

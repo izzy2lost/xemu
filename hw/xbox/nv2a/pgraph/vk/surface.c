@@ -1951,6 +1951,7 @@ static void destroy_surface_image(PGRAPHVkState *r, SurfaceBinding *surface)
      * recorded command buffer uses is invalid usage and was seen ~221 times
      * per Forza race before retirement was deferred.
      */
+    pgraph_vk_invalidate_desc_set_cache(r);
     vkDestroyImageView(r->device, surface->image_view, NULL);
     surface->image_view = VK_NULL_HANDLE;
 

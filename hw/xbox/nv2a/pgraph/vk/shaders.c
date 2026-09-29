@@ -571,6 +571,86 @@ void pgraph_vk_reclaim_descriptor_overflow(PGRAPHVkState *r)
     }
 }
 
+/* The descriptor set cache is on by default; `setprop debug.xemu.vk.desc_cache
+ * 0` (or XEMU_VK_DESC_CACHE=0 on desktop) turns it off, so the two can be
+ * compared on one build. */
+static bool use_desc_set_cache(void)
+{
+    static int mode = -1;
+    if (mode < 0) {
+        mode = 1;
+#ifdef __ANDROID__
+        char property[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.vk.desc_cache", property) > 0 &&
+            property[0] == '0') {
+            mode = 0;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "hakuX-vk",
+                            "descriptor set cache: %s", mode ? "on" : "off");
+#else
+        const char *env = getenv("XEMU_VK_DESC_CACHE");
+        if (env && env[0] == '0') {
+            mode = 0;
+        }
+#endif
+    }
+    return mode == 1;
+}
+
+/* What the plain (non-push) path writes into a set. The key is fully padded
+ * by its own members, so it can be hashed and compared as bytes. */
+static void make_desc_set_cache_key(PGRAPHVkState *r,
+                                    ShaderUniformLayout *const layouts[2],
+                                    struct DescSetCacheKey *key)
+{
+    memset(key, 0, sizeof(*key));
+    key->ubo_buffer = r->storage_buffers[BUFFER_UNIFORM].buffer;
+    for (int i = 0; i < 2; i++) {
+        key->ubo_range[i] = layouts[i]->total_size;
+    }
+    for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
+        key->layouts[i] = r->tex_surface_direct[i]
+            ? r->tex_surface_direct_layout[i]
+            : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        key->views[i] = r->tex_surface_direct[i]
+            ? r->tex_surface_direct_views[i]
+            : r->texture_bindings[i]->image_view;
+        key->samplers[i] = r->texture_bindings[i]->sampler;
+    }
+}
+
+/*
+ * Make an identical set written earlier in this ring lap the current one.
+ * Draws bind descriptor_sets[descriptor_set_index - 1], so the cached set is
+ * swapped into the next slot rather than copied: each handle stays in the ring
+ * exactly once, and the unwritten set that was in that slot moves to one the
+ * lap has already passed and will not write again before the next reset.
+ */
+static bool reuse_cached_descriptor_set(PGRAPHVkState *r, int slot,
+                                        const struct DescSetCacheKey *key)
+{
+    typeof(r->desc_set_cache[0]) *e = &r->desc_set_cache[slot];
+    int cur = r->descriptor_set_index;
+
+    if (e->epoch != r->desc_set_cache_epoch || e->index >= cur ||
+        memcmp(&e->key, key, sizeof(*key))) {
+        return false;
+    }
+    if (e->index == cur - 1) {
+        return true;
+    }
+    if (cur >= r->descriptor_set_count) {
+        return false;
+    }
+
+    VkDescriptorSet cached = r->descriptor_sets[e->index];
+    r->descriptor_sets[e->index] = r->descriptor_sets[cur];
+    r->descriptor_sets[cur] = cached;
+    e->index = cur;
+    r->descriptor_set_index = cur + 1;
+    return true;
+}
+
 void pgraph_vk_update_descriptor_sets(PGRAPHState *pg)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -656,6 +736,7 @@ void pgraph_vk_update_descriptor_sets(PGRAPHState *pg)
         pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
         pgraph_vk_flush_all_frames(pg);
         *ds_index_ptr = 0;
+        pgraph_vk_invalidate_desc_set_cache(r);
     }
 
     if (r->uniforms_changed) {
@@ -718,11 +799,31 @@ void pgraph_vk_update_descriptor_sets(PGRAPHState *pg)
     }
     OPT_STAT_INC(desc_rebind_full);
 
+    bool use_desc_cache = !push_desc && use_desc_set_cache()
+#if OPT_BINDLESS_TEXTURES
+        && !r->bindless_textures_supported
+#endif
+        ;
+    struct DescSetCacheKey desc_key;
+    int desc_slot = -1;
+    if (use_desc_cache) {
+        make_desc_set_cache_key(r, layouts, &desc_key);
+        desc_slot = fast_hash((const uint8_t *)&desc_key, sizeof(desc_key)) %
+                    DESC_SET_CACHE_SIZE;
+        if (reuse_cached_descriptor_set(r, desc_slot, &desc_key)) {
+            OPT_STAT_INC(desc_cache_hits);
+            r->need_descriptor_rebind = false;
+            return;
+        }
+        OPT_STAT_INC(desc_cache_misses);
+    }
+
     if (*ds_index_ptr >= *ds_count_ptr) {
         OPT_STAT_INC(buf_ds_full);
         pgraph_vk_finish(pg, VK_FINISH_REASON_NEED_BUFFER_SPACE);
         pgraph_vk_flush_all_frames(pg);
         *ds_index_ptr = 0;
+        pgraph_vk_invalidate_desc_set_cache(r);
     }
 
     assert(*ds_index_ptr < *ds_count_ptr);
@@ -800,13 +901,9 @@ void pgraph_vk_update_descriptor_sets(PGRAPHState *pg)
                              (void *)r->texture_bindings[i]->image);
             }
             image_infos[i] = (VkDescriptorImageInfo){
-                .imageLayout = r->tex_surface_direct[i]
-                    ? r->tex_surface_direct_layout[i]
-                    : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .imageView = r->tex_surface_direct[i]
-                    ? r->tex_surface_direct_views[i]
-                    : r->texture_bindings[i]->image_view,
-                .sampler = r->texture_bindings[i]->sampler,
+                .imageLayout = desc_key.layouts[i],
+                .imageView = desc_key.views[i],
+                .sampler = desc_key.samplers[i],
             };
             descriptor_writes[2 + i] = (VkWriteDescriptorSet){
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -820,6 +917,10 @@ void pgraph_vk_update_descriptor_sets(PGRAPHState *pg)
         }
 
         vkUpdateDescriptorSets(r->device, 6, descriptor_writes, 0, NULL);
+
+        r->desc_set_cache[desc_slot].key = desc_key;
+        r->desc_set_cache[desc_slot].epoch = r->desc_set_cache_epoch;
+        r->desc_set_cache[desc_slot].index = *ds_index_ptr;
     }
 
     r->need_descriptor_rebind = false;
@@ -1645,6 +1746,8 @@ void pgraph_vk_init_shaders(PGRAPHState *pg)
 
     r->descriptor_set_count = NUM_GFX_DESCRIPTOR_SETS;
     r->descriptor_set_base_count = NUM_GFX_DESCRIPTOR_SETS;
+    /* Zeroed entries carry epoch 0, so start past it. */
+    r->desc_set_cache_epoch = 1;
     r->descriptor_overflow_pools =
         g_array_new(FALSE, FALSE, sizeof(VkDescriptorPool));
     pgraph_vk_init_glsl_compiler();
