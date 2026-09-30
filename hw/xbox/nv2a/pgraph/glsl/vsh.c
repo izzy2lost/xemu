@@ -112,6 +112,7 @@ void pgraph_glsl_set_vsh_state(PGRAPHState *pg, VshState *vsh)
     vsh->surface_scale_factor = pg->surface_scale_factor; // FIXME
 
     vsh->compressed_attrs = pg->compressed_attrs;
+    vsh->int_attrs = pg->int_attrs;
     vsh->uniform_attrs = pg->uniform_attrs;
     vsh->swizzle_attrs = pg->swizzle_attrs;
 
@@ -274,6 +275,9 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
             if (state->compressed_attrs & (1 << i)) {
                 mstring_append_fmt(header,
                                    "layout(location = %d) in int v%d_cmp;\n", i, i);
+            } else if (state->int_attrs & (1 << i)) {
+                mstring_append_fmt(header,
+                                   "layout(location = %d) in ivec4 v%d_int;\n", i, i);
             } else if (state->swizzle_attrs & (1 << i)) {
                 mstring_append_fmt(header, "layout(location = %d) in vec4 v%d_sw;\n",
                                    i, i);
@@ -296,6 +300,10 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
 
         if (state->swizzle_attrs & (1 << i)) {
             mstring_append_fmt(body, "vec4 v%d = v%d_sw.bgra;\n", i, i);
+        }
+
+        if (state->int_attrs & (1 << i)) {
+            mstring_append_fmt(body, "vec4 v%d = vec4(v%d_int);\n", i, i);
         }
 
     }

@@ -51,6 +51,7 @@ typedef struct {
     unsigned int surface_scale_factor;  // FIXME: Remove
 
     uint16_t compressed_attrs;
+    uint16_t int_attrs;
     uint16_t uniform_attrs;
     uint16_t swizzle_attrs;
 

@@ -1230,6 +1230,7 @@ typedef struct PGRAPHVkState {
     uint32_t cached_compressed_attrs;
     uint32_t cached_uniform_attrs;
     uint32_t cached_swizzle_attrs;
+    uint32_t cached_int_attrs;
 
     ram_addr_t vram_ram_addr;
     VkDeviceSize vertex_ram_flush_min;

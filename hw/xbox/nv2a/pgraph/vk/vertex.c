@@ -124,11 +124,15 @@ static const VkFormat s1_to_count[] = {
     VK_FORMAT_R16G16B16A16_SNORM,
 };
 
+/* S32K is fed as signed integers and converted to float by the vertex shader
+ * (pg->int_attrs), which is what an SSCALED format does in the fetch. Vertex
+ * buffer support for the *_SSCALED formats is optional in Vulkan, and some
+ * drivers have none of them (Adreno); *_SINT is required. */
 static const VkFormat s32k_to_count[] = {
-    VK_FORMAT_R16_SSCALED,
-    VK_FORMAT_R16G16_SSCALED,
-    VK_FORMAT_R16G16B16_SSCALED,
-    VK_FORMAT_R16G16B16A16_SSCALED,
+    VK_FORMAT_R16_SINT,
+    VK_FORMAT_R16G16_SINT,
+    VK_FORMAT_R16G16B16_SINT,
+    VK_FORMAT_R16G16B16A16_SINT,
 };
 
 static char const * const vertex_data_array_format_to_str[] = {
@@ -157,6 +161,7 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
                r->cached_num_active_bindings > 0) {
         OPT_STAT_INC(vtx_cache_hits);
         pg->compressed_attrs = r->cached_compressed_attrs;
+        pg->int_attrs = r->cached_int_attrs;
         pg->uniform_attrs = r->cached_uniform_attrs;
         pg->swizzle_attrs = r->cached_swizzle_attrs;
         r->num_active_vertex_attribute_descriptions = r->cached_num_active_attrs;
@@ -190,6 +195,7 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
     }
 
     pg->compressed_attrs = 0;
+    pg->int_attrs = 0;
     pg->uniform_attrs = 0;
     pg->swizzle_attrs = 0;
 
@@ -237,6 +243,7 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
         case NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_S32K:
             assert(attr->count <= ARRAY_SIZE(s32k_to_count));
             vk_format = s32k_to_count[attr->count - 1];
+            pg->int_attrs |= 1 << i;
             break;
         case NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_CMP:
             vk_format =
@@ -348,6 +355,7 @@ void pgraph_vk_bind_vertex_attributes(NV2AState *d, unsigned int min_element,
         memcpy(r->cached_attr_offsets, r->vertex_attribute_offsets,
                sizeof(r->cached_attr_offsets));
         r->cached_compressed_attrs = pg->compressed_attrs;
+        r->cached_int_attrs = pg->int_attrs;
         r->cached_uniform_attrs = pg->uniform_attrs;
         r->cached_swizzle_attrs = pg->swizzle_attrs;
     }
@@ -363,6 +371,7 @@ void pgraph_vk_bind_vertex_attributes_inline(NV2AState *d)
     r->cached_num_active_bindings = 0;
 
     pg->compressed_attrs = 0;
+    pg->int_attrs = 0;
     pg->uniform_attrs = 0;
     pg->swizzle_attrs = 0;
 

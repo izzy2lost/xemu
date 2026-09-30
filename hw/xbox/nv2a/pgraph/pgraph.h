@@ -244,6 +244,7 @@ typedef struct PGRAPHState {
 
     VertexAttribute vertex_attributes[NV2A_VERTEXSHADER_ATTRIBUTES];
     uint16_t compressed_attrs;
+    uint16_t int_attrs; /* fed as integers, converted in the vertex shader */
     uint16_t uniform_attrs;
     uint16_t swizzle_attrs;
 
