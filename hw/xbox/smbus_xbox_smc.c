@@ -28,12 +28,11 @@
 #include "hw/hw.h"
 #include "hw/acpi/acpi.h"
 #include "hw/i2c/i2c.h"
-#include "hw/boards.h"
 #include "hw/i2c/smbus_slave.h"
 #include "qemu/config-file.h"
 #include "qapi/error.h"
 #include "system/block-backend.h"
-#include "chihiro.h"
+#include "chihiro/chihiro.h"
 #include "system/blockdev.h"
 #include "system/system.h"
 #include "smbus.h"
@@ -136,14 +135,7 @@ static int smc_write_data(SMBusDevice *dev, uint8_t *buf, uint8_t len)
         break;
 
     case SMC_REG_POWER:
-        if(0) printf("[SMC] POWER write: 0x%02X (%s%s%s)\n", buf[0],
-               (buf[0] & SMC_REG_POWER_RESET) ? "RESET " : "",
-               (buf[0] & SMC_REG_POWER_CYCLE) ? "CYCLE " : "",
-               (buf[0] & SMC_REG_POWER_SHUTDOWN) ? "SHUTDOWN " : "");
         if (buf[0] & (SMC_REG_POWER_RESET | SMC_REG_POWER_CYCLE)) {
-            if (chihiro_intercept_reset()) {
-                break; /* Chihiro: loaded game XBE, skip reset */
-            }
             qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         } else if (buf[0] & SMC_REG_POWER_SHUTDOWN) {
             qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
@@ -155,10 +147,6 @@ static int smc_write_data(SMBusDevice *dev, uint8_t *buf, uint8_t len)
         break;
 
     case SMC_REG_SCRATCH:
-        if(0) printf("[SMC] SCRATCH write: 0x%02X (was 0x%02X)\n", buf[0], smc->scratch_reg);
-        /* Detect QuickReboot: HalReturnToFirmware(QuickReboot) writes 0x04.
-         * Called on EVERY 0x04 write — chihiro_on_quickreboot_signal uses
-         * usb_poll_patched guard to ignore the kernel's first-boot write. */
         if (buf[0] == 0x04) {
             chihiro_on_quickreboot_signal();
         }
@@ -196,18 +184,10 @@ static uint8_t smc_receive_byte(SMBusDevice *dev)
         return smc->traystate_reg;
 
     case SMC_REG_SCRATCH:
-        if(0) printf("[SMC] SCRATCH read: 0x%02X\n", smc->scratch_reg);
         return smc->scratch_reg;
 
-    case SMC_REG_AVPACK: {
-        static int avpack_log_once = 0;
-        if (!avpack_log_once) {
-            avpack_log_once = 1;
-            if(0) printf("Chihiro SMC: avpack_reg=0x%02X (0=SCART 1=HDTV 2=VGA 4=SVIDEO 6=COMPOSITE)\n",
-                   smc->avpack_reg);
-        }
+    case SMC_REG_AVPACK:
         return smc->avpack_reg;
-    }
 
     case SMC_REG_ERROR_READ:
         return smc->error_reg;
@@ -283,17 +263,9 @@ static void smbus_smc_realize(DeviceState *dev, Error **errp)
     smc->version_string = NULL;
     smc->version_string_index = 0;
     smc->traystate_reg = 0;
-    smc->avpack_reg = SMC_REG_AVPACK_SCART; /* Chihiro: kernel maps 0x00→VGA (DIP 6,7,8 ground AV pins) */
+    smc->avpack_reg = 0; /* Default value for Chihiro machine */
     smc->intstatus_reg = 0;
-    /* NOTE: scratch_reg is NOT cleared here.
-     * On real Xbox hardware, the SMC (PIC16LC) has its own power domain
-     * and preserves the scratch register across CPU resets. The kernel
-     * uses this to distinguish cold boot vs QuickReboot:
-     *   scratch = 0 → cold boot → full init, decompress kernel
-     *   scratch != 0 → warm boot → restore persisted pages (LDP, etc.)
-     * Clearing it here would break QuickReboot persistence for Chihiro
-     * (and retail Xbox title-to-title transitions). */
-    /* smc->scratch_reg = 0; — intentionally preserved */
+    smc->scratch_reg = 0;
     smc->cmd = 0;
     smc->error_reg = 0;
 
@@ -311,12 +283,10 @@ static void smbus_smc_realize(DeviceState *dev, Error **errp)
         g_free(avpack);
     }
 
-    /* Chihiro: force SMC avpack to 0x00 regardless of command line.
-     * On real hardware, DIP 6,7,8 ground the AV sense pins → SMC reads 0x00.
-     * The Chihiro kernel maps 0x00 → AV_PACK_VGA (unlike retail → SCART).
-     * This is the ONLY value that makes the kernel program NV2A for VGA. */
-    if (xbox_is_chihiro()) {
-        smc->avpack_reg = SMC_REG_AVPACK_SCART; /* 0x00 = VGA on Chihiro */
+    /* A Chihiro's SMC reads 0x00 whatever the command line says: DIP 6-8
+     * ground the AV sense pins. */
+    if (object_property_get_bool(qdev_get_machine(), "chihiro", NULL)) {
+        smc->avpack_reg = SMC_REG_AVPACK_SCART;
     }
 
     smc_version = object_property_get_str(qdev_get_machine(), "smc-version", NULL);
@@ -398,14 +368,14 @@ void xbox_smc_update_tray_state(void)
     const char *blk_name = "ide0-cd1";
     BlockBackend *blk = blk_by_name(blk_name);
 
-    /* In Chihiro mode, there is no CD-ROM drive (ISO is mounted as IDE disk).
-     * Skip tray state update — Chihiro has no DVD tray. */
+    /* A Chihiro has no DVD drive: report a closed tray with no disc. */
     if (blk == NULL) {
         smc->traystate_reg = SMC_REG_TRAYSTATE_NO_MEDIA_DETECTED;
         smc->intstatus_reg |= SMC_REG_INTSTATUS_TRAYCLOSED;
         xbox_assert_extsmi();
         return;
     }
+    assert(blk != NULL);
 
     if (blk_dev_is_tray_open(blk)) {
         smc->traystate_reg = SMC_REG_TRAYSTATE_OPEN;

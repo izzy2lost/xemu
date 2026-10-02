@@ -1,0 +1,18 @@
+specific_ss.add(files(
+	'chihiro-8051.c',
+	'chihiro-an2131.c',
+	'chihiro-asic.c',
+	'chihiro-cardreader-crp1231.c',
+	'chihiro-cardreader-hw210.c',
+	'chihiro-des.c',
+	'chihiro-driveboard-sega838.c',
+	'chihiro-driveboard-v257.c',
+	'chihiro-jvs.c',
+	'chihiro-mips.c',
+	'chihiro-netboard.c',
+	'chihiro-pic.c',
+	'chihiro-spd.c',
+	'chihiro-usb.c',
+	'chihiro-v850.c',
+	'chihiro.c',
+))

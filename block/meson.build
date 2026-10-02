@@ -43,6 +43,7 @@ block_ss.add(files(
 
 system_ss.add(when: 'CONFIG_TCG', if_true: files('blkreplay.c'))
 system_ss.add(files('block-ram-registrar.c'))
+system_ss.add(files('blkmemory.c'))
 
 if get_option('qcow1').allowed()
   block_ss.add(files('qcow.c'))

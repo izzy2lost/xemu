@@ -1,6 +1,21 @@
 /*
  * Chihiro JVS I/O Board Emulation (Sega 837-13551)
  *
+ * Copyright (c) 2026 Réda Chérif-Touil
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, see <http://www.gnu.org/licenses/>.
+ *
  * JVS (JAMMA Video Standard) I/O board used by Chihiro, Naomi, Triforce.
  * Protocol references: MAME jvsdev.cpp, Flycast maple_jvs.cpp,
  * Lindbergh Loader jvs.c, Dolphin JVSIO.cpp.
@@ -9,9 +24,17 @@
 #include "qemu/osdep.h"
 #include "qemu/timer.h"
 #include "chihiro-jvs.h"
+#include "chihiro-driveboard-v257.h"
+#include "chihiro.h"
+#include "chihiro-cabinet.h"
+#include "chihiro-log.h"
 #include <string.h>
 
 #define TS_MS ((long long)(qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL)))
+
+/* The card drawers' solenoids, as the game last set them. */
+bool chihiro_jvs_card_lock[2];
+uint32_t chihiro_jvs_switch_reads;
 
 ChihiroJVSState *chihiro_jvs_global = NULL;
 
@@ -23,6 +46,7 @@ static const uint8_t capabilities[] = {
     0x02, 0x02, 0x00, 0x00,   /* Coin: 2 slots */
     0x03, 0x08, 0x10, 0x00,   /* Analog: 8 channels, 16-bit */
     0x12, 0x06, 0x00, 0x00,   /* GP output: 6 channels */
+    0x15, 0x00, 0x00, 0x00,   /* Backup data */
     0x00                       /* Terminator */
 };
 
@@ -33,35 +57,6 @@ void chihiro_jvs_init(ChihiroJVSState *s)
     for (int i = 0; i < JVS_MAX_ANALOG; i++) {
         s->analog[i] = 0x8000;
     }
-}
-
-static int jvs_unescape(const uint8_t *src, int src_len,
-                         uint8_t *dst, int dst_max)
-{
-    int di = 0;
-    for (int si = 0; si < src_len && di < dst_max; si++) {
-        if (src[si] == JVS_ESCAPE && si + 1 < src_len) {
-            dst[di++] = src[++si] + 1;
-        } else {
-            dst[di++] = src[si];
-        }
-    }
-    return di;
-}
-
-static int jvs_escape(const uint8_t *src, int src_len,
-                       uint8_t *dst, int dst_max)
-{
-    int di = 0;
-    for (int si = 0; si < src_len && di < dst_max - 1; si++) {
-        if (src[si] == JVS_SYNC || src[si] == JVS_ESCAPE) {
-            dst[di++] = JVS_ESCAPE;
-            dst[di++] = src[si] - 1;
-        } else {
-            if (di < dst_max) dst[di++] = src[si];
-        }
-    }
-    return di;
 }
 
 /*
@@ -82,16 +77,33 @@ static int jvs_handle_command(ChihiroJVSState *s,
     case 0xF0: /* Reset */
         if (cmd_len < 2) return 1;
         s->reset_count++;
+        CHIHIRO_LOGF(JVS, "JVS RESET: reset_count=%d sense=%d id=%d\n",
+                     s->reset_count, s->sense, s->device_id);
         if (s->reset_count >= 2) {
             s->device_id = 0;
             s->sense = 3;
             s->reset_count = 0;
+            /* A reset drops the board's outputs with its address: the card
+             * locks, and the steering motor's relay. */
+            chihiro_jvs_card_lock[0] = chihiro_jvs_card_lock[1] = false;
+            if (chihiro_v257_global &&
+                chihiro_cabinet_drive_board() == CHIHIRO_DRIVE_V257)
+                v257_set_motor(chihiro_v257_global, false);
+            fprintf(stderr, "[%07lld] JVS RESET: applied → sense=3 id=0\n", TS_MS);
         }
         *rpos = rp;
         return 2;
 
     case 0xF1: /* Set Device ID */
         if (cmd_len < 2) return 1;
+        if (s->sense == 0) {
+            CHIHIRO_LOGF(JVS, "JVS SET_ID: BLOCKED sense=0 id=%d (already "
+                         "assigned)\n", s->device_id);
+            *rpos = rp;
+            return 2;
+        }
+        fprintf(stderr, "[%07lld] JVS SET_ID: sense=%d → assigning id=%d\n",
+               TS_MS, s->sense, cmd[1]);
         s->device_id = cmd[1];
         s->sense = 0;
         s->reset_count = 0;
@@ -148,6 +160,7 @@ static int jvs_handle_command(ChihiroJVSState *s,
         if (cmd_len < 3) return 1;
         int players = cmd[1];
         int bytes_per = cmd[2];
+        chihiro_jvs_switch_reads++;
         PUT(JVS_REPORT_OK);
         PUT(s->system_switches);
         for (int p = 0; p < players && p < JVS_MAX_PLAYERS; p++) {
@@ -229,10 +242,30 @@ static int jvs_handle_command(ChihiroJVSState *s,
     case 0x32: { /* General Purpose Output */
         if (cmd_len < 2) return 1;
         int banks = cmd[1];
-        int consumed = 2;
-        for (int i = 0; i < banks && consumed < cmd_len; i++, consumed++) {
-            if (i < JVS_MAX_GP_OUTPUT)
-                s->gp_output[i] = cmd[consumed];
+        int consumed = 2 + banks;
+        if (consumed > cmd_len) consumed = cmd_len;
+        /* Bank 0 bit 7 is the steering motor relay in a Maximum Tune cabinet
+         * (V322.xbe builds the byte at 0x000558C0). The board has to see it:
+         * its answer is what the boot wheel check waits for. */
+        if (banks >= 1 && cmd_len >= 3 && chihiro_v257_global &&
+            chihiro_cabinet_drive_board() == CHIHIRO_DRIVE_V257) {
+            v257_set_motor(chihiro_v257_global,
+                                    (cmd[2] & 0x80) != 0);
+        }
+        /* The card drawers' solenoids, one output per slot, which the
+         * cabinet table names. The game holds a card it finds in a slot
+         * and lets go to eject it. */
+        if (banks >= 1 && cmd_len >= 3 &&
+            chihiro_cabinet_card_reader() == CHIHIRO_CARD_HW210) {
+            for (int p = 0; p < 2; p++) {
+                uint8_t bit = chihiro_cabinet_card_lock(p);
+                bool now = bit && (cmd[2] & bit);
+                if (now != chihiro_jvs_card_lock[p]) {
+                    chihiro_jvs_card_lock[p] = now;
+                    CHIHIRO_LOGF(CARD, "P%d card lock %s\n", p + 1,
+                                 now ? "on" : "off");
+                }
+            }
         }
         PUT(JVS_REPORT_OK);
         *rpos = rp;
@@ -266,8 +299,6 @@ static int jvs_handle_command(ChihiroJVSState *s,
         return 3;
 
     default:
-        /* Unknown command — return InvalidParameter (NOT UnsupportedCommand,
-         * which would trigger Error 11 in the game) */
         PUT(JVS_REPORT_PARAM);
         *rpos = rp;
         return 1;
@@ -282,27 +313,24 @@ int chihiro_jvs_process(ChihiroJVSState *s,
     if (in_len < 3 || in[0] != JVS_SYNC) return 0;
 
     uint8_t target = in[1];
-    s->last_target = target;
     int escaped_count = in[2];
 
-    /* JVS over Chihiro USB is a raw byte stream — escape encoding (0xD0)
-     * is a physical RS-485 layer concern and is NOT used over USB. */
+    /* The caller (the QC's UART1, chihiro-an2131.c) removes and restores
+     * the 0xD0 escapes, and hands over whole frames: the bytes here are
+     * raw, and raw_len is escaped_count. */
     const uint8_t *raw = in + 3;
     int raw_len = in_len - 3;
 
-    if (raw_len < escaped_count) {
-        /* Incomplete packet — but try to process what we have */
-    }
-
     /* Verify checksum: sum of (target + count + all_data_bytes) & 0xFF */
-    int data_len = (raw_len >= escaped_count) ? escaped_count - 1 : raw_len - 1;
+    int data_len = MIN(raw_len, escaped_count) - 1;
     if (data_len < 0) data_len = 0;
 
     uint8_t csum = target + escaped_count;
     for (int i = 0; i < data_len; i++) csum += raw[i];
-    if (raw_len >= escaped_count && raw[escaped_count - 1] != (csum & 0xFF)) {
-        printf("[%07lld] JVS: checksum error (got 0x%02X, expected 0x%02X)\n",
-               TS_MS, raw[escaped_count - 1], csum & 0xFF);
+    if (escaped_count >= 1 && raw_len >= escaped_count &&
+        raw[escaped_count - 1] != (csum & 0xFF)) {
+        CHIHIRO_ERRF("JVS: checksum error (got 0x%02X, expected 0x%02X)\n",
+                     raw[escaped_count - 1], csum & 0xFF);
     }
 
     /* Broadcast: Reset gets no response, but Set ID does (claiming device responds) */
@@ -324,7 +352,12 @@ int chihiro_jvs_process(ChihiroJVSState *s,
     }
 
     /* Addressed packet — must match our device_id (broadcast Set ID also passes) */
-    if (target != JVS_BROADCAST && target != s->device_id && s->device_id != 0) return 0;
+    if (target != JVS_BROADCAST && target != s->device_id && s->device_id != 0) {
+        CHIHIRO_LOG_HEX(JVS, raw, MIN(data_len, 16),
+                        "JVS DROPPED: target=0x%02X (our id=%d) data(%d):",
+                        target, s->device_id, data_len);
+        return 0;
+    }
 
     /* Process commands and build response payload */
     uint8_t payload[256];
@@ -341,9 +374,9 @@ int chihiro_jvs_process(ChihiroJVSState *s,
         remaining -= consumed;
     }
 
-    /* Build framed response: SYNC + host_addr + count + payload + checksum
-     * No escape encoding — USB transport uses raw bytes. */
-    uint8_t frame[256];
+    /* Build framed response: SYNC + host_addr + count + payload + checksum,
+     * raw: the caller escapes it. */
+    uint8_t frame[sizeof(payload) + 4];     /* SYNC, address, count, sum */
     int fpos = 0;
     uint8_t resp_count = ppos + 1; /* payload + checksum */
 
@@ -359,9 +392,6 @@ int chihiro_jvs_process(ChihiroJVSState *s,
 
     int out_len = (fpos < out_max) ? fpos : out_max;
     memcpy(out, frame, out_len);
-
-    if(0) printf("[%07lld] JVS: cmd=%02X → resp %d bytes (sense=%d id=%d)\n",
-           TS_MS, (data_len > 0) ? raw[0] : 0, out_len, s->sense, s->device_id);
 
     return out_len;
 }
