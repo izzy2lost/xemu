@@ -522,6 +522,10 @@ static bool GRAPH_RDLOCK bdrv_all_snapshots_includes_bs(BlockDriverState *bs)
         return false;
     }
 
+    if (bs->drv && bs->drv->snapshots_covered_by_vmstate) {
+        return false;
+    }
+
     /* Include all nodes that are either in use by a BlockBackend, or that
      * aren't attached to any node, but owned by the monitor. */
     return bdrv_has_blk(bs) || QLIST_EMPTY(&bs->parents);

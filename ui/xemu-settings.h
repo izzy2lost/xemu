@@ -48,6 +48,10 @@ void xemu_settings_set_path(const char *path);
 // Get the path of the base settings dir
 const char *xemu_settings_get_base_path(void);
 
+/* CHIHIRO (not upstream): the game image or folder the media board loads
+ * (defined in hw/xbox/chihiro/chihiro.c). */
+const char *xemu_chihiro_image(void);
+
 // Get path of the config file on disk
 const char *xemu_settings_get_path(void);
 

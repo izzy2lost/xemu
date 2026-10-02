@@ -389,3 +389,79 @@ perf:
   unlock_framerate:
     type: bool
     default: false
+
+# Sega Chihiro media board and cabinet (from Tovarichtch/xemu). Only the
+# settings the emulation reads; the machine itself is chosen by sys.chihiro.
+chihiro:
+  jvs:
+    profile:
+      type: enum
+      values: [hotd3, vc3, gs, ctx, or2, ok, wmmt2, gundam]
+      default: hotd3
+  settings:
+    freeplay:
+      type: bool
+      default: false
+    region:
+      type: enum
+      values: [auto, jp, us, ex]
+      default: ex
+    dimm_size:
+      type: enum
+      values: ['128', '256', '512', '1024', 'auto']
+      default: 'auto'
+    board_type:
+      type: enum
+      values: [auto, type1, type3]
+      default: auto
+  link:
+    enable: bool
+    cabinets:
+      type: integer
+      default: 2
+    cabinet:
+      type: integer
+      default: 1
+  card_reader:
+    enable:
+      type: bool
+      default: true
+    hw210:
+      slot1:
+        type: string
+        default: ""
+      slot2:
+        type: string
+        default: ""
+      gundam:
+        type: string
+        default: ""
+    crp1231:
+      mt1:
+        type: string
+        default: ""
+      mt2:
+        type: string
+        default: ""
+    card1_path:
+      type: string
+      default: ""
+    card2_path:
+      type: string
+      default: ""
+  roms:
+    mediaboard_path:
+      type: string
+      default: ""
+    ic10_path:
+      type: string
+      default: ""
+    ic11_path:
+      type: string
+      default: ""
+    pc20_path:
+      type: string
+      default: ""
+    net_firmware_path:
+      type: string
+      default: ""

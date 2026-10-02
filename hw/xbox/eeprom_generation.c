@@ -19,7 +19,7 @@
  */
 
 #include "eeprom_generation.h"
-#include "chihiro.h"
+#include "chihiro/chihiro.h"
 #include "util/sha1.h"
 #include "util/rc4.h"
 

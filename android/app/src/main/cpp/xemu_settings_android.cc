@@ -111,6 +111,30 @@ static void xemu_settings_apply_defaults(void)
     g_config.perf.fp_jit = true;
     g_config.perf.cache_shaders = true;
     g_config.perf.unlock_framerate = true;
+
+    /* Chihiro media board: config_spec.yml's defaults. The paths are empty
+     * strings, never NULL, because the media board code reads them. */
+    g_config.chihiro.jvs.profile = CONFIG_CHIHIRO_JVS_PROFILE_HOTD3;
+    g_config.chihiro.settings.freeplay = false;
+    g_config.chihiro.settings.region = CONFIG_CHIHIRO_SETTINGS_REGION_EX;
+    g_config.chihiro.settings.dimm_size = CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE_AUTO;
+    g_config.chihiro.settings.board_type = CONFIG_CHIHIRO_SETTINGS_BOARD_TYPE_AUTO;
+    g_config.chihiro.link.enable = false;
+    g_config.chihiro.link.cabinets = 2;
+    g_config.chihiro.link.cabinet = 1;
+    g_config.chihiro.card_reader.enable = true;
+    g_config.chihiro.card_reader.hw210.slot1 = strdup("");
+    g_config.chihiro.card_reader.hw210.slot2 = strdup("");
+    g_config.chihiro.card_reader.hw210.gundam = strdup("");
+    g_config.chihiro.card_reader.crp1231.mt1 = strdup("");
+    g_config.chihiro.card_reader.crp1231.mt2 = strdup("");
+    g_config.chihiro.card_reader.card1_path = strdup("");
+    g_config.chihiro.card_reader.card2_path = strdup("");
+    g_config.chihiro.roms.mediaboard_path = strdup("");
+    g_config.chihiro.roms.ic10_path = strdup("");
+    g_config.chihiro.roms.ic11_path = strdup("");
+    g_config.chihiro.roms.pc20_path = strdup("");
+    g_config.chihiro.roms.net_firmware_path = strdup("");
 }
 
 // Optimized parsers - avoid string allocations

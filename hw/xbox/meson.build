@@ -1,10 +1,6 @@
 specific_ss.add(files(
 	'acpi_xbox.c',
 	'amd_smbus.c',
-	'chihiro-jvs.c',
-	'chihiro-usb.c',
-	'chihiro.c',
-	'chihiro_fatx.c',
 	'eeprom_generation.c',
 	'lpc47m157.c',
 	'smbus_adm1032.c',
@@ -20,5 +16,6 @@ specific_ss.add(files(
 	'xid-light-gun.c',
 	'xblc.c',
 	))
+subdir('chihiro')
 subdir('nv2a')
 subdir('mcpx')

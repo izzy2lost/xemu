@@ -25,6 +25,10 @@
 /* Forward declaration */
 typedef struct USBDevice USBDevice;
 
+/* Whether this machine is a Chihiro. This port picks the machine with
+ * sys.chihiro (the Android library sets it per game), not from the image. */
+bool xbox_is_chihiro(void);
+
 /* MemoryRegion-backed IDE interface */
 void chihiro_ide_interface_init(void);
 void chihiro_ide_load_rom(void);

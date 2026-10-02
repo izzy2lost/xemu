@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <errno.h>
 #include <unistd.h>
 
@@ -1310,7 +1311,58 @@ extern "C" void xemu_android_persist_tb_cache(void)
 #endif
 }
 
+/*
+ * Android sends stdout and stderr to /dev/null, which swallowed every
+ * fprintf(stderr) diagnostic in the core (the Chihiro board's in particular).
+ * Pipe stderr into logcat, a line at a time, under the tag "xemu-stderr".
+ */
+static void* StderrPumpThread(void* arg) {
+  int fd = (int)(intptr_t)arg;
+  char buf[1024];
+  size_t len = 0;
+  for (;;) {
+    ssize_t n = read(fd, buf + len, sizeof(buf) - 1 - len);
+    if (n <= 0) {
+      break;
+    }
+    len += (size_t)n;
+    char* start = buf;
+    char* nl;
+    while ((nl = (char*)memchr(start, '\n', buf + len - start))) {
+      *nl = '\0';
+      __android_log_write(ANDROID_LOG_INFO, "xemu-stderr", start);
+      start = nl + 1;
+    }
+    len -= (size_t)(start - buf);
+    memmove(buf, start, len);
+    if (len == sizeof(buf) - 1) {  // a line longer than the buffer
+      buf[len] = '\0';
+      __android_log_write(ANDROID_LOG_INFO, "xemu-stderr", buf);
+      len = 0;
+    }
+  }
+  return nullptr;
+}
+
+static void RedirectStderrToLogcat() {
+  static bool done;
+  int fds[2];
+  if (done || pipe(fds) != 0) {
+    return;
+  }
+  done = true;
+  setvbuf(stderr, nullptr, _IOLBF, 0);
+  dup2(fds[1], STDERR_FILENO);
+  close(fds[1]);
+  pthread_t thread;
+  if (pthread_create(&thread, nullptr, StderrPumpThread,
+                     (void*)(intptr_t)fds[0]) == 0) {
+    pthread_detach(thread);
+  }
+}
+
 extern "C" int xemu_android_main(int argc, char** argv) {
+  RedirectStderrToLogcat();
   if (!qemu_main) {
     LogError("xemu core not linked; qemu_main missing");
     return 1;

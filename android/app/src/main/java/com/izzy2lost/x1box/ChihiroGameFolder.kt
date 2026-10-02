@@ -119,11 +119,14 @@ object ChihiroGameFolder {
     }
     val clusterSize = clusterSectors * SECTOR_SIZE
 
-    // 0xF8000 sectors is the mbfs partition inside a 512 MiB DIMM; also try the
-    // 1 GiB board and the image's own length for images built to fit exactly.
+    // 0xF8000 sectors is the mbfs partition inside a 512 MiB DIMM (the DIMM
+    // less its top 16 MiB); also try the 1 GiB, 256 MiB and 128 MiB boards and
+    // the image's own length for images built to fit exactly.
     val candidates = linkedSetOf(
       0xF8000L * SECTOR_SIZE,
       0x1F8000L * SECTOR_SIZE,
+      0x78000L * SECTOR_SIZE,
+      0x38000L * SECTOR_SIZE,
       imageSize,
     )
 
@@ -151,7 +154,9 @@ object ChihiroGameFolder {
     val nameLen = e[0].toInt() and 0xFF
     if (nameLen == 0 || nameLen == 0xFF || nameLen > MAX_NAME) return false
     val attr = e[1].toInt() and 0xFF
-    if (attr != 0x10 && attr != 0x20 && attr != 0x00) return false
+    // Read-only, hidden, system, directory and archive, in any combination:
+    // Ollie King's root folders are 0x30 (directory + archive).
+    if (attr and 0x37.inv() != 0) return false
     for (i in 0 until nameLen) {
       val c = e[2 + i].toInt() and 0xFF
       if (c < 0x20 || c > 0x7E) return false
@@ -166,13 +171,14 @@ object ChihiroGameFolder {
     val off = l.fatOffset + cluster.toLong() * l.fatEntryBytes
     raf.seek(off)
     val b = ByteArray(l.fatEntryBytes)
-    if (raf.read(b) != l.fatEntryBytes) return FAT16_END_MIN
+    if (raf.read(b) != l.fatEntryBytes) return 0  // unreadable: end the chain
     return if (l.fatEntryBytes == 2) u16(b, 0) else u32(b, 0).toInt()
   }
 
   private fun isChainEnd(l: Layout, v: Int): Boolean =
     if (l.fatEntryBytes == 2) v >= FAT16_END_MIN || v == 0
-    else v >= 0xFFFFFFF8.toInt() || v == 0
+    // Unsigned: 0xFFFFFFF8.toInt() is -8, which every cluster number exceeds.
+    else (v.toLong() and 0xFFFFFFFFL) >= 0xFFFFFFF8L || v == 0
 
   /**
    * Unpack a FATX image into [dest]. Returns the number of files written.

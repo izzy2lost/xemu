@@ -70,6 +70,11 @@ void xemu_queue_notification(const char *msg)
     }
 }
 
+void xemu_queue_notification_warning(const char *msg)
+{
+    xemu_queue_notification(msg);
+}
+
 void xemu_queue_error_message(const char *msg)
 {
     if (msg) {

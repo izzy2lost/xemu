@@ -53,6 +53,9 @@ uint32_t fatx_diag_lba = 0; /* LBA of XBE section 11 critical sector (extern) */
 uint32_t fatx_diag_lba_sec0 = 0; /* LBA of XBE section 0 critical sector (VA 0x135000) */
 static uint8_t *fatx_image = NULL;
 static uint32_t fatx_image_size = 0;
+/* When set, the image is built here instead of in a fresh allocation. */
+static uint8_t *fatx_target = NULL;
+static uint32_t fatx_target_size = 0;
 static FATXFileEntry *fatx_files = NULL;
 static int fatx_file_count = 0;
 static int fatx_file_capacity = 0;
@@ -322,8 +325,21 @@ uint8_t *chihiro_fatx_build(const char *game_dir, uint32_t *out_size,
                  fatx_total_clusters, fat_bytes, fatx_image_size,
                  fatx_image_size / (1024.0 * 1024.0));
 
-    /* Allocate image */
-    fatx_image = (uint8_t *)g_malloc0(fatx_image_size);
+    /* Allocate image, or use the caller's buffer */
+    if (fatx_target) {
+        if (fatx_image_size > fatx_target_size) {
+            error_report("[FATX] ERROR: the game needs %u bytes, the DIMM "
+                         "holds %u", fatx_image_size, fatx_target_size);
+            g_free(fatx_files);
+            fatx_files = NULL;
+            fatx_file_capacity = 0;
+            return NULL;
+        }
+        fatx_image = fatx_target;
+        memset(fatx_image, 0, fatx_image_size);
+    } else {
+        fatx_image = (uint8_t *)g_malloc0(fatx_image_size);
+    }
     fatx_fat = (uint16_t *)(fatx_image + fatx_fat_offset);
 
     /* Phase 3: Write superblock */
@@ -583,4 +599,21 @@ bool chihiro_fatx_read_sector(uint32_t lba, void *buffer)
     /* Beyond image: return zeros */
     memset(buffer, 0, FATX_SECTOR_SIZE);
     return true;
+}
+
+/*
+ * Build the image straight into buf (the media board DIMM), so a game run
+ * from a folder is not held twice. Returns false when it does not fit or the
+ * directory cannot be read.
+ */
+bool chihiro_fatx_build_into(const char *game_dir, uint8_t *buf,
+                             uint32_t buf_size, uint32_t partition_sectors,
+                             uint32_t *out_size)
+{
+    fatx_target = buf;
+    fatx_target_size = buf_size;
+    uint8_t *image = chihiro_fatx_build(game_dir, out_size, partition_sectors);
+    fatx_target = NULL;
+    fatx_target_size = 0;
+    return image != NULL;
 }

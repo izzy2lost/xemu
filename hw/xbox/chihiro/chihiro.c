@@ -53,6 +53,23 @@
 #include "chihiro-netboard.h"
 #include "ui/xemu-notifications.h"
 
+bool xbox_is_chihiro(void)
+{
+    return g_config.sys.chihiro;
+}
+
+/* The game to load: sys.files.dvd_path, a netboot FATX image or a game
+ * folder, fixed for the session like upstream-chihiro's. */
+const char *xemu_chihiro_image(void)
+{
+    static char *image;
+    if (!image) {
+        const char *path = g_config.sys.files.dvd_path;
+        image = g_strdup(path ? path : "");
+    }
+    return image;
+}
+
 /*
  * Chihiro Mediaboard LPC I/O
  *
@@ -406,6 +423,34 @@ static uint16_t mediaboard_net_firmware_version(void)
     return ver;
 }
 
+/* What the FATX builder will need for a game folder: every file's data
+ * plus a 16 KiB cluster per entry (chihiro-fatx-builder.c's sizing). */
+static uint64_t chihiro_dir_fatx_bytes(const char *dir)
+{
+    uint64_t total = 0;
+    GDir *d = g_dir_open(dir, 0, NULL);
+    const char *name;
+
+    if (!d) {
+        return 0;
+    }
+    while ((name = g_dir_read_name(d))) {
+        char *child = g_build_filename(dir, name, NULL);
+        struct stat st;
+        if (stat(child, &st) == 0) {
+            total += 16384;
+            if (S_ISDIR(st.st_mode)) {
+                total += chihiro_dir_fatx_bytes(child);
+            } else {
+                total += st.st_size;
+            }
+        }
+        g_free(child);
+    }
+    g_dir_close(d);
+    return total;
+}
+
 /* The JP1/JP2 jumpers the kernel reads at SEGA_DIMM_SIZE: 0 is 128 MB, 3 is
  * 1024 MB (the setting's enum index). Past those, Auto: the smallest module
  * that holds the game's image (Gundam's 576 MiB needs 1024; the others fit
@@ -430,7 +475,12 @@ unsigned chihiro_dimm_factor(void)
     factor = SEGA_DIMM_SIZE_512M;
     const char *path = xemu_chihiro_image();
     int64_t size = -1;
-    if (path && path[0]) {
+    if (path && path[0] && g_file_test(path, G_FILE_TEST_IS_DIR)) {
+        /* A folder is built into FATX in place; fopen() would "succeed" on
+         * it and size it at a few bytes. Allow for the superblock, the FAT
+         * and the builder's slack. */
+        size = (int64_t)chihiro_dir_fatx_bytes(path) + (8 << 20);
+    } else if (path && path[0]) {
         FILE *f = qemu_fopen(path, "rb");
         if (f) {
             if (fseek(f, 0, SEEK_END) == 0)
@@ -439,10 +489,11 @@ unsigned chihiro_dimm_factor(void)
         }
     }
     if (size > 0) {
-        /* The smallest DIMM the image fits in, the largest if none. */
+        /* The smallest DIMM whose mbfs (all but the top 16 MB) holds the
+         * image, the largest if none. */
         factor = SEGA_DIMM_SIZE_1024M;
         for (unsigned i = SEGA_DIMM_SIZE_128M; i < SEGA_DIMM_SIZE_1024M; i++) {
-            if (size <= ((int64_t)128 << 20) << i) {
+            if (size <= (((int64_t)128 << 20) << i) - (16 << 20)) {
                 factor = i;
                 break;
             }

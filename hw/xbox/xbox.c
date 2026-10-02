@@ -58,8 +58,9 @@
 
 #include "hw/xbox/xbox.h"
 #include "smbus.h"
-#include "chihiro.h"
-#include "chihiro_fatx.h"
+#include "chihiro/chihiro.h"
+#include "chihiro/chihiro-fatx-builder.h"
+#include "chihiro/chihiro-firmware.h"
 
 #define MAX_IDE_BUS 2
 
@@ -307,6 +308,10 @@ void xbox_init_common(MachineState *machine,
                              OBJECT(pit), &error_fatal);
     isa_realize_and_unref(pcms->pcspk, isa_bus, &error_fatal);
 
+    if (xbox_is_chihiro()) {
+        chihiro_ide_interface_init();
+    }
+
     PCIDevice *dev = pci_create_simple(pci_bus, PCI_DEVFN(9, 0), "piix3-ide");
     pci_ide_create_devs(dev);
     // idebus[0] = qdev_get_child_bus(&dev->qdev, "ide.0");
@@ -369,7 +374,42 @@ void xbox_init_common(MachineState *machine,
      * LPC I/O device supplies the XBAM identification string SEGABOOT checks
      * for. Chihiro also requires 128 MiB, which the caller has arranged. */
     if (xbox_is_chihiro()) {
-        printf("Chihiro: enabling mediaboard LPC\n");
+        gint64 init_t0 = g_get_monotonic_time();
+        printf("Chihiro: enabling the media board\n");
+
+        chihiro_freeplay_setting = g_config.chihiro.settings.freeplay;
+
+        /* The media board flash (SEGABOOT) and the baseboard EEPROMs: the
+         * paths set for Chihiro, else the files beside the BIOS. */
+        const char *bios = g_config.sys.files.flashrom_path;
+        chihiro_load_flash_rom(bios);
+        chihiro_load_eeproms(bios);
+        if (!chihiro_flash_rom_loaded()) {
+            fprintf(stderr, "Chihiro: ERROR — media board flash not found "
+                    "(fpr21042_m29w160et.bin)\n");
+        }
+        /* The QC/SC firmware EEPROMs and the baseboard config are not
+         * required to be on disk: without them the House of the Dead 3 dumps
+         * built in here are used, as this port always did. */
+        if (!chihiro_ic10_data) {
+            chihiro_ic10_data = g_memdup2(hotd3_ic10_g24lc64,
+                                          sizeof(hotd3_ic10_g24lc64));
+            chihiro_ic10_size = sizeof(hotd3_ic10_g24lc64);
+            printf("Chihiro: ic10 EEPROM not on disk, using the built-in dump\n");
+        }
+        if (!chihiro_pc20_data) {
+            chihiro_pc20_data = g_memdup2(hotd3_pc20_g24lc64,
+                                          sizeof(hotd3_pc20_g24lc64));
+            chihiro_pc20_size = sizeof(hotd3_pc20_g24lc64);
+            printf("Chihiro: pc20 EEPROM not on disk, using the built-in dump\n");
+        }
+        if (!chihiro_ic11_data) {
+            chihiro_ic11_data = g_memdup2(hotd3_ic11_24lc024,
+                                          sizeof(hotd3_ic11_24lc024));
+            chihiro_ic11_size = sizeof(hotd3_ic11_24lc024);
+            printf("Chihiro: ic11 EEPROM not on disk, using the built-in dump\n");
+        }
+
         isa_create_simple(isa_bus, "chihiro-lpc");
 
         /* Chihiro southbridge has revision >= 0xB4. This clears bit 0 of
@@ -383,43 +423,86 @@ void xbox_init_common(MachineState *machine,
             printf("Chihiro: LPC bridge revision set to 0xB4 (PATH_B)\n");
         }
 
-        /* Load baseboard flash ROM (SEGABOOT) from file.
-         * Searches for fpr-23887/fpr21042 next to the BIOS file. */
-        chihiro_load_flash_rom(g_config.sys.files.flashrom_path);
+        chihiro_ide_load_rom();
 
-        /* Build FATX from game directory if dvd_path is a directory.
-         * If dvd_path points to an XBE, use its parent directory. */
+        /* The game into the DIMM: a netboot FATX image is loaded as is; a
+         * game folder (what the Android library hands over after unpacking
+         * or copying a game) is built into a FATX filesystem in place. */
         {
-            const char *dvd = g_config.sys.files.dvd_path;
-            if (dvd && strlen(dvd) > 0) {
-                struct stat st;
-                if (stat(dvd, &st) == 0) {
-                    char game_dir[2048];
-                    if (S_ISDIR(st.st_mode)) {
-                        snprintf(game_dir, sizeof(game_dir), "%s", dvd);
+            const char *dvd = xemu_chihiro_image();
+            uint32_t fs_size = 0;
+            uint8_t *fs_buf = chihiro_fatx_get_buffer(&fs_size);
+            struct stat st;
+            /* stat() cannot see an Android /dev/fdset/N path; qemu_open can */
+            int img_fd = -1;
+            bool have = dvd && dvd[0] && fs_buf && stat(dvd, &st) == 0;
+            if (!have && dvd && dvd[0] && fs_buf) {
+                img_fd = qemu_open(dvd, O_RDONLY | O_BINARY, NULL);
+                have = img_fd >= 0 && fstat(img_fd, &st) == 0;
+            }
+            if (have) {
+                if (S_ISDIR(st.st_mode)) {
+                    uint32_t built = 0;
+                    /* mbfs: the partition below the system area */
+                    uint32_t mbfs_sectors =
+                        (0x40000u << chihiro_dimm_factor()) - 0x8000u;
+                    gint64 t0 = g_get_monotonic_time();
+                    if (chihiro_fatx_build_into(dvd, fs_buf, fs_size,
+                                                mbfs_sectors, &built)) {
+                        printf("Chihiro: FATX built from '%s' (%u MB, %lld ms)\n",
+                               dvd, built / (1024 * 1024),
+                               (long long)(g_get_monotonic_time() - t0) / 1000);
+                    }
+                    snprintf(chihiro_game_dir, sizeof(chihiro_game_dir), "%s",
+                             dvd);
+                } else {
+                    FILE *f = img_fd >= 0 ? fdopen(img_fd, "rb")
+                                          : qemu_fopen(dvd, "rb");
+                    if (f) {
+                        img_fd = -1; /* owned by f now */
+                    }
+                    uint8_t magic[4];
+                    if (f && fread(magic, 1, 4, f) == 4 &&
+                        memcmp(magic, "FATX", 4) == 0) {
+                        rewind(f);
+                        gint64 t0 = g_get_monotonic_time();
+                        uint32_t file_size = (uint32_t)MIN((uint64_t)st.st_size,
+                                                           fs_size);
+                        size_t nread = fread(fs_buf, 1, file_size, f);
+                        printf("Chihiro: FATX image loaded '%s' (%zu bytes, "
+                               "%lld ms)\n", dvd, nread,
+                               (long long)(g_get_monotonic_time() - t0) / 1000);
+
+                        /* The game executable, from the image's boot.id */
+                        for (uint32_t off = 0;
+                             off + CHIHIRO_BOOTID_LEN <= file_size; off++) {
+                            char name[64];
+                            if (memcmp(fs_buf + off, "BTID", 4) == 0 &&
+                                chihiro_bootid_executable(fs_buf + off, name,
+                                                          sizeof(name))) {
+                                chihiro_set_game_executable(name);
+                                break;
+                            }
+                        }
                     } else {
-                        /* XBE file: use parent directory */
-                        snprintf(game_dir, sizeof(game_dir), "%s", dvd);
-                        char *slash = strrchr(game_dir, '/');
-                        if (!slash) slash = strrchr(game_dir, '\\');
-                        if (slash) *slash = '\0';
+                        fprintf(stderr, "Chihiro: '%s' is not a FATX image "
+                                "or a game folder\n", dvd);
                     }
-                    uint32_t fatx_size = 0;
-                    /* mbfs: partition = DIMM_sectors - 0x8000 (512MB → 0xF8000) */
-                    uint32_t mbfs_sectors = 0x100000 - 0x8000;
-                    uint8_t *fatx = chihiro_fatx_build(game_dir, &fatx_size,
-                                                       mbfs_sectors);
-                    if (fatx) {
-                        printf("Chihiro: FATX built from '%s' (%u MB)\n",
-                               game_dir, fatx_size / (1024*1024));
+                    if (f) {
+                        fclose(f);
                     }
-                    /* Store game dir for boot.id reading at QuickReboot */
-                    {
-                        extern char chihiro_game_dir[1024];
-                        strncpy(chihiro_game_dir, game_dir, 1023);
-                        chihiro_game_dir[1023] = 0;
-                    }
+                    /* The image's folder, where a boot.id file may sit */
+                    snprintf(chihiro_game_dir, sizeof(chihiro_game_dir), "%s",
+                             dvd);
+                    char *slash = strrchr(chihiro_game_dir, '/');
+                    if (!slash) slash = strrchr(chihiro_game_dir, '\\');
+                    if (slash) *slash = '\0';
                 }
+            } else if (dvd && dvd[0]) {
+                fprintf(stderr, "Chihiro: cannot open game '%s'\n", dvd);
+            }
+            if (img_fd >= 0) {
+                qemu_close(img_fd);
             }
         }
 
@@ -428,37 +511,27 @@ void xbox_init_common(MachineState *machine,
          * the SMBus transaction never completes and boot hangs. */
         smbus_fs454_init(smbus, 0x6A);
 
-        /* Chihiro baseboard USB: AN2131 QC + SC
-         *
-         * On real hardware, the AN2131 chips load firmware from their
-         * I2C EEPROMs (ic10/pc20) at power-up (~200-500ms).
-         * The kernel boots and does its initial USB scan before the
-         * AN2131 chips are ready. They appear as hot-plug devices
-         * AFTER the kernel has started.
-         *
-         * We create the devices with auto_attach=0 (set in realize),
-         * then attach them via a timer 1.5s after boot. */
+        /* Chihiro baseboard USB: AN2131 QC + SC, created unattached and
+         * hot-plugged after each OHCI bus start (chihiro_on_ohci_bus_start),
+         * as the real chips load their firmware after power-up. */
         USBBus *usb0_bus = NULL;
         for (int i = 0; i < 4 && !usb0_bus; i++) {
-            char bn[16]; snprintf(bn, sizeof(bn), "usb-bus.%d", i);
+            char bn[32]; snprintf(bn, sizeof(bn), "usb-bus.%d", i);
             BusState *bs = qdev_get_child_bus(DEVICE(usb0), bn);
             if (bs) usb0_bus = USB_BUS(bs);
         }
-
         if (usb0_bus) {
-            /* Create but don't attach (auto_attach=0 in realize) */
             USBDevice *qc = usb_create_simple(usb0_bus, "chihiro-an2131qc");
             USBDevice *sc = usb_create_simple(usb0_bus, "chihiro-an2131sc");
-            printf("Chihiro: QC created port=%d (not attached yet)\n",
-                   qc->port ? qc->port->index : -1);
-            printf("Chihiro: SC created port=%d (not attached yet)\n",
-                   sc->port ? sc->port->index : -1);
-
-            /* Store globally for the hotplug timer */
             chihiro_usb_set_devices(qc, sc);
+
+            /* Load per-game saves (ic11 + extmem) and register exit flusher */
+            chihiro_save_init();
         } else {
             printf("Chihiro: WARNING — could not find USB bus on OHCI\n");
         }
+        printf("Chihiro: init complete (%lld ms)\n",
+               (long long)(g_get_monotonic_time() - init_t0) / 1000);
     }
 }
 
@@ -475,6 +548,14 @@ static void machine_set_bootrom(Object *obj, const char *value, Error **errp)
 
     g_free(ms->bootrom);
     ms->bootrom = g_strdup(value);
+}
+
+/* CHIHIRO (not upstream): read by devices that ask the machine. On this
+ * port the machine is chosen by sys.chihiro (xbox_is_chihiro), so the
+ * property only reports it. */
+static bool machine_get_chihiro(Object *obj, Error **errp)
+{
+    return xbox_is_chihiro();
 }
 
 static char *machine_get_avpack(Object *obj, Error **errp)
@@ -583,6 +664,10 @@ static void xbox_machine_options(MachineClass *m)
     object_class_property_add_str(oc, "bootrom", machine_get_bootrom,
                                   machine_set_bootrom);
     object_class_property_set_description(oc, "bootrom", "Xbox bootrom file");
+
+    object_class_property_add_bool(oc, "chihiro", machine_get_chihiro, NULL);
+    object_class_property_set_description(
+        oc, "chihiro", "Sega Chihiro: media board, baseboard and 128 MiB");
 
     object_class_property_add_str(oc, "avpack", machine_get_avpack,
                                   machine_set_avpack);

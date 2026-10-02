@@ -143,6 +143,12 @@ struct BlockDriver {
     bool supports_zoned_children;
 
     /*
+     * True if the device content is fully covered by migrated guest state
+     * (e.g. a window onto guest RAM): exempt from VM snapshot participation.
+     */
+    bool snapshots_covered_by_vmstate;
+
+    /*
      * Drivers not implementing bdrv_parse_filename nor bdrv_open should have
      * this field set to true, except ones that are defined only by their
      * child's bs.

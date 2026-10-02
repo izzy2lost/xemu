@@ -7,6 +7,7 @@ specific_ss.add(files(
 	'chihiro-des.c',
 	'chihiro-driveboard-sega838.c',
 	'chihiro-driveboard-v257.c',
+	'chihiro-fatx-builder.c',
 	'chihiro-jvs.c',
 	'chihiro-mips.c',
 	'chihiro-netboard.c',

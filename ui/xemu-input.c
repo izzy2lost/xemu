@@ -35,8 +35,8 @@
 #include <stdlib.h>
 
 #include "system/blockdev.h"
-#include "hw/xbox/chihiro-jvs.h"
-#include "hw/xbox/chihiro.h"
+#include "hw/xbox/chihiro/chihiro-jvs.h"
+#include "hw/xbox/chihiro/chihiro.h"
 
 extern SDL_Window *m_window;
 extern int viewport_coords[4];
@@ -607,19 +607,43 @@ void xemu_input_update_controller(ControllerState *state)
  * That is the same channel 0 the light gun reports its X axis on, so only one
  * of the two schemes can be live at a time; which one is a setting.
  */
+/*
+ * A cabinet has one set of controls, but a handheld has several pads at once:
+ * its built-in buttons, the on-screen overlay (a virtual pad) and anything
+ * paired over Bluetooth, each bound to its own port. Reading only port 1
+ * ignored whichever of those the player was actually holding, so merge them:
+ * buttons OR together and each axis takes the strongest deflection.
+ */
+static uint16_t xemu_input_jvs_merged_pad(int16_t *lstick_x, int16_t *rtrig,
+                                          int16_t *ltrig)
+{
+    uint16_t pad = 0;
+    int16_t lx = 0, rt = 0, lt = 0;
+    for (int i = 0; i < 4; i++) {
+        ControllerState *c = bound_controllers[i];
+        if (!c) {
+            continue;
+        }
+        pad |= c->gp.buttons | c->lg.buttons;
+        int16_t x = c->gp.axis[CONTROLLER_AXIS_LSTICK_X];
+        if (ABS(x) > ABS(lx)) {
+            lx = x;
+        }
+        rt = MAX(rt, c->gp.axis[CONTROLLER_AXIS_RTRIG]);
+        lt = MAX(lt, c->gp.axis[CONTROLLER_AXIS_LTRIG]);
+    }
+    if (lstick_x) *lstick_x = lx;
+    if (rtrig) *rtrig = rt;
+    if (ltrig) *ltrig = lt;
+    return pad;
+}
+
 static void xemu_input_update_jvs_driving(ChihiroJVSState *jvs)
 {
     const bool *kbd = SDL_GetKeyboardState(NULL);
 
-    uint16_t pad = 0;
-    int16_t steer = 0, accel = 0, brake = 0;
-    ControllerState *p1 = bound_controllers[0];
-    if (p1) {
-        pad = p1->gp.buttons | p1->lg.buttons;
-        steer = p1->gp.axis[CONTROLLER_AXIS_LSTICK_X];
-        accel = p1->gp.axis[CONTROLLER_AXIS_RTRIG];
-        brake = p1->gp.axis[CONTROLLER_AXIS_LTRIG];
-    }
+    int16_t steer, accel, brake;
+    uint16_t pad = xemu_input_jvs_merged_pad(&steer, &accel, &brake);
 
     /* Keyboard fallback for desktop, so the cabinet is usable without a pad. */
     if (kbd[SDL_SCANCODE_LEFT])  steer = -32768;
@@ -738,14 +762,10 @@ static void xemu_input_update_jvs_lightgun(void)
      * screen, and with the display set to Stretch there is no off-screen area
      * left to shoot into.
      */
-    uint16_t pad = 0;
-    bool pedal = false;
-    ControllerState *p1 = bound_controllers[0];
-    if (p1) {
-        pad = p1->gp.buttons | p1->lg.buttons;
-        /* The on-screen LT reports as an axis rather than a button. */
-        pedal = p1->gp.axis[CONTROLLER_AXIS_LTRIG] > 8192;
-    }
+    int16_t ltrig;
+    uint16_t pad = xemu_input_jvs_merged_pad(NULL, NULL, &ltrig);
+    /* The on-screen LT reports as an axis rather than a button. */
+    bool pedal = ltrig > 8192;
     pedal = pedal || kbd[SDL_SCANCODE_LCTRL];
 
     bool offscreen = !(mx >= 0 && mx <= winW && my >= 0 && my <= winH);

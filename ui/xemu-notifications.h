@@ -29,6 +29,9 @@ extern "C" {
 
 // Simple API to show a message on the screen when some event happens
 void xemu_queue_notification(const char *msg);
+// The same, drawn in the warning colour where the frontend has one: something
+// the user asked for did not happen, and the game shows nothing about it.
+void xemu_queue_notification_warning(const char *msg);
 void xemu_queue_error_message(const char *msg);
 
 #ifdef __cplusplus

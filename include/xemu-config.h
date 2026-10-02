@@ -83,6 +83,42 @@ typedef enum CONFIG_SYS_AVPACK {
     CONFIG_SYS_AVPACK__COUNT,
 } CONFIG_SYS_AVPACK;
 
+typedef enum CONFIG_CHIHIRO_JVS_PROFILE {
+    CONFIG_CHIHIRO_JVS_PROFILE_HOTD3 = 0,
+    CONFIG_CHIHIRO_JVS_PROFILE_VC3,
+    CONFIG_CHIHIRO_JVS_PROFILE_GS,
+    CONFIG_CHIHIRO_JVS_PROFILE_CTX,
+    CONFIG_CHIHIRO_JVS_PROFILE_OR2,
+    CONFIG_CHIHIRO_JVS_PROFILE_OK,
+    CONFIG_CHIHIRO_JVS_PROFILE_WMMT2,
+    CONFIG_CHIHIRO_JVS_PROFILE_GUNDAM,
+    CONFIG_CHIHIRO_JVS_PROFILE__COUNT,
+} CONFIG_CHIHIRO_JVS_PROFILE;
+
+typedef enum CONFIG_CHIHIRO_SETTINGS_REGION {
+    CONFIG_CHIHIRO_SETTINGS_REGION_AUTO = 0,
+    CONFIG_CHIHIRO_SETTINGS_REGION_JP,
+    CONFIG_CHIHIRO_SETTINGS_REGION_US,
+    CONFIG_CHIHIRO_SETTINGS_REGION_EX,
+    CONFIG_CHIHIRO_SETTINGS_REGION__COUNT,
+} CONFIG_CHIHIRO_SETTINGS_REGION;
+
+typedef enum CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE {
+    CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE_128 = 0,
+    CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE_256,
+    CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE_512,
+    CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE_1024,
+    CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE_AUTO,
+    CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE__COUNT,
+} CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE;
+
+typedef enum CONFIG_CHIHIRO_SETTINGS_BOARD_TYPE {
+    CONFIG_CHIHIRO_SETTINGS_BOARD_TYPE_AUTO = 0,
+    CONFIG_CHIHIRO_SETTINGS_BOARD_TYPE_TYPE1,
+    CONFIG_CHIHIRO_SETTINGS_BOARD_TYPE_TYPE3,
+    CONFIG_CHIHIRO_SETTINGS_BOARD_TYPE__COUNT,
+} CONFIG_CHIHIRO_SETTINGS_BOARD_TYPE;
+
 struct config {
     struct general {
         bool show_welcome;
@@ -299,6 +335,45 @@ struct config {
         bool cache_shaders;
         bool unlock_framerate;
     } perf;
+
+    /* Sega Chihiro media board and cabinet (config_spec.yml "chihiro"). */
+    struct chihiro {
+        struct jvs {
+            CONFIG_CHIHIRO_JVS_PROFILE profile;
+        } jvs;
+        struct settings {
+            bool freeplay;
+            CONFIG_CHIHIRO_SETTINGS_REGION region;
+            CONFIG_CHIHIRO_SETTINGS_DIMM_SIZE dimm_size;
+            CONFIG_CHIHIRO_SETTINGS_BOARD_TYPE board_type;
+        } settings;
+        struct link {
+            bool enable;
+            int cabinets;
+            int cabinet;
+        } link;
+        struct card_reader {
+            bool enable;
+            struct hw210 {
+                const char *slot1;
+                const char *slot2;
+                const char *gundam;
+            } hw210;
+            struct crp1231 {
+                const char *mt1;
+                const char *mt2;
+            } crp1231;
+            const char *card1_path;
+            const char *card2_path;
+        } card_reader;
+        struct roms {
+            const char *mediaboard_path;
+            const char *ic10_path;
+            const char *ic11_path;
+            const char *pc20_path;
+            const char *net_firmware_path;
+        } roms;
+    } chihiro;
 };
 
 #endif /* XEMU_CONFIG_H */

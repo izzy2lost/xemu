@@ -9,6 +9,11 @@
 uint8_t *chihiro_fatx_build(const char *game_dir, uint32_t *out_size,
                             uint32_t partition_sectors);
 
+/* Same, built into buf (at most buf_size bytes) instead of a new buffer. */
+bool chihiro_fatx_build_into(const char *game_dir, uint8_t *buf,
+                             uint32_t buf_size, uint32_t partition_sectors,
+                             uint32_t *out_size);
+
 /* Read sector from in-memory FATX. Returns true if served. */
 bool chihiro_fatx_read_sector(uint32_t lba, void *buffer);
 

@@ -157,7 +157,7 @@
 #include "ui/xemu-net.h"
 #include "ui/xemu-input.h"
 #include "hw/xbox/eeprom_generation.h"
-#include "hw/xbox/chihiro.h"
+#include "hw/xbox/chihiro/chihiro.h"
 
 #define MAX_VIRTIO_CONSOLES 1
 
@@ -3186,80 +3186,18 @@ void qemu_init(int argc, char **argv)
         }
     }
 
-    // Always populate DVD drive. If disc path is the empty string, drive is
-    // connected but no media present.
-    //
-    // In Chihiro mode (128MB) the media type is auto-detected:
-    //   - .iso        -> DVD/CD-ROM (game disc image)
-    //   - anything else -> IDE disk (baseboard image)
-    // A directory or a bare .xbe gets a zeroed stub image instead; the
-    // in-memory FATX built in xbox_init_common() plus the IDE hooks serve
-    // the real data, the stub only exists so QEMU creates the device.
-    // In Xbox mode, always mount as CD-ROM.
-    char *escaped_dvd_path = strdup_double_commas(dvd_path);
-    const char *dvd_media = "cdrom";
-    const char *format_suffix = "";
-    const char *readonly_suffix = "";
-    if (xbox_is_chihiro() && strlen(dvd_path) > 4) {
-        /*
-         * NOTE: on Android the disc is handed over as "/dev/fdset/N", so the
-         * real filename is not visible here and the extension test below
-         * always falls through to the disk branch. That is the right default
-         * for Chihiro, whose games are .bin netboot images rather than discs.
-         */
-        const char *ext = dvd_path + strlen(dvd_path) - 4;
-        if (g_ascii_strcasecmp(ext, ".iso") != 0) {
-            dvd_media = "disk";
-            format_suffix = ",format=raw";
-        }
-
-        struct stat dvd_st;
-        if (stat(dvd_path, &dvd_st) == 0 &&
-            (S_ISDIR(dvd_st.st_mode) ||
-             g_ascii_strcasecmp(ext, ".xbe") == 0)) {
-            static char stub_path[512];
-            snprintf(stub_path, sizeof(stub_path), "%s%s",
-                     xemu_settings_get_base_path(), "chihiro_stub.img");
-            /* Create a 1MB stub if it doesn't exist */
-            if (access(stub_path, F_OK) != 0) {
-                FILE *sf = fopen(stub_path, "wb");
-                if (sf) {
-                    uint8_t zero[512];
-                    memset(zero, 0, 512);
-                    for (int i = 0; i < 2048; i++) {
-                        fwrite(zero, 1, 512, sf);
-                    }
-                    fclose(sf);
-                }
-            }
-            free(escaped_dvd_path);
-            escaped_dvd_path = strdup_double_commas(stub_path);
-            dvd_media = "disk";
-            format_suffix = ",format=raw";
-        }
+    /* An Xbox mounts the image in its DVD drive. A Chihiro has none: its IDE
+     * slave is the media board's interface (chihiro_ide_interface_init),
+     * which serves the game from the DIMM, filled in xbox_init_common() from
+     * a FATX image or a game folder. Another -drive at index 1 would fail
+     * QEMU's check for orphaned drives. */
+    if (!xbox_is_chihiro()) {
+        char *escaped_dvd_path = strdup_double_commas(dvd_path);
+        fake_argv[fake_argc++] = strdup("-drive");
+        fake_argv[fake_argc++] = g_strdup_printf("index=1,media=cdrom,file=%s",
+                                                 escaped_dvd_path);
+        free(escaped_dvd_path);
     }
-#ifdef __ANDROID__
-    /*
-     * media=disk makes QEMU ask the fdset for an O_RDWR descriptor. The
-     * Android layer tries to open the disc read-write for Chihiro, but SAF
-     * providers may only grant read access; when that happens the drive has
-     * to be marked read-only or the fdset lookup fails outright with
-     * "Failed to find file descriptor with matching flags=0x2".
-     */
-    if (strcmp(dvd_media, "disk") == 0 &&
-        strncmp(dvd_path, "/dev/fdset/", 11) == 0) {
-        extern int xemu_android_dvd_fd_is_readonly(void);
-        if (xemu_android_dvd_fd_is_readonly()) {
-            readonly_suffix = ",readonly=on";
-            ANDROID_LOGI("Chihiro: disc fd is read-only, adding readonly=on");
-        }
-    }
-#endif
-
-    fake_argv[fake_argc++] = strdup("-drive");
-    fake_argv[fake_argc++] = g_strdup_printf("index=1,media=%s,file=%s%s%s",
-        dvd_media, escaped_dvd_path, format_suffix, readonly_suffix);
-    free(escaped_dvd_path);
 
     fake_argv[fake_argc++] = strdup("-display");
     fake_argv[fake_argc++] = strdup("xemu");
