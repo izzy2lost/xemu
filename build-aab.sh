@@ -41,7 +41,8 @@ if grep -Fq '/path/to/your-release-key.jks' "${key_props}" || \
   exit 1
 fi
 
-store_file="$(sed -n 's/^storeFile=//p' "${key_props}" | head -n 1)"
+# tr: a key.properties saved with Windows line endings would leave a \r on the path
+store_file="$(sed -n 's/^storeFile=//p' "${key_props}" | head -n 1 | tr -d '\r')"
 if [[ -z "${store_file}" ]]; then
   printf '\nMissing storeFile in %s.\n' "${key_props}"
   exit 1
