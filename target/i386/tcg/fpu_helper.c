@@ -787,11 +787,50 @@ static inline bool x87_native_sqrt(CPUX86State *env, floatx80 *r)
     return true;
 }
 
+/* a compared with b, as floatx80_compare(); no mode dependence, no flags. */
+static inline bool x87_native_compare(floatx80 a, floatx80 b,
+                                      FloatRelation *rel)
+{
+    int r;
+
+    if (!x87_native_enabled() ||
+        !x87n_compare(a.low, a.high, b.low, b.high, &r)) {
+        return false;
+    }
+    *rel = (FloatRelation)r;
+    return true;
+}
+
+/*
+ * ST0 as an integer in [min, max], by the current rounding control or
+ * toward zero; anything else (out of range included) is left to softfloat,
+ * which raises invalid.
+ */
+static inline bool x87_native_fist(CPUX86State *env, bool chop, int64_t min,
+                                   int64_t max, int64_t *val)
+{
+    int rc = chop ? X87N_RC_CHOP : (env->fpuc & FPU_RC_MASK) >> FPU_RC_SHIFT;
+    bool inexact;
+
+    if (!x87_native_enabled() ||
+        !x87n_to_int64(ST0.low, ST0.high, rc, val, &inexact) ||
+        *val < min || *val > max) {
+        return false;
+    }
+    x87_native_raise(env, inexact);
+    return true;
+}
+
 #define X87_NATIVE_BINOP(op, a, b, r) x87_native_binop(env, op, a, b, r)
 #define X87_NATIVE_SQRT(r)            x87_native_sqrt(env, r)
+#define X87_NATIVE_COMPARE(a, b, rel) x87_native_compare(a, b, rel)
+#define X87_NATIVE_FIST(chop, min, max, val) \
+    x87_native_fist(env, chop, min, max, val)
 #else
 #define X87_NATIVE_BINOP(op, a, b, r) false
 #define X87_NATIVE_SQRT(r)            false
+#define X87_NATIVE_COMPARE(a, b, rel) false
+#define X87_NATIVE_FIST(chop, min, max, val) ((void)(val), false)
 #endif
 
 #if USE_NATIVE_DOUBLE_STORAGE
@@ -954,6 +993,10 @@ uint64_t helper_fstl_ST0(CPUX86State *env)
 
 int32_t helper_fist_ST0(CPUX86State *env)
 {
+    int64_t fast;
+    if (X87_NATIVE_FIST(false, INT16_MIN, INT16_MAX, &fast)) {
+        return fast;
+    }
     int old_flags = save_exception_flags(env);
     int32_t val;
 
@@ -968,6 +1011,10 @@ int32_t helper_fist_ST0(CPUX86State *env)
 
 int32_t helper_fistl_ST0(CPUX86State *env)
 {
+    int64_t fast;
+    if (X87_NATIVE_FIST(false, INT32_MIN, INT32_MAX, &fast)) {
+        return fast;
+    }
     int old_flags = save_exception_flags(env);
     int32_t val;
 
@@ -981,6 +1028,10 @@ int32_t helper_fistl_ST0(CPUX86State *env)
 
 int64_t helper_fistll_ST0(CPUX86State *env)
 {
+    int64_t fast;
+    if (X87_NATIVE_FIST(false, INT64_MIN, INT64_MAX, &fast)) {
+        return fast;
+    }
     int old_flags = save_exception_flags(env);
     int64_t val;
 
@@ -994,6 +1045,10 @@ int64_t helper_fistll_ST0(CPUX86State *env)
 
 int32_t helper_fistt_ST0(CPUX86State *env)
 {
+    int64_t fast;
+    if (X87_NATIVE_FIST(true, INT16_MIN, INT16_MAX, &fast)) {
+        return fast;
+    }
     int old_flags = save_exception_flags(env);
     int32_t val;
 
@@ -1008,6 +1063,10 @@ int32_t helper_fistt_ST0(CPUX86State *env)
 
 int32_t helper_fisttl_ST0(CPUX86State *env)
 {
+    int64_t fast;
+    if (X87_NATIVE_FIST(true, INT32_MIN, INT32_MAX, &fast)) {
+        return fast;
+    }
     int old_flags = save_exception_flags(env);
     int32_t val;
 
@@ -1021,6 +1080,10 @@ int32_t helper_fisttl_ST0(CPUX86State *env)
 
 int64_t helper_fisttll_ST0(CPUX86State *env)
 {
+    int64_t fast;
+    if (X87_NATIVE_FIST(true, INT64_MIN, INT64_MAX, &fast)) {
+        return fast;
+    }
     int old_flags = save_exception_flags(env);
     int64_t val;
 
@@ -1130,7 +1193,9 @@ void helper_fcom_ST0_FT0(CPUX86State *env)
     int old_flags = save_exception_flags(env);
     FloatRelation ret;
 
-    ret = floatx80_compare(ST0, FT0, &env->fp_status);
+    if (!X87_NATIVE_COMPARE(ST0, FT0, &ret)) {
+        ret = floatx80_compare(ST0, FT0, &env->fp_status);
+    }
     env->fpus = (env->fpus & ~0x4500) | fcom_ccval[ret + 1];
     merge_exception_flags(env, old_flags);
 }
@@ -1140,7 +1205,9 @@ void helper_fucom_ST0_FT0(CPUX86State *env)
     int old_flags = save_exception_flags(env);
     FloatRelation ret;
 
-    ret = floatx80_compare_quiet(ST0, FT0, &env->fp_status);
+    if (!X87_NATIVE_COMPARE(ST0, FT0, &ret)) {
+        ret = floatx80_compare_quiet(ST0, FT0, &env->fp_status);
+    }
     env->fpus = (env->fpus & ~0x4500) | fcom_ccval[ret + 1];
     merge_exception_flags(env, old_flags);
 }
@@ -1153,7 +1220,9 @@ void helper_fcomi_ST0_FT0(CPUX86State *env)
     int eflags;
     FloatRelation ret;
 
-    ret = floatx80_compare(ST0, FT0, &env->fp_status);
+    if (!X87_NATIVE_COMPARE(ST0, FT0, &ret)) {
+        ret = floatx80_compare(ST0, FT0, &env->fp_status);
+    }
     eflags = cpu_cc_compute_all(env) & ~(CC_Z | CC_P | CC_C);
     CC_SRC = eflags | fcomi_ccval[ret + 1];
     CC_OP = CC_OP_EFLAGS;
@@ -1166,7 +1235,9 @@ void helper_fucomi_ST0_FT0(CPUX86State *env)
     int eflags;
     FloatRelation ret;
 
-    ret = floatx80_compare_quiet(ST0, FT0, &env->fp_status);
+    if (!X87_NATIVE_COMPARE(ST0, FT0, &ret)) {
+        ret = floatx80_compare_quiet(ST0, FT0, &env->fp_status);
+    }
     eflags = cpu_cc_compute_all(env) & ~(CC_Z | CC_P | CC_C);
     CC_SRC = eflags | fcomi_ccval[ret + 1];
     CC_OP = CC_OP_EFLAGS;

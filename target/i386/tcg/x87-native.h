@@ -189,4 +189,118 @@ static inline bool x87n_sqrt(uint64_t a_low, uint16_t a_high,
     return true;
 }
 
+/*
+ * Compares and integer conversions need no host FPU at all: for finite
+ * operands they are exact integer work on the 80-bit encoding, valid at any
+ * precision (a register may hold all 64 significand bits). Only zeros and
+ * normal numbers are taken; denormals (which raise DE), unnormals,
+ * infinities and NaNs go to softfloat.
+ */
+
+/* A zero or a normal finite number. */
+static inline bool x87n_ordinary(uint64_t low, uint16_t high, uint32_t *exp)
+{
+    *exp = high & 0x7fff;
+    if (*exp == 0) {
+        return low == 0;                /* +-0, not a denormal */
+    }
+    return *exp != 0x7fff && (low >> 63);
+}
+
+/*
+ * a compared with b: -1 less, 0 equal, 1 greater (softfloat's FloatRelation).
+ * No exception is possible for these operands, signalling or quiet.
+ */
+static inline bool x87n_compare(uint64_t a_low, uint16_t a_high,
+                                uint64_t b_low, uint16_t b_high, int *rel)
+{
+    uint32_t ea, eb;
+
+    if (!x87n_ordinary(a_low, a_high, &ea) ||
+        !x87n_ordinary(b_low, b_high, &eb)) {
+        return false;
+    }
+
+    bool za = ea == 0, zb = eb == 0;
+    if (za && zb) {
+        *rel = 0;                       /* +0 == -0 */
+        return true;
+    }
+    bool na = !za && (a_high >> 15), nb = !zb && (b_high >> 15);
+    if (na != nb) {
+        *rel = na ? -1 : 1;
+        return true;
+    }
+    /* Same sign (a zero counts as positive here): order the magnitudes. */
+    int mag = (ea != eb) ? (ea < eb ? -1 : 1) :
+              (a_low != b_low) ? (a_low < b_low ? -1 : 1) : 0;
+    *rel = na ? -mag : mag;
+    return true;
+}
+
+enum {                                  /* x87 RC, FPUC bits 11:10 */
+    X87N_RC_NEAREST,
+    X87N_RC_DOWN,
+    X87N_RC_UP,
+    X87N_RC_CHOP,
+};
+
+/*
+ * a rounded to an integer by rc, if |a| < 2^62 (so any int64 result fits
+ * after rounding); *inexact if a had a fractional part.
+ */
+static inline bool x87n_to_int64(uint64_t low, uint16_t high, int rc,
+                                 int64_t *out, bool *inexact)
+{
+    uint32_t exp;
+    uint64_t mag, frac;
+
+    if (!x87n_ordinary(low, high, &exp)) {
+        return false;
+    }
+    if (exp == 0) {
+        *out = 0;
+        *inexact = false;
+        return true;
+    }
+
+    int e = (int)exp - 16383;
+    if (e > 61) {
+        return false;                   /* may not fit; leave the overflow */
+    }
+    int shift = 63 - e;                 /* >= 2 */
+    if (shift < 64) {
+        mag = low >> shift;
+        frac = low << (64 - shift);     /* fraction, left-aligned */
+    } else if (shift == 64) {
+        mag = 0;
+        frac = low;                     /* [0.5, 1) */
+    } else {
+        mag = 0;
+        frac = 1;                       /* (0, 0.5): non-zero, below a half */
+    }
+
+    bool neg = high >> 15;
+    bool inc;
+    switch (rc) {
+    case X87N_RC_NEAREST:
+        inc = frac > (1ull << 63) || (frac == (1ull << 63) && (mag & 1));
+        break;
+    case X87N_RC_DOWN:
+        inc = neg && frac;
+        break;
+    case X87N_RC_UP:
+        inc = !neg && frac;
+        break;
+    default:
+        inc = false;
+        break;
+    }
+    mag += inc;
+
+    *out = neg ? -(int64_t)mag : (int64_t)mag;
+    *inexact = frac != 0;
+    return true;
+}
+
 #endif
