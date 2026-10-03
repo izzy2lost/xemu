@@ -712,6 +712,88 @@ static void merge_exception_flags(CPUX86State *env, int old_flags)
 #endif
 }
 
+#if !USE_NATIVE_DOUBLE_STORAGE && !defined(USE_HARD_FPU)
+#include "x87-native.h"
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
+
+/*
+ * Whether x87 arithmetic may run on the host FPU where it is bit-exact (see
+ * x87-native.h). On by default; XEMU_TCG_NATIVE_X87=0, or on Android
+ * `setprop debug.xemu.tcg.native_x87 0`, keeps every operation in softfloat.
+ */
+static bool x87_native_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = 1;
+#ifdef __ANDROID__
+        char value[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.xemu.tcg.native_x87", value) > 0 &&
+            value[0] == '0') {
+            enabled = 0;
+        }
+#else
+        const char *env = getenv("XEMU_TCG_NATIVE_X87");
+        if (env && env[0] == '0') {
+            enabled = 0;
+        }
+#endif
+    }
+    return enabled;
+}
+
+/* Precision control double (bits 9:8 = 10) and round-to-nearest (11:10 = 0) */
+#define X87N_FPUC_MASK 0x0f00
+#define X87N_FPUC_MODE 0x0200
+
+static inline void x87_native_raise(CPUX86State *env, bool inexact)
+{
+    /* What merge_exception_flags() records for a lone inexact. */
+    if (inexact) {
+        float_raise(float_flag_inexact, &env->fp_status);
+        fpu_set_exception(env, FPUS_PE);
+    }
+}
+
+/* r = a op b on the host FPU; false leaves it to softfloat. */
+static inline bool x87_native_binop(CPUX86State *env, int op, floatx80 a,
+                                    floatx80 b, floatx80 *r)
+{
+    bool inexact;
+
+    if ((env->fpuc & X87N_FPUC_MASK) != X87N_FPUC_MODE ||
+        !x87_native_enabled() ||
+        !x87n_binop(op, a.low, a.high, b.low, b.high, &r->low, &r->high,
+                    &inexact)) {
+        return false;
+    }
+    x87_native_raise(env, inexact);
+    return true;
+}
+
+/* *r = sqrt(*r) on the host FPU; false leaves it to softfloat. */
+static inline bool x87_native_sqrt(CPUX86State *env, floatx80 *r)
+{
+    bool inexact;
+
+    if ((env->fpuc & X87N_FPUC_MASK) != X87N_FPUC_MODE ||
+        !x87_native_enabled() ||
+        !x87n_sqrt(r->low, r->high, &r->low, &r->high, &inexact)) {
+        return false;
+    }
+    x87_native_raise(env, inexact);
+    return true;
+}
+
+#define X87_NATIVE_BINOP(op, a, b, r) x87_native_binop(env, op, a, b, r)
+#define X87_NATIVE_SQRT(r)            x87_native_sqrt(env, r)
+#else
+#define X87_NATIVE_BINOP(op, a, b, r) false
+#define X87_NATIVE_SQRT(r)            false
+#endif
+
 #if USE_NATIVE_DOUBLE_STORAGE
 static inline double helper_fdiv(CPUX86State *env, double a, double b)
 {
@@ -723,8 +805,12 @@ static inline double helper_fdiv(CPUX86State *env, double a, double b)
 #else
 static inline floatx80 helper_fdiv(CPUX86State *env, floatx80 a, floatx80 b)
 {
+    floatx80 ret;
+    if (X87_NATIVE_BINOP(X87N_DIV, a, b, &ret)) {
+        return ret;
+    }
     int old_flags = save_exception_flags(env);
-    floatx80 ret = floatx80_div(a, b, &env->fp_status);
+    ret = floatx80_div(a, b, &env->fp_status);
     merge_exception_flags(env, old_flags);
     return ret;
 }
@@ -1090,6 +1176,9 @@ void helper_fucomi_ST0_FT0(CPUX86State *env)
 void helper_fadd_ST0_FT0(CPUX86State *env)
 {
     FPU_HELPER_COUNT();
+    if (X87_NATIVE_BINOP(X87N_ADD, ST0, FT0, &ST0)) {
+        return;
+    }
     int old_flags = save_exception_flags(env);
     ST0 = floatx80_add(ST0, FT0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -1098,6 +1187,9 @@ void helper_fadd_ST0_FT0(CPUX86State *env)
 void helper_fmul_ST0_FT0(CPUX86State *env)
 {
     FPU_HELPER_COUNT();
+    if (X87_NATIVE_BINOP(X87N_MUL, ST0, FT0, &ST0)) {
+        return;
+    }
     int old_flags = save_exception_flags(env);
     ST0 = floatx80_mul(ST0, FT0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -1106,6 +1198,9 @@ void helper_fmul_ST0_FT0(CPUX86State *env)
 void helper_fsub_ST0_FT0(CPUX86State *env)
 {
     FPU_HELPER_COUNT();
+    if (X87_NATIVE_BINOP(X87N_SUB, ST0, FT0, &ST0)) {
+        return;
+    }
     int old_flags = save_exception_flags(env);
     ST0 = floatx80_sub(ST0, FT0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -1114,6 +1209,9 @@ void helper_fsub_ST0_FT0(CPUX86State *env)
 void helper_fsubr_ST0_FT0(CPUX86State *env)
 {
     FPU_HELPER_COUNT();
+    if (X87_NATIVE_BINOP(X87N_SUB, FT0, ST0, &ST0)) {
+        return;
+    }
     int old_flags = save_exception_flags(env);
     ST0 = floatx80_sub(FT0, ST0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -1135,6 +1233,9 @@ void helper_fdivr_ST0_FT0(CPUX86State *env)
 
 void helper_fadd_STN_ST0(CPUX86State *env, int st_index)
 {
+    if (X87_NATIVE_BINOP(X87N_ADD, ST(st_index), ST0, &ST(st_index))) {
+        return;
+    }
     int old_flags = save_exception_flags(env);
     ST(st_index) = floatx80_add(ST(st_index), ST0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -1142,6 +1243,9 @@ void helper_fadd_STN_ST0(CPUX86State *env, int st_index)
 
 void helper_fmul_STN_ST0(CPUX86State *env, int st_index)
 {
+    if (X87_NATIVE_BINOP(X87N_MUL, ST(st_index), ST0, &ST(st_index))) {
+        return;
+    }
     int old_flags = save_exception_flags(env);
     ST(st_index) = floatx80_mul(ST(st_index), ST0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -1149,6 +1253,9 @@ void helper_fmul_STN_ST0(CPUX86State *env, int st_index)
 
 void helper_fsub_STN_ST0(CPUX86State *env, int st_index)
 {
+    if (X87_NATIVE_BINOP(X87N_SUB, ST(st_index), ST0, &ST(st_index))) {
+        return;
+    }
     int old_flags = save_exception_flags(env);
     ST(st_index) = floatx80_sub(ST(st_index), ST0, &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -1156,6 +1263,9 @@ void helper_fsub_STN_ST0(CPUX86State *env, int st_index)
 
 void helper_fsubr_STN_ST0(CPUX86State *env, int st_index)
 {
+    if (X87_NATIVE_BINOP(X87N_SUB, ST0, ST(st_index), &ST(st_index))) {
+        return;
+    }
     int old_flags = save_exception_flags(env);
     ST(st_index) = floatx80_sub(ST0, ST(st_index), &env->fp_status);
     merge_exception_flags(env, old_flags);
@@ -2874,6 +2984,10 @@ void helper_fsqrt(CPUX86State *env)
     if (floatx80_is_neg(ST0)) {
         env->fpus &= ~0x4700;  /* (C3,C2,C1,C0) <-- 0000 */
         env->fpus |= 0x400;
+    }
+    if (X87_NATIVE_SQRT(&ST0)) {
+        merge_exception_flags(env, old_flags);
+        return;
     }
     ST0 = floatx80_sqrt(ST0, &env->fp_status);
     merge_exception_flags(env, old_flags);
