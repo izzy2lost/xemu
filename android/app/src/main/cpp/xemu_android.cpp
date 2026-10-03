@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/system_properties.h>
 #include <errno.h>
 #include <unistd.h>
 
@@ -1363,6 +1364,14 @@ static void RedirectStderrToLogcat() {
 
 extern "C" int xemu_android_main(int argc, char** argv) {
   RedirectStderrToLogcat();
+  {
+    // `setprop debug.xemu.chihiro_log ffb,jvs` (or "all") turns on the
+    // Chihiro board's log categories; it reads them from the environment.
+    char spec[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("debug.xemu.chihiro_log", spec) > 0) {
+      setenv("XEMU_CHIHIRO_LOG", spec, 1);
+    }
+  }
   if (!qemu_main) {
     LogError("xemu core not linked; qemu_main missing");
     return 1;

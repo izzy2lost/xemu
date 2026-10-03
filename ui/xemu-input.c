@@ -37,6 +37,7 @@
 #include "system/blockdev.h"
 #include "hw/xbox/chihiro/chihiro-jvs.h"
 #include "hw/xbox/chihiro/chihiro.h"
+#include "hw/xbox/chihiro/chihiro-driveboard-v257.h"
 
 extern SDL_Window *m_window;
 extern int viewport_coords[4];
@@ -657,6 +658,11 @@ static void xemu_input_update_jvs_driving(ChihiroJVSState *jvs)
 
     /* Signed stick -> 16-bit unsigned, centred; triggers -> 0..0xFFFF. */
     jvs->analog[0] = (uint16_t)(steer + 32768);
+    /* Maximum Tune reads the wheel from the V257 drive board's encoder (10
+     * bits), not from the JVS channel; left alone it sits at one end. */
+    if (chihiro_v257_global) {
+        v257_set_wheel(chihiro_v257_global, jvs->analog[0] >> 6);
+    }
     jvs->analog[1] = (uint16_t)(accel < 0 ? 0 : accel * 2);
     jvs->analog[2] = (uint16_t)(brake < 0 ? 0 : brake * 2);
     jvs->analog[3] = 0x8000;
@@ -698,7 +704,14 @@ static void xemu_input_update_jvs_lightgun(void)
     }
     ChihiroJVSState *jvs = chihiro_jvs_global;
 
-    if (g_config.sys.chihiro_controls == CONFIG_SYS_CHIHIRO_CONTROLS_DRIVING) {
+    /* The game says what it is: a driving cabinet gets the wheel whatever the
+     * per-game setting was left at. */
+    int profile = chihiro_detected_game_profile();
+    bool driving_game = profile == CONFIG_CHIHIRO_JVS_PROFILE_CTX ||
+                        profile == CONFIG_CHIHIRO_JVS_PROFILE_OR2 ||
+                        profile == CONFIG_CHIHIRO_JVS_PROFILE_WMMT2;
+    if (driving_game ||
+        g_config.sys.chihiro_controls == CONFIG_SYS_CHIHIRO_CONTROLS_DRIVING) {
         xemu_input_update_jvs_driving(jvs);
         return;
     }
