@@ -656,6 +656,44 @@ static void ohci_write(void *opaque, uint32_t off, uint64_t value, unsigned size
     pthread_mutex_unlock(&o->lock);
 }
 
+/* Players 1-4 on root ports 3, 4, 1, 2 (ohci_init); their controllers, each
+ * a hub with the Duke on its port 1, plugged in or not. */
+static const unsigned k_port_map[4] = {3, 4, 1, 2};
+static NcUsbDev *g_pad_hub[4];
+static bool g_front_hub;
+
+void nc_dev_ohci_set_pads(unsigned mask)
+{
+    Ohci *o = &g_ohci;
+    if (g_front_hub || !g_pad_hub[0]) {
+        return;                             /* the front panel hub's ports stay as booted */
+    }
+    pthread_mutex_lock(&o->lock);
+    unsigned changes = 0;
+    for (unsigned p = 0; p < 4; p++) {
+        const unsigned i = k_port_map[p] - 1;
+        const bool want = (mask >> p) & 1, have = o->dev[i] != NULL;
+        if (want == have) {
+            continue;
+        }
+        if (want) {
+            o->dev[i] = g_pad_hub[p];
+            nc_usb_reset(o->dev[i]);
+            o->port[i] = (o->port[i] & ~(PORT_PES | PORT_PSS)) | PORT_CCS | PORT_CSC |
+                         (o->dev[i]->low_speed ? PORT_LSDA : 0);
+        } else {
+            o->dev[i] = NULL;
+            o->port[i] = (o->port[i] & ~(PORT_CCS | PORT_PES | PORT_PSS | PORT_LSDA)) | PORT_CSC;
+        }
+        nc_log("hakuX-native-usb", "player %u's controller %s", p + 1, want ? "plugged in" : "unplugged");
+        changes++;
+    }
+    if (changes) {
+        set_interrupt(o, INT_RHSC);         /* the guest's hub driver sees the port change */
+    }
+    pthread_mutex_unlock(&o->lock);
+}
+
 /* NC_PAD_MASK: which of players 1-4 have a controller plugged in (bit n:
  * player n + 1; hex, the app's controller slots); else NC_PADS, how many
  * from player 1 (default 1). */
@@ -684,19 +722,23 @@ void nc_dev_ohci_init(struct NcVm *vm)
      * doesn't enumerate past here yet. */
     const char *fh = getenv("NC_USB_FRONT_HUB");
     const bool front_hub = fh && atoi(fh) != 0;
+    g_front_hub = front_hub;
+    /* Every player's controller is made; those not plugged in wait for
+     * nc_dev_ohci_set_pads (the app's controllers coming and going). */
+    for (unsigned p = 0; p < 4; p++) {
+        g_pad_hub[p] = nc_usb_hub_new(3);
+        nc_usb_hub_attach(g_pad_hub[p], 1, nc_xid_gamepad_new(p));
+    }
     if (players) {
-        static const unsigned k_port_map[4] = {3, 4, 1, 2};
         NcUsbDev *front = front_hub ? nc_usb_hub_new(4) : NULL;
         for (unsigned p = 0; p < 4; p++) {
             if (!((mask >> p) & 1)) {
                 continue;
             }
-            NcUsbDev *pad_hub = nc_usb_hub_new(3);
-            nc_usb_hub_attach(pad_hub, 1, nc_xid_gamepad_new(p));
             if (front) {
-                nc_usb_hub_attach(front, k_port_map[p], pad_hub);
+                nc_usb_hub_attach(front, k_port_map[p], g_pad_hub[p]);
             } else {
-                o->dev[k_port_map[p] - 1] = pad_hub;
+                o->dev[k_port_map[p] - 1] = g_pad_hub[p];
             }
         }
         if (front) {

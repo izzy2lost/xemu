@@ -159,6 +159,14 @@ EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_n
     nc_audio_set_paused(on != JNI_FALSE);
 }
 
+/* Which players have a controller plugged in now (bit n: player n + 1): the
+ * app's controllers coming and going (ohci.c nc_dev_ohci_set_pads). */
+EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeSetPads(JNIEnv *env, jclass cls,
+                                                                                       jint mask)
+{
+    nc_dev_ohci_set_pads((unsigned)mask & 0xF);
+}
+
 /* Fast-forward: the game's time at speed times real time, 1 normal (nc_speed_request). */
 EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeSetSpeed(JNIEnv *env,
                                                                                         jclass cls, jint speed)

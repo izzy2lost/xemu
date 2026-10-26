@@ -105,6 +105,10 @@ void nc_pad_rumble(unsigned player, uint16_t *left, uint16_t *right);
  * for the players in NC_PAD_MASK (or NC_PADS from player 1; default 1). */
 struct NcVm;
 void nc_dev_ohci_init(struct NcVm *vm);
+/* Which of players 1-4 have a controller plugged in now (bit n: player n + 1):
+ * one that comes or goes shows the guest a connection change, as plugging a
+ * Duke into the console does. Any thread. */
+void nc_dev_ohci_set_pads(unsigned mask);
 
 #ifdef __cplusplus
 }

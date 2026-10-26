@@ -104,8 +104,9 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       else -> "stretch"
     }
     args += "tz=${TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000}"
-    /* Player 1: every physical controller (HakuxPadRouter) plus the on-screen controls. */
-    args += "pads=1"
+    /* Player 1 (the on-screen controls, and the first pad used); each other pad plugs
+     * in as its player when it is first used (HakuxPadRouter). */
+    args += "pads=" + Integer.toHexString(router?.pluggedMask() ?: 1)
     vkDriverArg()?.let { args += it }
     modsArg()?.let { args += it }
     return args.toTypedArray()
@@ -412,7 +413,14 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     overlay.onMenuButtonTapped = { showMenu() }
     mLayout?.addView(overlay)
     onScreenController = overlay
-    router = HakuxPadRouter(ControllerRemap.load(this)) { b, a, lx, ly, rx, ry -> nativeSetPad(0, b, a, lx, ly, rx, ry) }
+    router = HakuxPadRouter(
+      ControllerRemap.load(this),
+      send = { p, b, a, lx, ly, rx, ry -> nativeSetPad(p, b, a, lx, ly, rx, ry) },
+      plugged = { mask ->
+        Log.i(TAG, "controllers: players ${(0 until 4).filter { mask shr it and 1 != 0 }.map { it + 1 }}")
+        nativeSetPads(mask)
+      },
+    )
     (getSystemService(Context.INPUT_SERVICE) as InputManager).registerInputDeviceListener(this, null)
     updateControllerVisibility()
   }
@@ -440,21 +448,26 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     updateControllerVisibility()
   }
 
-  /** The rumble the title asks for, on the controller used last. */
-  private var rumbleOn = false
+  /** The rumble the title asks of each player, on that player's controller used last. */
+  private val rumbleOn = BooleanArray(4)
   private val rumble = object : Runnable {
     override fun run() {
-      val v = nativeGetRumble(0)
-      val amp = (maxOf(v ushr 16, v and 0xFFFF) ushr 8).coerceIn(0, 255)
-      val dev = router?.lastDeviceId?.let { InputDevice.getDevice(it) }
-      if (dev != null && Build.VERSION.SDK_INT >= 31) {
-        val vib = dev.vibratorManager.defaultVibrator
-        if (amp > 0 && vib.hasVibrator()) {
-          vib.vibrate(android.os.VibrationEffect.createOneShot(RUMBLE_MS + 20, amp.coerceAtLeast(1)))
-          rumbleOn = true
-        } else if (rumbleOn) {
-          vib.cancel()
-          rumbleOn = false
+      val r = router
+      if (r != null && Build.VERSION.SDK_INT >= 31) {
+        val mask = r.pluggedMask()
+        for (p in 0 until 4) {
+          if (mask shr p and 1 == 0) continue
+          val v = nativeGetRumble(p)
+          val amp = (maxOf(v ushr 16, v and 0xFFFF) ushr 8).coerceIn(0, 255)
+          val dev = InputDevice.getDevice(r.rumbleDevice(p)) ?: continue
+          val vib = dev.vibratorManager.defaultVibrator
+          if (amp > 0 && vib.hasVibrator()) {
+            vib.vibrate(android.os.VibrationEffect.createOneShot(RUMBLE_MS + 20, amp.coerceAtLeast(1)))
+            rumbleOn[p] = true
+          } else if (rumbleOn[p]) {
+            vib.cancel()
+            rumbleOn[p] = false
+          }
         }
       }
       handler.postDelayed(this, RUMBLE_MS)
@@ -555,6 +568,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     }
     val cheats = Spec(getString(R.string.hakux_cheats)) { showCheats() }
     val mods = Spec(getString(R.string.hakux_mods)) { showMods() }
+    val players = Spec(getString(R.string.hakux_controllers)) { showControllers() }
     val remap = Spec(getString(R.string.in_game_menu_remap_controller)) {
       val done = holdPause()
       ControllerRemap.showEditor(
@@ -577,7 +591,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       setPadding((20 * dp).toInt(), (12 * dp).toInt(), (20 * dp).toInt(), 0)
       row(this, resume, touch)
       if (cheatStore != null) row(this, speed, cheats) else row(this, speed)
-      if (gameMods.isNotEmpty()) row(this, mods)
+      if (gameMods.isNotEmpty()) row(this, players, mods) else row(this, players)
       row(this, remap, layout)
       /* savestates: the core has them for push-buffer titles */
       if (nativeStatesAvailable()) row(this, save, load)
@@ -599,6 +613,35 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       .create()
     menuDialog = dialog
     dialog.show()
+  }
+
+  // ---------------------------------------------------------------- players
+
+  /** Which controller is which player; Reset Players lets every pad join again. */
+  private fun showControllers() {
+    val r = router ?: return
+    val done = holdPause()
+    val lines = r.assignments().mapIndexed { i, devs ->
+      val who = when {
+        devs.isNotEmpty() -> devs.joinToString(", ") { it.name }
+        i == 0 -> getString(R.string.hakux_controllers_touch)
+        else -> getString(R.string.hakux_controllers_free)
+      }
+      getString(R.string.hakux_controllers_player, i + 1, who)
+    }
+    MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(R.string.hakux_controllers)
+      .setMessage(lines.joinToString("\n") + "\n\n" + getString(R.string.hakux_controllers_hint))
+      .setPositiveButton(R.string.hakux_cheats_close, null)
+      .setNeutralButton(R.string.hakux_controllers_reset) { _, _ ->
+        r.resetPlayers()
+        Toast.makeText(this, R.string.hakux_controllers_reset_done, Toast.LENGTH_SHORT).show()
+      }
+      .setOnDismissListener {
+        hideSystemBars()
+        done()
+      }
+      .show()
   }
 
   // ---------------------------------------------------------------- mods
@@ -1275,6 +1318,8 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     @JvmStatic external fun nativeSetPaused(paused: Boolean)
     /** Fast-forward: the game runs speed times real time, 1 normal. */
     @JvmStatic external fun nativeSetSpeed(speed: Int)
+    /** The players with a controller plugged in now (bit n: player n + 1). */
+    @JvmStatic external fun nativeSetPads(mask: Int)
     /** A cheat of the core's (its number there) on or off, from the next vblank. */
     @JvmStatic external fun nativeSetCheat(index: Int, on: Boolean)
     /** A cheat added to the running game, or only checked (dry): "<its number>" or "!<why not>". */

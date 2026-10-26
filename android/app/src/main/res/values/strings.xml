@@ -405,6 +405,13 @@
   <string name="in_game_menu_normal_speed">Normal Speed</string>
   <string name="hakux_cheats">Cheats</string>
   <string name="hakux_mods">Mods</string>
+  <string name="hakux_controllers">Controllers</string>
+  <string name="hakux_controllers_player">Player %1$d: %2$s</string>
+  <string name="hakux_controllers_touch">on-screen controls</string>
+  <string name="hakux_controllers_free">press a button on a controller to join</string>
+  <string name="hakux_controllers_hint">Each controller becomes the next player the first time it is used. The on-screen controls are always player 1.</string>
+  <string name="hakux_controllers_reset">Reset Players</string>
+  <string name="hakux_controllers_reset_done">Press a button on each controller, player 1 first</string>
   <string name="hakux_mods_hint">Mods patch the game\'s code as it starts: a change takes effect when the game starts again. Turn on one frame rate mod at a time.</string>
   <string name="hakux_mods_restart">Restart Game</string>
   <string name="hakux_mods_next_start">The mods change the next time the game starts.</string>
