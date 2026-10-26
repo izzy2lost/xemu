@@ -37,6 +37,7 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.RelativeLayout
 import android.widget.TextView
+import android.widget.Toast
 import android.window.OnBackInvokedDispatcher
 import com.izzy2lost.x1box.ControllerSettings
 import com.izzy2lost.x1box.GameLibraryActivity
@@ -46,6 +47,7 @@ import com.izzy2lost.x1box.OnScreenController
 import com.izzy2lost.x1box.OrientationLocker
 import com.izzy2lost.x1box.PerGameSettingsManager
 import com.izzy2lost.x1box.R
+import com.izzy2lost.x1box.XbeMetadataReader
 import java.io.File
 import java.util.TimeZone
 import org.libsdl.app.SDLActivity
@@ -65,6 +67,10 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var onScreenController: OnScreenController? = null
   private var controlsShown: Boolean? = null
   private var fastForward = false
+  /** The game's cheats (by its disc release); null: the disc's XBE couldn't be read. */
+  private var cheatStore: HakuxCheatStore? = null
+  /** The core's number for each cheat it has, by name: the run's manifest's, and those added since. */
+  private val cheatIndex = mutableMapOf<String, Int>()
   private var fpsView: TextView? = null
   private var shaderLine: TextView? = null
 
@@ -98,7 +104,23 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     /* Player 1: every physical controller (HakuxPadRouter) plus the on-screen controls. */
     args += "pads=1"
     vkDriverArg()?.let { args += it }
+    cheatsArg()?.let { args += it }
     return args.toTypedArray()
+  }
+
+  /** "mods=<manifest>" with the game's cheats (HakuxCheatStore), when it has any. */
+  private fun cheatsArg(): String? {
+    val uri = discUri ?: return null
+    val key = runCatching { XbeMetadataReader.read(this, uri, icon = false)?.gameKey }.getOrNull() ?: return null
+    val store = HakuxCheatStore(this, key)
+    cheatStore = store
+    val manifest = File(filesDir, "hakux/cheats/run.txt")
+    val cheats = runCatching { store.writeManifest(manifest) }
+      .onFailure { Log.e(TAG, "cheats: ${it.message}") }
+      .getOrNull() ?: return null
+    cheats.forEachIndexed { i, c -> cheatIndex[c.name] = i }
+    Log.i(TAG, "cheats: $key, ${cheats.size}, ${store.enabled().size} on")
+    return "mods=${manifest.absolutePath}"
   }
 
   /**
@@ -528,6 +550,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     val speed = Spec(getString(if (fastForward) R.string.in_game_menu_normal_speed else R.string.in_game_menu_fast_forward)) {
       setFastForward(!fastForward)
     }
+    val cheats = Spec(getString(R.string.hakux_cheats)) { showCheats() }
     val remap = Spec(getString(R.string.in_game_menu_remap_controller)) {
       val done = holdPause()
       ControllerRemap.showEditor(
@@ -549,7 +572,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       orientation = LinearLayout.VERTICAL
       setPadding((20 * dp).toInt(), (12 * dp).toInt(), (20 * dp).toInt(), 0)
       row(this, resume, touch)
-      row(this, speed)
+      if (cheatStore != null) row(this, speed, cheats) else row(this, speed)
       row(this, remap, layout)
       /* savestates: the core has them for push-buffer titles */
       if (nativeStatesAvailable()) row(this, save, load)
@@ -571,6 +594,214 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       .create()
     menuDialog = dialog
     dialog.show()
+  }
+
+  // ---------------------------------------------------------------- cheats
+
+  /**
+   * The game's cheats, each turned on or off at once (from the next vblank); Add,
+   * Import (a cheats.txt in hakuX's format), and a long press to delete one. Paused
+   * meanwhile.
+   */
+  private fun showCheats() {
+    val store = cheatStore ?: return
+    val done = holdPause()
+    val cheats = store.load()
+    val on = store.enabled()
+    var next: (() -> Unit)? = null
+    val dp = resources.displayMetrics.density
+    val pad = (24 * dp).toInt()
+    val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    content.addView(TextView(this).apply {
+      setText(if (cheats.isEmpty()) R.string.hakux_cheats_empty else R.string.hakux_cheats_hint)
+      setPadding(pad, (8 * dp).toInt(), pad, (8 * dp).toInt())
+    })
+    lateinit var dialog: androidx.appcompat.app.AlertDialog
+    if (cheats.isNotEmpty()) {
+      val list = android.widget.ListView(this).apply {
+        choiceMode = android.widget.ListView.CHOICE_MODE_MULTIPLE
+        adapter = android.widget.ArrayAdapter(
+          this@HakuxCoreActivity,
+          android.R.layout.simple_list_item_multiple_choice,
+          cheats.map { c -> if (c.note.isEmpty()) c.name else "${c.name}\n${c.note}" },
+        )
+        cheats.forEachIndexed { i, c -> setItemChecked(i, c.name in on) }
+        setOnItemClickListener { _, _, i, _ -> setCheat(cheats[i], isItemChecked(i)) }
+        setOnItemLongClickListener { _, _, i, _ ->
+          next = { confirmDeleteCheat(cheats[i]) }
+          dialog.dismiss()
+          true
+        }
+      }
+      content.addView(list, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+    dialog = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(R.string.hakux_cheats)
+      .setView(content)
+      .setPositiveButton(R.string.hakux_cheats_add) { _, _ -> next = { showAddCheat() } }
+      .setNeutralButton(R.string.hakux_cheats_import) { _, _ -> next = { importCheats() } }
+      .setNegativeButton(R.string.hakux_cheats_close, null)
+      .setOnDismissListener {
+        // the next dialog holds the pause before this one lets go: no frame runs between
+        next?.invoke()
+        hideSystemBars()
+        done()
+      }
+      .show()
+  }
+
+  /** A cheat on or off in the core (added to it first if it hasn't it) and so kept for the game. */
+  private fun setCheat(cheat: HakuxCheat, on: Boolean) {
+    val index = cheatIndex[cheat.name] ?: addCheatToCore(cheat, on) ?: return
+    nativeSetCheat(index, on)
+    cheatStore?.setEnabled(cheat.name, on)
+  }
+
+  /** The core's number for a new cheat, or null (why logged: the store's cheats were checked). */
+  private fun addCheatToCore(cheat: HakuxCheat, on: Boolean): Int? {
+    val r = nativeAddCheat(cheat.name, cheat.code.joinToString("\n"), on, cheat.once, false)
+    if (r.startsWith("!")) {
+      Log.w(TAG, "cheat ${cheat.name}: ${r.drop(1)}")
+      return null
+    }
+    return r.toInt().also { cheatIndex[cheat.name] = it }
+  }
+
+  /** Why the core won't take these code lines, or null. */
+  private fun checkCheat(code: List<String>, once: Boolean): String? =
+    nativeAddCheat("check", code.joinToString("\n"), false, once, true).takeIf { it.startsWith("!") }?.drop(1)
+
+  private fun showAddCheat() {
+    val store = cheatStore ?: return
+    val done = holdPause()
+    val dp = resources.displayMetrics.density
+    val pad = (24 * dp).toInt()
+    val name = android.widget.EditText(this).apply {
+      setHint(R.string.hakux_cheat_name)
+      isSingleLine = true
+    }
+    val code = android.widget.EditText(this).apply {
+      setHint(R.string.hakux_cheat_code)
+      typeface = Typeface.MONOSPACE
+      minLines = 4
+      gravity = Gravity.TOP or Gravity.START
+      inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+        android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+    }
+    val once = com.google.android.material.checkbox.MaterialCheckBox(this).apply {
+      setText(R.string.hakux_cheat_once)
+    }
+    val form = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL
+      setPadding(pad, (8 * dp).toInt(), pad, 0)
+      addView(name)
+      addView(code)
+      addView(once)
+    }
+    val scroll = androidx.core.widget.NestedScrollView(this).apply { addView(form) }
+    val dialog = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(R.string.hakux_cheat_add_title)
+      .setView(scroll)
+      .setPositiveButton(R.string.hakux_cheats_add, null)
+      .setNegativeButton(android.R.string.cancel, null)
+      .setOnDismissListener {
+        hideSystemBars()
+        done()
+      }
+      .show()
+    // checked before it closes: a bad line keeps the dialog, with why
+    dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+      val title = name.text.toString().trim()
+      val lines = code.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
+      when {
+        title.isEmpty() -> name.apply { requestFocus() }.error = getString(R.string.hakux_cheat_name_missing)
+        store.load().any { it.name == title } ->
+          name.apply { requestFocus() }.error = getString(R.string.hakux_cheat_name_taken)
+        else -> {
+          val why = checkCheat(lines, once.isChecked)
+          if (why != null) {
+            code.requestFocus()          // its error only shows with the focus
+            code.error = why
+            return@setOnClickListener
+          }
+          val cheat = HakuxCheat(title, "", once.isChecked, lines)
+          store.save(store.load() + cheat)
+          setCheat(cheat, true)
+          Toast.makeText(this, getString(R.string.hakux_cheat_added, title), Toast.LENGTH_SHORT).show()
+          dialog.dismiss()
+        }
+      }
+    }
+  }
+
+  private fun confirmDeleteCheat(cheat: HakuxCheat) {
+    val store = cheatStore ?: return
+    val done = holdPause()
+    MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(R.string.hakux_cheat_delete_title)
+      .setMessage(getString(R.string.hakux_cheat_delete_message, cheat.name))
+      .setPositiveButton(R.string.hakux_cheat_delete) { _, _ ->
+        // the core keeps it until the game restarts, off
+        cheatIndex.remove(cheat.name)?.let { nativeSetCheat(it, false) }
+        store.save(store.load().filter { it.name != cheat.name })
+      }
+      .setNegativeButton(android.R.string.cancel, null)
+      .setOnDismissListener {
+        hideSystemBars()
+        done()
+      }
+      .show()
+  }
+
+  private fun importCheats() {
+    val pick = Intent(Intent.ACTION_OPEN_DOCUMENT)
+      .addCategory(Intent.CATEGORY_OPENABLE)
+      .setType("*/*")
+      .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/plain", "application/octet-stream"))
+    runCatching { startActivityForResult(pick, REQUEST_IMPORT_CHEATS) }
+      .onFailure { Toast.makeText(this, R.string.hakux_cheats_import_failed, Toast.LENGTH_LONG).show() }
+  }
+
+  /**
+   * A cheats.txt's cheats added, off: one with a name the game has replaces it. A cheat
+   * whose lines the core won't take is skipped, the first one's why shown.
+   */
+  private fun importCheatsFrom(uri: Uri) {
+    val store = cheatStore ?: return
+    val text = runCatching { contentResolver.openInputStream(uri)!!.use { it.readBytes().toString(Charsets.UTF_8) } }
+      .getOrNull()
+    val found = text?.let(HakuxCheatStore::parse).orEmpty()
+    if (found.isEmpty()) {
+      Toast.makeText(this, R.string.hakux_cheats_import_none, Toast.LENGTH_LONG).show()
+      return
+    }
+    var cheats = store.load()
+    val skipped = mutableListOf<String>()
+    var added = 0
+    for (c in found) {
+      val why = checkCheat(c.code, c.once)
+      if (why != null) {
+        skipped += "${c.name}: $why"
+        continue
+      }
+      cheatIndex.remove(c.name)?.let { nativeSetCheat(it, false) }
+      store.setEnabled(c.name, false)
+      cheats = cheats.filter { it.name != c.name } + c
+      added++
+    }
+    store.save(cheats)
+    val message = getString(R.string.hakux_cheats_imported, added) +
+      if (skipped.isEmpty()) "" else "\n" + getString(R.string.hakux_cheats_import_skipped, skipped.size, skipped.first())
+    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    showCheats()
+  }
+
+  @Deprecated("SDLActivity is a plain Activity: no activity result API")
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode == REQUEST_IMPORT_CHEATS && resultCode == RESULT_OK) {
+      data?.data?.let(::importCheatsFrom)
+    }
   }
 
   /** The layout editor over the game, paused meanwhile (MainActivity's). */
@@ -906,6 +1137,8 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     /** Fast-forward's speed: the game's time at this many times real time. */
     private const val FAST_FORWARD_SPEED = 2
 
+    private const val REQUEST_IMPORT_CHEATS = 0x4843
+
     private const val POLL_MS = 500L
     private const val RUMBLE_MS = 50L
     private const val RELAUNCH_COPY_MS = 1000L
@@ -932,6 +1165,10 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     @JvmStatic external fun nativeSetPaused(paused: Boolean)
     /** Fast-forward: the game runs speed times real time, 1 normal. */
     @JvmStatic external fun nativeSetSpeed(speed: Int)
+    /** A cheat of the core's (its number there) on or off, from the next vblank. */
+    @JvmStatic external fun nativeSetCheat(index: Int, on: Boolean)
+    /** A cheat added to the running game, or only checked (dry): "<its number>" or "!<why not>". */
+    @JvmStatic external fun nativeAddCheat(name: String, code: String, on: Boolean, once: Boolean, dry: Boolean): String
     /** Saves the running game to path (not on the UI thread): null, or why it couldn't. */
     @JvmStatic external fun nativeSaveState(path: String): String?
     /** Whether the savestate at path can load into this game: null, or why not. */

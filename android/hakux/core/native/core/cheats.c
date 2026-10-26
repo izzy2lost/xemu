@@ -194,12 +194,73 @@ static bool fail(char *err, size_t errlen, const char *why)
     return false;
 }
 
+static bool line_into(Cheat *c, const char *line, char *err, size_t errlen);
+
 bool nc_cheat_line(const char *line, char *err, size_t errlen)
 {
     if (!g_n) {
         return fail(err, errlen, "no cheat");
     }
-    Cheat *c = &g_cheats[g_n - 1];
+    return line_into(&g_cheats[g_n - 1], line, err, errlen);
+}
+
+int nc_cheat_compile(const char *name, bool on, bool once, const char *text, bool dry, char *err,
+                     size_t errlen)
+{
+    const unsigned n = g_n, nops = g_nops;
+    if (n >= NC_CHEATS_MAX) {
+        fail(err, errlen, "too many cheats");
+        return -1;
+    }
+    Cheat *c = &g_cheats[n];             /* not counted yet: the guest's thread doesn't look */
+    memset(c, 0, sizeof(*c));
+    snprintf(c->name, sizeof(c->name), "%s", name);
+    c->on = on;
+    c->gen = on;
+    c->once = once;
+    c->first = nops;
+    unsigned lineno = 0, ops = 0;
+    for (const char *p = text; *p;) {
+        const char *eol = strchr(p, '\n');
+        const size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        size_t keep = len;
+        while (keep && p[keep - 1] == '\r') {
+            keep--;                             /* a file from Windows */
+        }
+        char line[256], why[96];
+        snprintf(line, sizeof(line), "%.*s", (int)(keep < sizeof(line) ? keep : sizeof(line) - 1), p);
+        lineno++;
+        const unsigned before = c->n;
+        if (!line_into(c, line, why, sizeof(why))) {
+            g_nops = nops;
+            if (err && errlen) {
+                snprintf(err, errlen, "line %u: %s", lineno, why);
+            }
+            return -1;
+        }
+        ops += c->n - before;
+        p = eol ? eol + 1 : p + len;
+    }
+    if (c->depth) {
+        g_nops = nops;
+        fail(err, errlen, "an if without its end");
+        return -1;
+    }
+    if (!ops) {
+        g_nops = nops;
+        fail(err, errlen, "no code lines");
+        return -1;
+    }
+    if (dry) {
+        g_nops = nops;
+        return 0;
+    }
+    __atomic_store_n(&g_n, n + 1, __ATOMIC_RELEASE);
+    return (int)n;
+}
+
+static bool line_into(Cheat *c, const char *line, char *err, size_t errlen)
+{
     const char *p = skip_ws(line);
     char word[8];
     size_t n = 0;
@@ -266,7 +327,7 @@ bool nc_cheat_line(const char *line, char *err, size_t errlen)
 
 void nc_cheat_set(int index, bool on)
 {
-    if (index < 0 || (unsigned)index >= g_n) {
+    if (index < 0 || (unsigned)index >= nc_cheat_count()) {
         return;
     }
     Cheat *c = &g_cheats[index];
@@ -283,7 +344,7 @@ bool nc_cheat_on(int index)
 
 unsigned nc_cheat_count(void)
 {
-    return g_n;
+    return __atomic_load_n(&g_n, __ATOMIC_ACQUIRE);
 }
 
 const char *nc_cheat_name(int index)
@@ -414,7 +475,8 @@ static unsigned run_one(Cheat *c, const NcCheatMem *m)
 unsigned nc_cheats_run(const NcCheatMem *m)
 {
     unsigned wrote = 0;
-    for (unsigned i = 0; i < g_n; i++) {
+    const unsigned n = nc_cheat_count();     /* a cheat the app adds now is whole when counted */
+    for (unsigned i = 0; i < n; i++) {
         Cheat *c = &g_cheats[i];
         if (!__atomic_load_n(&c->on, __ATOMIC_ACQUIRE)) {
             continue;

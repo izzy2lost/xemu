@@ -33,6 +33,12 @@ int nc_cheat_add(const char *name, bool on, bool once);
 /* One code line of the cheat added last. False, with why in err, when it
  * isn't one (the cheat keeps its other lines). */
 bool nc_cheat_line(const char *line, char *err, size_t errlen);
+/* A whole cheat at once (text: its code lines, one per line), from the app
+ * while the game runs: built past the cheats there are and published last,
+ * so the guest's thread never sees it half made. dry: only checked. Returns
+ * its index (0 when dry), or -1 with why in err ("line 2: bad address"). */
+int nc_cheat_compile(const char *name, bool on, bool once, const char *text, bool dry, char *err,
+                     size_t errlen);
 void nc_cheat_set(int index, bool on);
 bool nc_cheat_on(int index);
 unsigned nc_cheat_count(void);

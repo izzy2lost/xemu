@@ -234,6 +234,27 @@ EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_n
     nc_cheat_set(index, on);
 }
 
+/* A cheat added while the game runs (the in-game menu's), or only checked
+ * (dry): its index (0 when dry) and null, or -1 and why. Returned as
+ * "index" or "!why". */
+EXPORT JNIEXPORT jstring JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeAddCheat(
+    JNIEnv *env, jclass cls, jstring jname, jstring jcode, jboolean on, jboolean once, jboolean dry)
+{
+    const char *name = (*env)->GetStringUTFChars(env, jname, NULL);
+    const char *code = (*env)->GetStringUTFChars(env, jcode, NULL);
+    char err[128] = "", out[160];
+    const int i = nc_cheat_compile(name, on != JNI_FALSE, once != JNI_FALSE, code, dry != JNI_FALSE, err,
+                                   sizeof(err));
+    (*env)->ReleaseStringUTFChars(env, jname, name);
+    (*env)->ReleaseStringUTFChars(env, jcode, code);
+    if (i < 0) {
+        snprintf(out, sizeof(out), "!%s", err);
+    } else {
+        snprintf(out, sizeof(out), "%d", i);
+    }
+    return (*env)->NewStringUTF(env, out);
+}
+
 /* The rumble the title last sent to that player: left << 16 | right. */
 EXPORT JNIEXPORT jint JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeGetRumble(JNIEnv *env,
                                                                                          jclass cls, jint player)

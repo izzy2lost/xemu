@@ -22,7 +22,11 @@ import java.security.MessageDigest
  */
 object XbeMetadataReader {
 
-  class Metadata(val titleId: Long, val titleName: String, val icon: Bitmap?)
+  /** version: the certificate's, which tells a disc's releases apart (54430006 is .5 and .6). */
+  class Metadata(val titleId: Long, val titleName: String, val icon: Bitmap?, val version: Long = 0) {
+    /** The disc release's key, title ID and version (4D530004.9), as hakuX keys mods and cheats. */
+    val gameKey: String get() = String.format(java.util.Locale.ROOT, "%08X.%d", titleId, version)
+  }
 
   private const val SECTOR_SIZE = 2048L
   private const val VOLUME_DESCRIPTOR_OFFSET = 32L * SECTOR_SIZE
@@ -59,6 +63,7 @@ object XbeMetadataReader {
   private const val CERTIFICATE_TITLE_ID = 0x8
   private const val CERTIFICATE_TITLE_NAME = 0xC
   private const val CERTIFICATE_TITLE_NAME_LENGTH = 40
+  private const val CERTIFICATE_VERSION = 0xAC
   private const val CERTIFICATE_MIN_SIZE = 0xB0
 
   /* Bounds on a well-formed executable, so a damaged one can't make this read gigabytes. */
@@ -76,18 +81,18 @@ object XbeMetadataReader {
   private const val FORMAT_LINEAR_A8R8G8B8 = 0x12
   private const val FORMAT_LINEAR_X8R8G8B8 = 0x1E
 
-  /** Null for anything that isn't an original Xbox disc image, or can't be read. */
-  fun read(context: Context, uri: Uri): Metadata? {
+  /** Null for anything that isn't an original Xbox disc image, or can't be read. icon: decode the title image. */
+  fun read(context: Context, uri: Uri, icon: Boolean = true): Metadata? {
     return try {
       context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
-        FileInputStream(descriptor.fileDescriptor).use { input -> readDiscImage(input.channel) }
+        FileInputStream(descriptor.fileDescriptor).use { input -> readDiscImage(input.channel, icon) }
       }
     } catch (_: Exception) {
       null
     }
   }
 
-  private fun readDiscImage(channel: FileChannel): Metadata? {
+  private fun readDiscImage(channel: FileChannel, wantIcon: Boolean): Metadata? {
     for (partition in PARTITION_OFFSETS) {
       val volume = readAt(channel, partition + VOLUME_DESCRIPTOR_OFFSET, VOLUME_DESCRIPTOR_SIZE)
         ?: continue
@@ -105,7 +110,7 @@ object XbeMetadataReader {
         ?: return null
       val (sector, size) = findFile(root, "default.xbe") ?: return null
       val start = partition + sector * SECTOR_SIZE
-      return parseXbe { offset, length ->
+      return parseXbe(wantIcon) { offset, length ->
         if (offset < 0 || offset + length > size) null else readAt(channel, start + offset, length)
       }
     }
@@ -144,7 +149,7 @@ object XbeMetadataReader {
     return null
   }
 
-  private fun parseXbe(read: (offset: Long, length: Int) -> ByteArray?): Metadata? {
+  private fun parseXbe(wantIcon: Boolean, read: (offset: Long, length: Int) -> ByteArray?): Metadata? {
     val prefix = read(0, XBE_HEADER_MIN_SIZE) ?: return null
     if (u32(prefix, 0) != XBE_SIGNATURE) {
       return null
@@ -170,6 +175,7 @@ object XbeMetadataReader {
       CERTIFICATE_MIN_SIZE.toLong(),
     ) ?: return null
     val titleId = u32(headers, certificate + CERTIFICATE_TITLE_ID)
+    val version = u32(headers, certificate + CERTIFICATE_VERSION)
     val name = StringBuilder()
     for (i in 0 until CERTIFICATE_TITLE_NAME_LENGTH) {
       val c = u16(headers, certificate + CERTIFICATE_TITLE_NAME + i * 2)
@@ -185,7 +191,7 @@ object XbeMetadataReader {
       u32(headers, XBE_SECTION_HEADERS_ADDRESS),
       sectionCount * SECTION_HEADER_SIZE,
     )
-    if (sections != null) {
+    if (sections != null && wantIcon) {
       for (i in 0 until sectionCount.toInt()) {
         val section = sections + i * SECTION_HEADER_SIZE
         val nameOffset = headerOffset(
@@ -203,7 +209,7 @@ object XbeMetadataReader {
         break
       }
     }
-    return Metadata(titleId, name.toString().trim(), icon)
+    return Metadata(titleId, name.toString().trim(), icon, version)
   }
 
   /*
