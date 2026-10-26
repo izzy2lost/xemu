@@ -43,6 +43,7 @@ import com.izzy2lost.x1box.ControllerSettings
 import com.izzy2lost.x1box.GameLibraryActivity
 import com.izzy2lost.x1box.GpuDriverHelper
 import com.izzy2lost.x1box.HakuxLaunch
+import com.izzy2lost.x1box.InGameMenuGrid
 import com.izzy2lost.x1box.OnScreenController
 import com.izzy2lost.x1box.OrientationLocker
 import com.izzy2lost.x1box.PerGameSettingsManager
@@ -564,54 +565,28 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     router?.reset()
     val release = holdPause()
 
-    val dp = resources.displayMetrics.density
-    val spacing = (8 * dp).toInt()
     lateinit var dialog: androidx.appcompat.app.AlertDialog
-    class Spec(val label: String, val action: () -> Unit)
-
-    fun button(spec: Spec) = MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
-      text = spec.label
-      gravity = Gravity.CENTER
-      textAlignment = View.TEXT_ALIGNMENT_CENTER
-      isSingleLine = false
-      maxLines = 2
-      setOnClickListener {
-        spec.action()                   /* a dialog it opens holds the pause before the menu lets go */
-        dialog.dismiss()
-      }
-    }
-
-    fun row(parent: LinearLayout, vararg specs: Spec) {
-      parent.addView(LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        isBaselineAligned = false
-        layoutParams = LinearLayout.LayoutParams(
-          LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
-        ).also { it.bottomMargin = spacing }
-        specs.forEachIndexed { i, spec ->
-          addView(button(spec).apply {
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).also { lp ->
-              if (i < specs.lastIndex) lp.marginEnd = spacing
-            }
-          })
-        }
-      })
-    }
+    fun item(label: Int, icon: Int, action: () -> Unit) = InGameMenuGrid.Item(getString(label), icon, action)
 
     val shown = onScreenController?.visibility == View.VISIBLE
-    val resume = Spec(getString(R.string.in_game_menu_resume)) {}
-    val touch = Spec(getString(if (shown) R.string.in_game_menu_hide_touch_controls else R.string.in_game_menu_show_touch_controls)) {
+    val resume = item(R.string.in_game_menu_resume, R.drawable.ic_xemu_play) {}
+    // The menu's too: with the touch controls hidden (a gamepad) the button is gone.
+    val speed = item(
+      if (fastForward) R.string.in_game_menu_normal_speed else R.string.in_game_menu_fast_forward,
+      R.drawable.ic_menu_fast_forward,
+    ) { setFastForward(!fastForward) }
+    val touch = item(
+      if (shown) R.string.in_game_menu_hide_touch_controls else R.string.in_game_menu_show_touch_controls,
+      R.drawable.ic_menu_touch,
+    ) {
       controlsShown = !shown
       updateControllerVisibility()
     }
-    // The menu's too: with the touch controls hidden (a gamepad) the button is gone.
-    val speed = Spec(getString(if (fastForward) R.string.in_game_menu_normal_speed else R.string.in_game_menu_fast_forward)) {
-      setFastForward(!fastForward)
-    }
-    val cheats = Spec(getString(R.string.hakux_cheats)) { showCheats() }
-    val mods = Spec(getString(R.string.hakux_mods)) { showMods() }
-    val players = Spec(getString(R.string.hakux_controllers)) { showControllers() }
-    val remap = Spec(getString(R.string.in_game_menu_remap_controller)) {
+    val save = item(R.string.in_game_menu_save_state, R.drawable.ic_menu_save) { saveStates.showSlots(save = true) }
+    val load = item(R.string.in_game_menu_load_state, R.drawable.ic_xemu_history) { saveStates.showSlots(save = false) }
+    val cheats = item(R.string.hakux_cheats, R.drawable.ic_menu_cheats) { showCheats() }
+    val players = item(R.string.hakux_controllers, R.drawable.ic_menu_players) { showControllers() }
+    val remap = item(R.string.in_game_menu_remap_controller, R.drawable.ic_xemu_gamepad) {
       val done = holdPause()
       ControllerRemap.showEditor(
         this,
@@ -622,22 +597,23 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
         },
       )
     }
-    val layout = Spec(getString(R.string.in_game_menu_edit_touch_layout)) { startTouchLayoutEditor() }
-    val save = Spec(getString(R.string.in_game_menu_save_state)) { saveStates.showSlots(save = true) }
-    val load = Spec(getString(R.string.in_game_menu_load_state)) { saveStates.showSlots(save = false) }
-    val exit = Spec(getString(R.string.in_game_menu_exit_to_library)) { exitGame() }
-    val quit = Spec(getString(R.string.in_game_menu_quit_app)) { quitApp() }
+    val layout = item(R.string.in_game_menu_edit_touch_layout, R.drawable.ic_menu_edit) { startTouchLayoutEditor() }
+    val mods = item(R.string.hakux_mods, R.drawable.ic_menu_mods) { showMods() }
+    val exit = item(R.string.in_game_menu_exit_to_library, R.drawable.ic_xemu_grid_view) { exitGame() }
+    val quit = item(R.string.in_game_menu_quit_app, R.drawable.ic_menu_power) { quitApp() }
 
-    val list = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      setPadding((20 * dp).toInt(), (12 * dp).toInt(), (20 * dp).toInt(), 0)
-      row(this, resume, touch)
-      if (cheatStore != null) row(this, speed, cheats) else row(this, speed)
-      if (gameMods.isNotEmpty()) row(this, players, mods) else row(this, players)
-      row(this, remap, layout)
+    val items = buildList {
+      add(resume); add(speed); add(touch)
       /* savestates: the core has them for push-buffer titles */
-      if (nativeStatesAvailable()) row(this, save, load)
-      row(this, exit, quit)
+      if (nativeStatesAvailable()) { add(save); add(load) }
+      if (cheatStore != null) add(cheats)
+      add(players); add(remap); add(layout)
+      if (gameMods.isNotEmpty()) add(mods)
+      add(exit); add(quit)
+    }
+    val list = InGameMenuGrid.build(this, items) { picked ->
+      picked.action()                   /* a dialog it opens holds the pause before the menu lets go */
+      dialog.dismiss()
     }
     val scroll = androidx.core.widget.NestedScrollView(this).apply {
       isFillViewport = true

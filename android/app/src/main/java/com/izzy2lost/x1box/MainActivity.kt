@@ -987,128 +987,40 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     resumeEmulationOnMenuDismiss = true
 
     val dp = resources.displayMetrics.density
-    val verticalButtonSpacing = (8 * dp).toInt()
-    val horizontalButtonSpacing = (8 * dp).toInt()
     lateinit var dialog: androidx.appcompat.app.AlertDialog
-    data class MenuButtonSpec(
-      val label: String,
-      val resumeAfterDismiss: Boolean = true,
-      val action: () -> Unit,
+    /* resumeAfterDismiss: the menu's dismissal resumes the game (else the action's own dialog does) */
+    class Entry(val item: InGameMenuGrid.Item, val resumeAfterDismiss: Boolean)
+    fun entry(label: String, icon: Int, resumeAfterDismiss: Boolean = false, action: () -> Unit) =
+      Entry(InGameMenuGrid.Item(label, icon, action), resumeAfterDismiss)
+
+    val entries = listOf(
+      entry(getString(R.string.in_game_menu_resume), R.drawable.ic_xemu_play, resumeAfterDismiss = true) {},
+      entry(
+        getString(if (isControllerVisible) R.string.in_game_menu_hide_touch_controls else R.string.in_game_menu_show_touch_controls),
+        R.drawable.ic_menu_touch,
+        resumeAfterDismiss = true,
+      ) { toggleOnScreenController() },
+      entry(getString(R.string.in_game_menu_remap_controller), R.drawable.ic_xemu_gamepad) {
+        ControllerRemap.showEditor(
+          this,
+          onChanged = ::applyControllerRemap,
+          onDismiss = {
+            hideSystemUI()
+            resumeEmulationIfSafe()
+          },
+        )
+      },
+      entry(getString(R.string.in_game_menu_edit_touch_layout), R.drawable.ic_menu_edit) { startTouchLayoutEditor() },
+      entry(getString(R.string.in_game_menu_save_state), R.drawable.ic_menu_save) { showSaveStateDialog() },
+      entry(getString(R.string.in_game_menu_load_state), R.drawable.ic_xemu_history) { showLoadStateDialog() },
+      entry(getString(R.string.in_game_menu_reboot_system), R.drawable.ic_menu_reboot) { showRebootSystemConfirmation() },
+      entry(getString(R.string.in_game_menu_exit_to_library), R.drawable.ic_xemu_grid_view) { exitToGameLibrary() },
+      entry(getString(R.string.in_game_menu_quit_app), R.drawable.ic_menu_power) { quitApp() },
     )
-
-    fun createMenuButton(spec: MenuButtonSpec): MaterialButton {
-      return MaterialButton(
-        this@MainActivity,
-        null,
-        com.google.android.material.R.attr.materialButtonOutlinedStyle
-      ).apply {
-        text = spec.label
-        gravity = Gravity.CENTER
-        textAlignment = View.TEXT_ALIGNMENT_CENTER
-        isSingleLine = false
-        maxLines = 2
-        setOnClickListener {
-          resumeEmulationOnMenuDismiss = spec.resumeAfterDismiss
-          dialog.dismiss()
-          spec.action()
-        }
-      }
-    }
-
-    fun addButtonRow(parent: LinearLayout, vararg specs: MenuButtonSpec) {
-      parent.addView(
-        LinearLayout(this).apply {
-          orientation = LinearLayout.HORIZONTAL
-          // Keep buttons top-aligned when one label wraps to two lines.
-          isBaselineAligned = false
-          layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-          ).also { lp ->
-            lp.bottomMargin = verticalButtonSpacing
-          }
-          specs.forEachIndexed { index, spec ->
-            addView(createMenuButton(spec).apply {
-              layoutParams = LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f
-              ).also { lp ->
-                if (index < specs.lastIndex) lp.marginEnd = horizontalButtonSpacing
-              }
-            })
-          }
-        }
-      )
-    }
-
-    val resumeButton = MenuButtonSpec(getString(R.string.in_game_menu_resume)) { /* Resume */ }
-    val touchControlsButton = MenuButtonSpec(
-      if (isControllerVisible) {
-        getString(R.string.in_game_menu_hide_touch_controls)
-      } else {
-        getString(R.string.in_game_menu_show_touch_controls)
-      }
-    ) {
-      toggleOnScreenController()
-    }
-    val remapButton = MenuButtonSpec(
-      getString(R.string.in_game_menu_remap_controller),
-      resumeAfterDismiss = false
-    ) {
-      ControllerRemap.showEditor(
-        this,
-        onChanged = ::applyControllerRemap,
-        onDismiss = {
-          hideSystemUI()
-          resumeEmulationIfSafe()
-        },
-      )
-    }
-    val editTouchLayoutButton = MenuButtonSpec(
-      getString(R.string.in_game_menu_edit_touch_layout),
-      resumeAfterDismiss = false
-    ) {
-      startTouchLayoutEditor()
-    }
-    val saveStateButton = MenuButtonSpec(
-      getString(R.string.in_game_menu_save_state),
-      resumeAfterDismiss = false
-    ) {
-      showSaveStateDialog()
-    }
-    val loadStateButton = MenuButtonSpec(
-      getString(R.string.in_game_menu_load_state),
-      resumeAfterDismiss = false
-    ) {
-      showLoadStateDialog()
-    }
-    val rebootButton = MenuButtonSpec(
-      getString(R.string.in_game_menu_reboot_system),
-      resumeAfterDismiss = false
-    ) {
-      showRebootSystemConfirmation()
-    }
-    val exitToLibraryButton = MenuButtonSpec(
-      getString(R.string.in_game_menu_exit_to_library),
-      resumeAfterDismiss = false
-    ) {
-      exitToGameLibrary()
-    }
-    val quitAppButton = MenuButtonSpec(
-      getString(R.string.in_game_menu_quit_app),
-      resumeAfterDismiss = false
-    ) {
-      quitApp()
-    }
-
-    val buttonList = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      setPadding((20 * dp).toInt(), (12 * dp).toInt(), (20 * dp).toInt(), 0)
-      addButtonRow(this, resumeButton, touchControlsButton)
-      addButtonRow(this, remapButton, editTouchLayoutButton)
-      addButtonRow(this, saveStateButton, loadStateButton)
-      addButtonRow(this, rebootButton, exitToLibraryButton, quitAppButton)
+    val buttonList = InGameMenuGrid.build(this, entries.map { it.item }) { picked ->
+      resumeEmulationOnMenuDismiss = entries.first { it.item === picked }.resumeAfterDismiss
+      dialog.dismiss()
+      picked.action()
     }
 
     val scrollContainer = NestedScrollView(this).apply {
