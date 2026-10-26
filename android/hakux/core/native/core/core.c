@@ -40,6 +40,13 @@ static bool boot_failed(const char *why)
     return false;
 }
 
+/* The game's file is the problem, not the core (NC_FATAL_DISC). */
+static bool disc_failed(const char *why)
+{
+    nc_hle_set_fatal(NC_FATAL_DISC, why);
+    return false;
+}
+
 bool nc_core_boot(NcCore *c, int disc_fd)
 {
     memset(c, 0, sizeof(*c));
@@ -60,11 +67,11 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     nc_dev_aci_init(&c->vm);
     nc_dev_misc_init();
     if (disc_fd < 0) {
-        return boot_failed("The game's file can't be opened.");
+        return disc_failed("The game's file can't be opened.");
     }
     if (!nc_disc_open(&c->disc, disc_fd)) {
         close(disc_fd);
-        return boot_failed("The game's file isn't an Xbox disc image.");
+        return disc_failed("The game's file isn't an Xbox disc image.");
     }
     nc_mods_install(&c->disc);          /* the mods' files and XBE patches, the cheats */
     /* A relaunch (XLaunchNewImage, NativeCoreActivity starts the core again):

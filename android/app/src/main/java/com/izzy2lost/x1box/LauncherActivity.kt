@@ -105,6 +105,11 @@ class LauncherActivity : Activity() {
       // handing off to the emulator process.
       val launchEditor = prefs.edit()
       launchEditor.putBoolean("skip_game_picker", false)
+      if (frontendLaunch.relativePath != null) {
+        launchEditor.putString(HakuxLaunch.PREF_LAST_GAME, frontendLaunch.relativePath)
+      } else {
+        launchEditor.remove(HakuxLaunch.PREF_LAST_GAME)
+      }
       PerGameSettingsManager.applyRuntimeOverridesToEditor(
         context = this,
         editor = launchEditor,

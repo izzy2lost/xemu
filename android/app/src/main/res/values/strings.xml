@@ -509,9 +509,12 @@ Play a game and save, or import a save backup ZIP.</string>
   <string name="hakux_menu_hide_controls">Hide on-screen controls</string>
   <string name="hakux_menu_exit">Exit game</string>
   <string name="hakux_fatal_driver_title">GPU driver not supported</string>
-  <string name="hakux_fatal_driver">The hakuX core needs Vulkan features this GPU driver does not have:\n\n%1$s\n\nTry another driver, or the xemu core for this game.</string>
+  <string name="hakux_fatal_driver">The hakuX core needs Vulkan features this GPU driver does not have:\n\n%1$s\n\nAnother GPU driver may have them.</string>
   <string name="hakux_fatal_incompatible_title">Game not supported by hakuX</string>
-  <string name="hakux_fatal_incompatible">The hakuX core can\'t run this game yet. Switch it to the xemu core in its per-game settings.</string>
+  <string name="hakux_fatal_incompatible">The hakuX core can\'t run this game yet.</string>
+  <string name="hakux_try_xemu_hint">You can try this game in the xemu core, which emulates the whole console.</string>
+  <string name="hakux_try_xemu">Try in xemu</string>
+  <string name="hakux_always_xemu">Always use xemu for this game</string>
   <string name="hakux_fatal_gpu_lost_title">GPU stopped responding</string>
   <string name="hakux_fatal_gpu_lost">The GPU driver reset while running this game:\n\n%1$s</string>
   <string name="hakux_fatal_boot_title">Game could not start</string>

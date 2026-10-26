@@ -18,6 +18,8 @@ object HakuxLaunch {
   const val PREF_CORE = "setting_core"
   const val CORE_XEMU = "xemu"
   const val CORE_HAKUX = "hakux"
+  /** The library path (per-game settings key) of the game last launched, beside its dvdUri/dvdPath. */
+  const val PREF_LAST_GAME = "last_game_relative_path"
 
   /** The global core choice, before any game's override. */
   fun globalCore(prefs: SharedPreferences): String =

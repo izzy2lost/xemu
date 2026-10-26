@@ -41,6 +41,7 @@ import android.window.OnBackInvokedDispatcher
 import com.izzy2lost.x1box.ControllerSettings
 import com.izzy2lost.x1box.GameLibraryActivity
 import com.izzy2lost.x1box.GpuDriverHelper
+import com.izzy2lost.x1box.HakuxLaunch
 import com.izzy2lost.x1box.OnScreenController
 import com.izzy2lost.x1box.OrientationLocker
 import com.izzy2lost.x1box.PerGameSettingsManager
@@ -149,7 +150,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       "fd:${contentResolver.openFileDescriptor(u, "r")!!.detachFd()}"
     } catch (e: Exception) {
       Log.e(TAG, "can't open $u: ${e.message}")
-      "" /* the core reports NC_FATAL_BOOT and the dialog goes back */
+      "" /* the core reports NC_FATAL_DISC and the dialog goes back */
     }
   }
 
@@ -256,15 +257,59 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     val (title, message) = when (kind) {
       FATAL_DRIVER -> R.string.hakux_fatal_driver_title to getString(R.string.hakux_fatal_driver, why)
       FATAL_GPU_LOST -> R.string.hakux_fatal_gpu_lost_title to getString(R.string.hakux_fatal_gpu_lost, why)
-      FATAL_BOOT -> R.string.hakux_fatal_boot_title to getString(R.string.hakux_fatal_boot, why)
+      FATAL_BOOT, FATAL_DISC -> R.string.hakux_fatal_boot_title to getString(R.string.hakux_fatal_boot, why)
       else -> R.string.hakux_fatal_incompatible_title to getString(R.string.hakux_fatal_incompatible)
+    }
+    if (kind == FATAL_DISC) {
+      // the file itself is bad: xemu would get the same one
+      MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+        .setTitle(title)
+        .setMessage(message)
+        .setCancelable(false)
+        .setPositiveButton(R.string.in_game_menu_exit_to_library) { _, _ -> exitGame() }
+        .show()
+      return
+    }
+    // xemu emulates the whole console, so it may run what this core can't. Only
+    // this run moves to xemu unless "always" is ticked, which the game's
+    // per-game settings can undo.
+    val always = com.google.android.material.checkbox.MaterialCheckBox(this).apply {
+      setText(R.string.hakux_always_xemu)
+    }
+    val pad = (24 * resources.displayMetrics.density).roundToInt()
+    val alwaysRow = android.widget.FrameLayout(this).apply {
+      setPadding(pad - pad / 4, pad / 3, pad, 0)
+      addView(always)
     }
     MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
       .setTitle(title)
-      .setMessage(message)
+      .setMessage(message + "\n\n" + getString(R.string.hakux_try_xemu_hint))
+      .apply { if (lastGamePath() != null) setView(alwaysRow) }
       .setCancelable(false)
-      .setPositiveButton(android.R.string.ok) { _, _ -> exitGame() }
+      .setPositiveButton(R.string.hakux_try_xemu) { _, _ -> retryInXemu(always.isChecked) }
+      .setNegativeButton(R.string.in_game_menu_exit_to_library) { _, _ -> exitGame() }
       .show()
+  }
+
+  /** The library's game this disc is (its per-game settings key), when the library launched it. */
+  private fun lastGamePath(): String? {
+    val prefs = getSharedPreferences("x1box_prefs", MODE_PRIVATE)
+    val disc = discUri?.toString() ?: return null
+    val launched = HakuxLaunch.discUri(prefs.getString("dvdUri", null), prefs.getString("dvdPath", null))
+    return prefs.getString(HakuxLaunch.PREF_LAST_GAME, null)?.takeIf { launched == disc }
+  }
+
+  /** Back to the library, which starts this disc in xemu (GameLibraryActivity.EXTRA_RETRY_IN_XEMU). */
+  private fun retryInXemu(always: Boolean) {
+    val disc = discUri?.toString() ?: intent.getStringExtra(EXTRA_DVD_URI)
+    startActivity(
+      Intent(applicationContext, GameLibraryActivity::class.java)
+        .putExtra(GameLibraryActivity.EXTRA_RETRY_IN_XEMU, disc)
+        .apply { if (always) putExtra(GameLibraryActivity.EXTRA_RETRY_GAME_PATH, lastGamePath()) }
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    )
+    finish()
+    android.os.Process.killProcess(android.os.Process.myPid())
   }
 
   /** "Building shaders n / N" while the core builds the game's cached shaders before it starts. */
@@ -840,6 +885,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     private const val FATAL_DRIVER = 1
     private const val FATAL_GPU_LOST = 4
     private const val FATAL_BOOT = 5
+    private const val FATAL_DISC = 6
 
     private const val POLL_MS = 500L
     private const val RUMBLE_MS = 50L

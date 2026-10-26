@@ -55,6 +55,10 @@ import java.util.concurrent.Executors
 class GameLibraryActivity : AppCompatActivity() {
   companion object {
     const val EXTRA_RESTART_LAST_GAME = "com.izzy2lost.x1box.extra.RESTART_LAST_GAME"
+    /** A disc URI the hakuX core couldn't run: start it in xemu (the user chose to). */
+    const val EXTRA_RETRY_IN_XEMU = "com.izzy2lost.x1box.extra.RETRY_IN_XEMU"
+    /** With EXTRA_RETRY_IN_XEMU: the game's library path, to set it to xemu from now on. */
+    const val EXTRA_RETRY_GAME_PATH = "com.izzy2lost.x1box.extra.RETRY_GAME_PATH"
     private const val COVER_FOCUS_SCALE = 1.06f
     private const val COVER_FOCUS_ANIM_MS = 120L
     /* Below this many games a looping carousel shows the same cover twice. */
@@ -239,7 +243,8 @@ class GameLibraryActivity : AppCompatActivity() {
     EdgeToEdgeHelper.applySystemBarPadding(findViewById(R.id.library_scroll))
     registerExitConfirmation()
 
-    if (tryRestartLastGameFromIntent()) {
+    // a recreated library (rotation) must not start the retry again
+    if (tryRestartLastGameFromIntent() || (savedInstanceState == null && tryRetryInXemuFromIntent())) {
       return
     }
 
@@ -378,6 +383,42 @@ class GameLibraryActivity : AppCompatActivity() {
       .apply()
 
     launchMainActivityForRestart()
+    return true
+  }
+
+  /**
+   * "Try in xemu" from a hakuX error (HakuxCoreActivity.showFatal): the same disc in
+   * xemu, with the overrides of the launch that failed, which are still in prefs. The
+   * game's own core setting changes only when the user ticked "always".
+   */
+  private fun tryRetryInXemuFromIntent(): Boolean {
+    val disc = intent.getStringExtra(EXTRA_RETRY_IN_XEMU)?.let(Uri::parse) ?: return false
+    val gamePath = intent.getStringExtra(EXTRA_RETRY_GAME_PATH)
+
+    if (gamePath != null) {
+      val overrides = PerGameSettingsManager.loadOverrides(this, gamePath) +
+        (HakuxLaunch.PREF_CORE to HakuxLaunch.CORE_XEMU)
+      PerGameSettingsManager.saveOverrides(this, gamePath, overrides)
+    }
+    if (!HakuxLaunch.xemuFilesReady(this)) {
+      Toast.makeText(this, R.string.xemu_files_required, Toast.LENGTH_LONG).show()
+      startActivity(
+        Intent(this, SetupWizardActivity::class.java)
+          .putExtra(SetupWizardActivity.EXTRA_REQUIRE_XEMU_FILES, true)
+      )
+      return false
+    }
+
+    val editor = prefs.edit()
+      .putString(PerGameSettingsManager.runtimeKey(HakuxLaunch.PREF_CORE), HakuxLaunch.CORE_XEMU)
+      .putBoolean("skip_game_picker", false)
+    if (disc.scheme == "file") {
+      editor.putString("dvdPath", disc.path).remove("dvdUri")
+    } else {
+      editor.putString("dvdUri", disc.toString()).remove("dvdPath")
+    }
+    editor.commit()
+    launchXemu()
     return true
   }
 
@@ -2011,6 +2052,7 @@ class GameLibraryActivity : AppCompatActivity() {
       launchEditor.putString("dvdUri", dvdUri).remove("dvdPath")
     }
     launchEditor
+      .putString(HakuxLaunch.PREF_LAST_GAME, game.relativePath)
       .putBoolean("skip_game_picker", false)
       .commit()
 
@@ -2042,6 +2084,11 @@ class GameLibraryActivity : AppCompatActivity() {
       return
     }
 
+    launchXemu()
+  }
+
+  /** MainActivity (:xemu) on the disc in prefs, a hakuX run's saves back in the image first. */
+  private fun launchXemu() {
     if (HakuxHddSync.pending(this)) {
       // a hakuX run's saves go back into the image before xemu opens it
       HakuxHddSync.async({ HakuxHddSync.importAfterRun(this) }) {
