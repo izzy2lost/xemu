@@ -214,6 +214,8 @@ class SettingsActivity : AppCompatActivity() {
   private lateinit var inputLanHost: TextInputLayout
   private lateinit var editLanHost: TextInputEditText
   private lateinit var tvLanStatus: TextView
+  private lateinit var inputKaiHost: TextInputLayout
+  private lateinit var editKaiHost: TextInputEditText
   private lateinit var tvEepromStatus: TextView
   private lateinit var tvHddToolsStatus: TextView
   private lateinit var btnToggleAdvancedExperimental: MaterialButton
@@ -385,6 +387,8 @@ class SettingsActivity : AppCompatActivity() {
     inputLanHost         = findViewById(R.id.input_lan_host)
     editLanHost          = findViewById(R.id.edit_lan_host)
     tvLanStatus          = findViewById(R.id.tv_lan_status)
+    inputKaiHost         = findViewById(R.id.input_kai_host)
+    editKaiHost          = findViewById(R.id.edit_kai_host)
     btnToggleAdvancedExperimental = findViewById(R.id.btn_toggle_advanced_experimental)
     btnInsigniaGuide     = findViewById(R.id.btn_insignia_guide)
     btnInsigniaSignUp    = findViewById(R.id.btn_insignia_sign_up)
@@ -638,6 +642,7 @@ class SettingsActivity : AppCompatActivity() {
         .putBoolean("setting_network_enable", switchNetworkEnable.isChecked)
         .putString(SystemLink.PREF_MODE, selectedLanMode())
         .putString(SystemLink.PREF_HOST, editLanHost.text?.toString()?.trim().orEmpty())
+        .putString(SystemLink.PREF_KAI_HOST, editKaiHost.text?.toString()?.trim().orEmpty())
         .putBoolean("setting_chihiro", switchChihiro.isChecked)
         .putBoolean("setting_chihiro_widescreen", switchChihiroWidescreen.isChecked)
         .putString("setting_chihiro_controls",
@@ -704,6 +709,11 @@ class SettingsActivity : AppCompatActivity() {
       if (selectedLanMode() == SystemLink.MODE_JOIN && editLanHost.text.isNullOrBlank()) {
         inputLanHost.error = getString(R.string.settings_lan_join_needs_host)
         inputLanHost.requestFocus()
+        return@setOnClickListener
+      }
+      if (selectedLanMode() == SystemLink.MODE_KAI && editKaiHost.text.isNullOrBlank()) {
+        inputKaiHost.error = getString(R.string.settings_kai_needs_address)
+        inputKaiHost.requestFocus()
         return@setOnClickListener
       }
       try {
@@ -1449,9 +1459,12 @@ class SettingsActivity : AppCompatActivity() {
       SystemLink.MODE_AUTO -> toggleLanMode.check(R.id.btn_lan_auto)
       SystemLink.MODE_HOST -> toggleLanMode.check(R.id.btn_lan_host)
       SystemLink.MODE_JOIN -> toggleLanMode.check(R.id.btn_lan_join)
+      SystemLink.MODE_KAI  -> toggleLanMode.check(R.id.btn_lan_kai)
       else                 -> toggleLanMode.check(R.id.btn_lan_off)
     }
     editLanHost.setText(prefs.getString(SystemLink.PREF_HOST, "").orEmpty())
+    editKaiHost.setText(prefs.getString(SystemLink.PREF_KAI_HOST, "").orEmpty())
+    editKaiHost.doAfterTextChanged { inputKaiHost.error = null }
     toggleLanMode.addOnButtonCheckedListener { _, _, isChecked ->
       if (isChecked) refreshSystemLinkStatus()
     }
@@ -1467,6 +1480,7 @@ class SettingsActivity : AppCompatActivity() {
     R.id.btn_lan_auto -> SystemLink.MODE_AUTO
     R.id.btn_lan_host -> SystemLink.MODE_HOST
     R.id.btn_lan_join -> SystemLink.MODE_JOIN
+    R.id.btn_lan_kai  -> SystemLink.MODE_KAI
     else              -> SystemLink.MODE_OFF
   }
 
@@ -1484,6 +1498,7 @@ class SettingsActivity : AppCompatActivity() {
   private fun refreshSystemLinkStatus() {
     val mode = selectedLanMode()
     layoutLanJoin.visibility = if (mode == SystemLink.MODE_JOIN) View.VISIBLE else View.GONE
+    inputKaiHost.visibility = if (mode == SystemLink.MODE_KAI) View.VISIBLE else View.GONE
     tvLanStatus.text = when (mode) {
       SystemLink.MODE_HOST -> {
         val addresses = SystemLink.localAddresses()
@@ -1495,6 +1510,7 @@ class SettingsActivity : AppCompatActivity() {
       }
       SystemLink.MODE_JOIN -> getString(R.string.settings_lan_status_join, currentMacLabel())
       SystemLink.MODE_AUTO -> getString(R.string.settings_lan_status_auto, currentMacLabel())
+      SystemLink.MODE_KAI -> getString(R.string.settings_lan_status_kai, currentMacLabel())
       else -> getString(R.string.settings_lan_status_off)
     }
   }

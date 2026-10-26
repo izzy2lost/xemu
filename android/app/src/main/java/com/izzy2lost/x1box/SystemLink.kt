@@ -16,12 +16,16 @@ import java.net.SocketTimeoutException
 internal object SystemLink {
   const val PREF_MODE = "setting_lan_mode"
   const val PREF_HOST = "setting_lan_host"
+  /** The XLink Kai Engine's address (xemu_lan.h Mode::Kai). */
+  const val PREF_KAI_HOST = "setting_kai_host"
 
   const val MODE_OFF = "off"
   /** Join a host the relay finds on the LAN, else host (xemu_lan.cpp ResolveAuto). */
   const val MODE_AUTO = "auto"
   const val MODE_HOST = "host"
   const val MODE_JOIN = "join"
+  /** System Link through an XLink Kai Engine on the LAN (xemu_lan.cpp Mode::Kai). */
+  const val MODE_KAI = "kai"
 
   // Must match xemu_lan.h.
   const val PORT = 9368
@@ -38,6 +42,9 @@ internal object SystemLink {
   private const val EVENT_PEER_LEFT = 6
   private const val EVENT_DUPLICATE_MAC = 7
   private const val EVENT_HOSTING = 8
+  private const val EVENT_KAI_CONNECTED = 9
+  private const val EVENT_KAI_DISCONNECTED = 10
+  private const val EVENT_KAI_NO_ENGINE = 11
 
   data class Host(
     val address: String,
@@ -144,6 +151,9 @@ internal object SystemLink {
         if (addresses.isEmpty()) context.getString(R.string.lan_event_hosting_no_ip)
         else context.getString(R.string.lan_event_hosting, addresses.joinToString(", "))
       }
+      EVENT_KAI_CONNECTED -> context.getString(R.string.lan_event_kai_connected)
+      EVENT_KAI_DISCONNECTED -> context.getString(R.string.lan_event_kai_disconnected)
+      EVENT_KAI_NO_ENGINE -> context.getString(R.string.lan_event_kai_no_engine)
       else -> null
     }
 }

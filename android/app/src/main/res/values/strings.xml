@@ -221,6 +221,13 @@
   <string name="settings_lan_host">Host</string>
   <string name="settings_lan_join">Join</string>
   <string name="settings_lan_host_address">Host address</string>
+  <string name="settings_lan_kai">Kai</string>
+  <string name="settings_kai_engine_address">XLink Kai Engine address</string>
+  <string name="settings_lan_status_kai">Play System Link games online with XLink Kai. Run the XLink Kai Engine on a PC or Raspberry Pi on this Wi-Fi, sign in to it with your XTag, and type its address here. Pick a game\'s arena in the engine\'s web page, then choose System Link in the game.\nThis console\'s MAC: %1$s</string>
+  <string name="settings_kai_needs_address">Enter the address of the computer running the XLink Kai Engine</string>
+  <string name="lan_event_kai_connected">Connected to XLink Kai</string>
+  <string name="lan_event_kai_disconnected">XLink Kai disconnected this console</string>
+  <string name="lan_event_kai_no_engine">No answer from the XLink Kai Engine. Check that it is running and its address in Settings.</string>
   <string name="settings_lan_find_hosts">Find</string>
   <string name="settings_lan_status_off">Play System Link games with other devices on the same Wi-Fi or hotspot. One device hosts and everyone else joins. While this is on it replaces Insignia networking.</string>
   <string name="settings_lan_status_host">Other players join this device at %1$s.\nThis console\'s MAC: %2$s</string>

@@ -887,6 +887,10 @@
               android:layout_width="0dp"
               android:layout_height="wrap_content"
               android:layout_weight="1"
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
               android:text="@string/settings_lan_off" />
 
             <com.google.android.material.button.MaterialButton
@@ -895,6 +899,10 @@
               android:layout_width="0dp"
               android:layout_height="wrap_content"
               android:layout_weight="1"
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
               android:text="@string/settings_lan_auto" />
 
             <com.google.android.material.button.MaterialButton
@@ -903,6 +911,10 @@
               android:layout_width="0dp"
               android:layout_height="wrap_content"
               android:layout_weight="1"
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
               android:text="@string/settings_lan_host" />
 
             <com.google.android.material.button.MaterialButton
@@ -911,8 +923,42 @@
               android:layout_width="0dp"
               android:layout_height="wrap_content"
               android:layout_weight="1"
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
               android:text="@string/settings_lan_join" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_lan_kai"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
+              android:text="@string/settings_lan_kai" />
           </com.google.android.material.button.MaterialButtonToggleGroup>
+
+          <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/input_kai_host"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/settings_kai_engine_address"
+            android:visibility="gone">
+
+            <com.google.android.material.textfield.TextInputEditText
+              android:id="@+id/edit_kai_host"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:imeOptions="actionDone"
+              android:inputType="textUri"
+              android:maxLines="1" />
+          </com.google.android.material.textfield.TextInputLayout>
 
           <LinearLayout
             android:id="@+id/layout_lan_join"

@@ -59,6 +59,12 @@ constexpr int kSocketBufferBytes = 512 * 1024;
 
 constexpr int kLocalOwner = -1;  // MAC table owner id for this device's guest
 
+// XLink Kai: frames "e;e;<frame>", control text otherwise; the connect is
+// sent again until the engine answers.
+constexpr char kKaiFrame[] = "e;e;";
+constexpr size_t kKaiFrameSize = 4;
+constexpr int64_t kKaiNoEngineMs = 10000;
+
 void Log(int prio, const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
@@ -230,6 +236,28 @@ class Relay {
       }
       LAN_INFO("hosting System Link on UDP %u", cfg_.port);
       Post(Event::Hosting, cfg_.port);
+    } else if (cfg_.mode == Mode::Kai) {
+      if (!Resolve(cfg_.host_addr, kKaiPort, &host_addr_)) {
+        LAN_WARN("cannot resolve XLink Kai Engine address \"%s\"", cfg_.host_addr.c_str());
+        Post(Event::HostUnresolved);
+        return false;
+      }
+      lan_fd_ = OpenUdp(INADDR_ANY, 0, nullptr);
+      if (lan_fd_ < 0) {
+        Post(Event::StartFailed, 0);
+        return Fail("XLink Kai socket");
+      }
+      // Unique per emulator for the engine; the device and a random tag.
+      char tag[8];
+      snprintf(tag, sizeof(tag), "%06x", unsigned(arc4random() & 0xFFFFFF));
+      kai_name_ = "x1box";
+      for (char c : cfg_.name) {
+        if (isalnum(static_cast<unsigned char>(c))) kai_name_ += c;
+      }
+      kai_name_ += tag;
+      kai_started_ = NowMs();
+      LAN_INFO("XLink Kai: engine %s, as %s", AddrStr(host_addr_).c_str(), kai_name_.c_str());
+      KaiSend("connect;" + kai_name_ + ";x1box;");
     } else {
       if (!Resolve(cfg_.host_addr, cfg_.port, &host_addr_)) {
         LAN_WARN("cannot resolve host address \"%s\"", cfg_.host_addr.c_str());
@@ -280,6 +308,7 @@ class Relay {
       if (n > 3 && fds[3].revents) DrainDiscovery(buf.data());
     }
     if (cfg_.mode == Mode::Join) SendCtl(host_addr_, kCtlBye);
+    if (cfg_.mode == Mode::Kai) KaiSend("disconnect;" + kai_name_ + ";");
   }
 
   void Wake() {
@@ -305,6 +334,13 @@ class Relay {
       // accept frames from the port QEMU was told to bind.
       if (!SameAddr(from, qemu_addr_) || size_t(n) < kEthHeaderSize) continue;
 
+      if (cfg_.mode == Mode::Kai) {
+        if (!connected_ || size_t(n) + kKaiFrameSize > kMaxDatagram) continue;
+        memmove(buf + kKaiFrameSize, buf, size_t(n));
+        memcpy(buf, kKaiFrame, kKaiFrameSize);
+        SendTo(host_addr_, buf, n + ssize_t(kKaiFrameSize));
+        continue;
+      }
       if (cfg_.mode == Mode::Join) {
         SendTo(host_addr_, buf, n);
         continue;
@@ -323,7 +359,9 @@ class Relay {
       ssize_t n = recvfrom(lan_fd_, buf, kMaxDatagram, 0,
                            reinterpret_cast<sockaddr*>(&from), &len);
       if (n < 0) return;
-      if (cfg_.mode == Mode::Join) {
+      if (cfg_.mode == Mode::Kai) {
+        HandleKaiDatagram(from, buf, n);
+      } else if (cfg_.mode == Mode::Join) {
         HandleJoinDatagram(from, buf, n);
       } else {
         HandleHostDatagram(from, buf, n);
@@ -352,6 +390,38 @@ class Relay {
       return;
     }
     if (size_t(n) >= kEthHeaderSize) SendToQemu(buf, n);
+  }
+
+  // --- XLink Kai -----------------------------------------------------------
+  void HandleKaiDatagram(const sockaddr_in& from, const uint8_t* buf, ssize_t n) {
+    if (from.sin_addr.s_addr != host_addr_.sin_addr.s_addr) return;
+    if (size_t(n) >= kKaiFrameSize + kEthHeaderSize && buf[2] == 'e' && buf[3] == ';') {
+      SendToQemu(buf + kKaiFrameSize, n - ssize_t(kKaiFrameSize));
+      return;
+    }
+    const std::string msg(reinterpret_cast<const char*>(buf), size_t(n));
+    if (msg.rfind("connected", 0) == 0) {
+      if (!connected_) {
+        connected_ = true;
+        LAN_INFO("XLink Kai: connected to the engine");
+        Post(Event::KaiConnected);
+      }
+    } else if (msg.rfind("disconnected", 0) == 0) {
+      if (connected_) {
+        connected_ = false;
+        LAN_WARN("XLink Kai: the engine disconnected this console (%s)", msg.c_str());
+        Post(Event::KaiDisconnected);
+      }
+      kai_started_ = NowMs();
+    } else if (msg.rfind("keepalive", 0) == 0) {
+      SendTo(host_addr_, buf, n);    // echoed, as the engine expects
+    } else {
+      LAN_INFO("XLink Kai: %s", msg.c_str());    // message; chat; directmessage;
+    }
+  }
+
+  void KaiSend(const std::string& text) {
+    SendTo(host_addr_, reinterpret_cast<const uint8_t*>(text.data()), ssize_t(text.size()));
   }
 
   void HandleHostDatagram(const sockaddr_in& from, const uint8_t* buf,
@@ -538,6 +608,17 @@ class Relay {
   }
 
   void Tick(int64_t now) {
+    if (cfg_.mode == Mode::Kai) {
+      if (!connected_) {
+        KaiSend("connect;" + kai_name_ + ";x1box;");
+        if (!kai_warned_ && now - kai_started_ > kKaiNoEngineMs) {
+          kai_warned_ = true;
+          LAN_WARN("XLink Kai: no answer from the engine at %s", AddrStr(host_addr_).c_str());
+          Post(Event::KaiNoEngine, int((now - kai_started_) / 1000));
+        }
+      }
+      return;
+    }
     if (cfg_.mode == Mode::Join) {
       SendCtl(host_addr_, kCtlHello);
       if (connected_ && now - last_ack_ > kHostTimeoutMs) {
@@ -593,6 +674,9 @@ class Relay {
   bool connected_ = false;
   int64_t last_ack_ = 0;
   bool dup_warned_ = false;
+  std::string kai_name_;
+  int64_t kai_started_ = 0;
+  bool kai_warned_ = false;
   int next_peer_id_ = 0;
   std::vector<Peer> peers_;
   std::vector<MacEntry> macs_;
@@ -754,6 +838,7 @@ Mode ParseMode(const std::string& value) {
   if (value == "host") return Mode::Host;
   if (value == "join") return Mode::Join;
   if (value == "auto") return Mode::Auto;
+  if (value == "kai") return Mode::Kai;
   return Mode::Off;
 }
 

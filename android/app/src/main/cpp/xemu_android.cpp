@@ -907,7 +907,8 @@ static void StartSystemLink(JNIEnv* env, jobject activity,
   xemu_lan::Config lan;
   lan.mode = xemu_lan::ParseMode(GetPrefString(env, activity, "setting_lan_mode"));
   if (lan.mode == xemu_lan::Mode::Off) return;
-  lan.host_addr = GetPrefString(env, activity, "setting_lan_host");
+  lan.host_addr = GetPrefString(env, activity,
+                                lan.mode == xemu_lan::Mode::Kai ? "setting_kai_host" : "setting_lan_host");
   char model[PROP_VALUE_MAX] = {};
   __system_property_get("ro.product.model", model);
   lan.name = model[0] ? model : "Android";
@@ -915,7 +916,8 @@ static void StartSystemLink(JNIEnv* env, jobject activity,
   if (xemu_lan::Start(lan, &ds->lan_bind, &ds->lan_remote)) {
     __android_log_print(ANDROID_LOG_INFO, kLogTag,
                         "System Link relay up (%s), QEMU %s -> %s",
-                        lan.mode == xemu_lan::Mode::Host ? "host" : "join",
+                        lan.mode == xemu_lan::Mode::Host ? "host"
+                        : lan.mode == xemu_lan::Mode::Kai ? "XLink Kai" : "join",
                         ds->lan_bind.c_str(), ds->lan_remote.c_str());
   } else {
     LogError("System Link relay failed to start; keeping the normal network setting");
