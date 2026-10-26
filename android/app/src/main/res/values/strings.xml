@@ -532,7 +532,7 @@ Play a game and save, or import a save backup ZIP.</string>
   <string name="save_manager_import_message">Saves in the ZIP are merged into the HDD. A save that already exists is replaced by the one in the ZIP.</string>
   <!-- The second core (android/hakux) -->
   <string name="settings_core">Emulation core</string>
-  <string name="settings_core_help">hakuX runs games without emulating the whole console: much faster, but only some games work, and there is no dashboard, Chihiro or System Link.</string>
+  <string name="settings_core_help">hakuX runs games without emulating the whole console: much faster, but only some games work, and there is no dashboard or Chihiro.</string>
   <string name="settings_core_xemu">xemu (full console, best compatibility)</string>
   <string name="settings_core_hakux">hakuX (fast, fewer games)</string>
   <string name="settings_core_xemu_short">xemu</string>

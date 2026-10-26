@@ -40,6 +40,12 @@ void nc_dev_apu_init(struct NcVm *vm);
 void nc_dev_apu_spin_wait(const uint32_t *word);
 /* aci.c: the AC'97 audio codec interface (0xFEC00000, IRQ 6). */
 void nc_dev_aci_init(struct NcVm *vm);
+/* nvnet.c: the Ethernet controller (0xFEF00000, IRQ 4), System Link. Its wire,
+ * before init: "bind_ip:port,remote_ip:port", the app's relay ("": none, the
+ * cable out). link_up: whether it has one (PhyGetLinkState). */
+void nc_dev_nvnet_set_lan(const char *spec);
+void nc_dev_nvnet_init(struct NcVm *vm);
+bool nc_dev_nvnet_link_up(void);
 
 /* x86 I/O ports (IN/OUT); bytes is 1, 2 or 4. */
 uint32_t nc_port_in(uint16_t port, unsigned bytes);

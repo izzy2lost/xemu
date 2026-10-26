@@ -47,6 +47,7 @@ import com.izzy2lost.x1box.OnScreenController
 import com.izzy2lost.x1box.OrientationLocker
 import com.izzy2lost.x1box.PerGameSettingsManager
 import com.izzy2lost.x1box.R
+import com.izzy2lost.x1box.SystemLink
 import com.izzy2lost.x1box.XbeMetadataReader
 import java.io.File
 import java.util.TimeZone
@@ -109,7 +110,48 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     args += "pads=" + Integer.toHexString(router?.pluggedMask() ?: 1)
     vkDriverArg()?.let { args += it }
     modsArg()?.let { args += it }
+    lanArg()?.let { args += it }
     return args.toTypedArray()
+  }
+
+  /** The relay's host address (join), for its messages. */
+  @Volatile private var lanHost = ""
+  private var lanMulticastLock: android.net.wifi.WifiManager.MulticastLock? = null
+
+  /**
+   * System Link (Settings > Online, as xemu's): the app's relay started in this process,
+   * "lan=<bind>,<remote>" its loopback pair for the core's Ethernet controller. Null: off,
+   * or it couldn't start (its event says why).
+   */
+  private fun lanArg(): String? {
+    val mode = prefs.getString(SystemLink.PREF_MODE, SystemLink.MODE_OFF)
+    if (mode != SystemLink.MODE_HOST && mode != SystemLink.MODE_JOIN) return null
+    lanHost = prefs.getString(SystemLink.PREF_HOST, "").orEmpty()
+    if (mode == SystemLink.MODE_HOST) {
+      // Wi-Fi drivers may filter broadcasts to save power, and the Find probes are broadcasts
+      val wifi = applicationContext.getSystemService(WIFI_SERVICE) as? android.net.wifi.WifiManager
+      lanMulticastLock = wifi?.createMulticastLock("x1box-system-link")?.apply {
+        setReferenceCounted(false)
+        runCatching { acquire() }
+      }
+    }
+    handler.post(lanEvents)
+    val pair = nativeStartLan(mode, lanHost, Build.MODEL ?: "Android", gameName()) ?: return null
+    Log.i(TAG, "System Link: $mode, relay $pair")
+    return "lan=$pair"
+  }
+
+  /** The relay's news (a console joined, the host lost...), as toasts. */
+  private val lanEvents = object : Runnable {
+    override fun run() {
+      while (true) {
+        val packed = nativePollLanEvent()
+        if (packed == 0L) break
+        SystemLink.eventMessage(this@HakuxCoreActivity, (packed ushr 32).toInt(), packed.toInt(), lanHost)
+          ?.let { Toast.makeText(this@HakuxCoreActivity, it, Toast.LENGTH_LONG).show() }
+      }
+      handler.postDelayed(this, LAN_EVENT_POLL_MS)
+    }
   }
 
   /** "mods=<manifest>" with the game's mods that are on and its cheats (HakuxModRun), when it has any. */
@@ -1291,6 +1333,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     private const val FAST_FORWARD_SPEED = 2
 
     private const val REQUEST_IMPORT_CHEATS = 0x4843
+    private const val LAN_EVENT_POLL_MS = 1000L
 
     private const val POLL_MS = 500L
     private const val RUMBLE_MS = 50L
@@ -1318,6 +1361,10 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     @JvmStatic external fun nativeSetPaused(paused: Boolean)
     /** Fast-forward: the game runs speed times real time, 1 normal. */
     @JvmStatic external fun nativeSetSpeed(speed: Int)
+    /** System Link's relay started (mode, the host to join, names for Find): "<bind>,<remote>", or null. */
+    @JvmStatic external fun nativeStartLan(mode: String, host: String, name: String, game: String): String?
+    /** The relay's next event, (event << 32) | arg, 0 when none. */
+    @JvmStatic external fun nativePollLanEvent(): Long
     /** The players with a controller plugged in now (bit n: player n + 1). */
     @JvmStatic external fun nativeSetPads(mask: Int)
     /** A cheat of the core's (its number there) on or off, from the next vblank. */

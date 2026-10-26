@@ -1462,8 +1462,13 @@ class SettingsActivity : AppCompatActivity() {
     else              -> SystemLink.MODE_OFF
   }
 
+  /** The EEPROM whose MAC System Link uses: the selected core's (hakuX keeps its own). */
+  private fun systemLinkEepromFile(): File =
+    if (HakuxLaunch.globalCore(prefs) == HakuxLaunch.CORE_HAKUX) File(filesDir, "hakux/hdd/eeprom.bin")
+    else resolveEepromFile()
+
   private fun currentMacLabel(): String {
-    val eeprom = resolveEepromFile()
+    val eeprom = systemLinkEepromFile()
     return runCatching { XboxEepromEditor.formatMac(XboxEepromEditor.readMac(eeprom)) }
       .getOrElse { getString(R.string.settings_lan_mac_unknown) }
   }
@@ -1523,7 +1528,7 @@ class SettingsActivity : AppCompatActivity() {
   }
 
   private fun confirmRandomizeMac() {
-    val eeprom = resolveEepromFile()
+    val eeprom = systemLinkEepromFile()
     if (!eeprom.isFile) {
       Toast.makeText(this, R.string.settings_lan_randomize_mac_no_eeprom, Toast.LENGTH_LONG).show()
       return

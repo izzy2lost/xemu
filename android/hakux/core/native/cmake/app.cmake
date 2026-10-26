@@ -26,12 +26,20 @@ if(EXISTS "${NC_ADRENOTOOLS}/CMakeLists.txt")
   add_subdirectory("${NC_ADRENOTOOLS}" adrenotools EXCLUDE_FROM_ALL)
 endif()
 
+# The app's System Link relay (xemu_lan.cpp): next to the core in the x1box
+# tree, android/app/src/main/cpp.
+set(NC_LAN_RELAY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../app/src/main/cpp" CACHE PATH "xemu_lan.cpp's folder")
+
 add_library(hakuxcore SHARED
   "${CMAKE_CURRENT_SOURCE_DIR}/app/app_main.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/present.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/vsync.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/vklayer.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/app/lan.cpp"
+  # the app's System Link relay, the one xemu runs (android/app/src/main/cpp)
+  "${NC_LAN_RELAY_DIR}/xemu_lan.cpp"
 )
+target_include_directories(hakuxcore PRIVATE "${NC_LAN_RELAY_DIR}")
 target_link_libraries(hakuxcore PRIVATE hakux_native hakux_hle SDL3::SDL3-shared android log)
 if(TARGET adrenotools)
   target_link_libraries(hakuxcore PRIVATE adrenotools)

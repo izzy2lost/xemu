@@ -65,6 +65,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     nc_dev_apu_init(&c->vm); /* before the catch-all, which would claim its window */
     nc_dev_ohci_init(&c->vm);
     nc_dev_aci_init(&c->vm);
+    nc_dev_nvnet_init(&c->vm);          /* before the catch-all too */
     nc_dev_misc_init();
     if (disc_fd < 0) {
         return disc_failed("The game's file can't be opened.");

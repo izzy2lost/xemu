@@ -29,6 +29,7 @@
 #include "native/core/core.h"
 #include "native/core/irq.h"
 #include "native/core/mods.h"
+#include "native/dev/dev.h"
 #include "native/dev/usb.h"
 #include "native/kernel/kernel.h"
 #include "native/state/save.h"
@@ -566,6 +567,9 @@ EXPORT int SDL_main(int argc, char *argv[])
         }
         if (!strncmp(argv[i], "asyncpipe=", 10)) {
             async_pipe = atoi(argv[i] + 10) != 0;
+        }
+        if (!strncmp(argv[i], "lan=", 4)) {
+            nc_dev_nvnet_set_lan(argv[i] + 4);         /* System Link: the relay's loopback pair */
         }
         if (!strncmp(argv[i], "pads=", 5)) {
             setenv("NC_PAD_MASK", argv[i] + 5, 1);     /* read by the USB at boot (ohci.c) */

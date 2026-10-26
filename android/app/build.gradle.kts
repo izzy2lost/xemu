@@ -61,6 +61,9 @@ val buildHakuxCore by tasks.registering(Exec::class) {
   doFirst { environment("ANDROID_NDK_HOME", ndkDir.get().asFile.absolutePath) }
   inputs.dir(rootProject.file("hakux/core"))
   inputs.file(script)
+  /* System Link's relay, built into the core too (hakux/core/native/cmake/app.cmake) */
+  inputs.file(file("src/main/cpp/xemu_lan.cpp"))
+  inputs.file(file("src/main/cpp/xemu_lan.h"))
   outputs.file(File(hakuxJniLibs, "arm64-v8a/libhakuxcore.so"))
 }
 

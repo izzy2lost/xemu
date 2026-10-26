@@ -12,6 +12,7 @@
 #include "native/dev/dev.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
@@ -218,6 +219,20 @@ static uint8_t *eeprom(NcKernel *k)
             eeprom_create(k);
             eeprom_store();
             nc_log("hakuX-native", "ex: new console EEPROM in %s", p);
+        }
+        /* Every console got the same MAC (eeprom_create's, 00:50:F2:00:00:01):
+         * two on one LAN must differ for System Link, so this one takes a
+         * random one of the prefix, kept. Saves are signed with the HD key,
+         * not the MAC: they stay valid. */
+        static const uint8_t k_shared_mac[6] = {0x00, 0x50, 0xF2, 0x00, 0x00, 0x01};
+        if (!memcmp(g_eeprom + 0x40, k_shared_mac, sizeof(k_shared_mac))) {
+            do {
+                arc4random_buf(g_eeprom + 0x43, 3);
+            } while (!memcmp(g_eeprom + 0x40, k_shared_mac, sizeof(k_shared_mac)));
+            eeprom_seal();
+            eeprom_store();
+            nc_log("hakuX-native", "ex: this console's MAC is now %02x:%02x:%02x:%02x:%02x:%02x", g_eeprom[0x40],
+                   g_eeprom[0x41], g_eeprom[0x42], g_eeprom[0x43], g_eeprom[0x44], g_eeprom[0x45]);
         }
         /* The regions follow the running title (a library mixes NTSC and
          * PAL discs); the rest stays as stored. A title always sees the
@@ -596,6 +611,19 @@ static uint64_t HalNothing(NcKernel *k, NcFrame *f, const uint32_t *a)
     return 0;
 }
 
+/* PhyGetLinkState(Update): XNET_ETHERNET_LINK_* flags, a 100 Mb/s full-duplex
+ * link while System Link has a wire (nvnet.c), else 0: the cable is out. */
+static uint64_t PhyGetLinkState(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    const uint32_t state = nc_dev_nvnet_link_up() ? 0x01u | 0x02u | 0x08u : 0; /* ACTIVE | 100MBPS | FULL_DUPLEX */
+    static bool logged;
+    if (!logged) {
+        logged = true;
+        nc_log("hakuX-native", "phy: the title asks for the link: %s", state ? "up, 100 Mb/s full duplex" : "down");
+    }
+    return state;
+}
+
 static uint32_t data_va(NcKernel *k, const char *name);
 
 void nc_kernel_relaunch_file(char *out, size_t n)
@@ -814,8 +842,8 @@ void nc_ex_register(NcKernel *k)
     nc_kernel_impl(k, "HalWriteSMBusValue", HalNothing);
     nc_kernel_impl(k, "FscGetCacheSize", FscGetCacheSize);
     nc_kernel_impl(k, "FscSetCacheSize", HalNothing);
-    nc_kernel_impl(k, "PhyGetLinkState", HalNothing);
-    nc_kernel_impl(k, "PhyInitialize", HalNothing);
+    nc_kernel_impl(k, "PhyGetLinkState", PhyGetLinkState);
+    nc_kernel_impl(k, "PhyInitialize", HalNothing);     /* STATUS_SUCCESS: the PHY is ready (nvnet.c) */
     nc_kernel_impl(k, "KeBugCheck", KeBugCheck);
     nc_kernel_impl(k, "KeStallExecutionProcessor", HalNothing);
     nc_kernel_impl(k, "KeSaveFloatingPointState", KeFloatingPointState);
