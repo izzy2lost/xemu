@@ -1,0 +1,21 @@
+name: 120 fps
+description: The game at 120 frames a second (on a 120 Hz screen) instead of 60, at its normal speed: its frame period is 1/120 s, and its movies keep their time.
+author: hakuX
+refresh: 120
+
+[default.xbe]
+# The game sets its frame period at its start (0x15B50): the time step
+# (0x49C120, which its clock 0x4AE1E0 and every timer step by), the period
+# in whole milliseconds (0x49C11C) and in milliseconds for its timers
+# (0x1B5880). At 60 Hz: 1/60 s (0x3B1838), 16 and 16.667; now 1/120 s (a
+# 1/120 in .rdata, 0x3B19E8), 8 and 8.333. The 50 Hz path (1/50 s, 20 ms)
+# is left as it is.
+0x00015B6C: 38 18 3B 00 -> E8 19 3B 00
+0x00015B76: 10 00 00 00 -> 08 00 00 00
+0x00015B7B: 55 55 85 41 -> 55 55 05 41
+# Movies (XMV) time their frames by the vblanks (0x2CCE3D: the D3D field
+# status) times a vblank's length, set from the mode's refresh rate
+# (0x2CC610): 16.683 ms at 60 Hz (16.16 fixed point), 1000 ms / the rate
+# otherwise. At 120 Hz a vblank lasts half that: 8.342 ms, 500 ms / the rate.
+0x002CC621: F0 AE 10 00 -> 78 57 08 00
+0x002CC628: 00 00 E8 03 -> 00 00 F4 01

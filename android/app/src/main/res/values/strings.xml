@@ -404,6 +404,10 @@
   <string name="in_game_menu_fast_forward">Fast Forward</string>
   <string name="in_game_menu_normal_speed">Normal Speed</string>
   <string name="hakux_cheats">Cheats</string>
+  <string name="hakux_mods">Mods</string>
+  <string name="hakux_mods_hint">Mods patch the game\'s code as it starts: a change takes effect when the game starts again. Turn on one frame rate mod at a time.</string>
+  <string name="hakux_mods_restart">Restart Game</string>
+  <string name="hakux_mods_next_start">The mods change the next time the game starts.</string>
   <string name="hakux_cheats_empty">No cheats for this game yet. Add one, or import a cheats.txt in hakuX\'s format.</string>
   <string name="hakux_cheats_hint">Tap a cheat to turn it on or off. Long-press to delete it.</string>
   <string name="hakux_cheats_add">Add</string>

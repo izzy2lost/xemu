@@ -64,6 +64,14 @@ val buildHakuxCore by tasks.registering(Exec::class) {
   outputs.file(File(hakuxJniLibs, "arm64-v8a/libhakuxcore.so"))
 }
 
+/* hakuX's mods (android/hakux/mods: XBE patches per disc release, mods/README.md),
+ * packed as assets/mods for the core's mods menu; the README stays out. */
+val hakuxModAssets = layout.buildDirectory.dir("hakux-modAssets").get().asFile
+val syncHakuxMods by tasks.registering(Sync::class) {
+  from(rootProject.file("hakux/mods")) { exclude("README.md") }
+  into(File(hakuxModAssets, "mods"))
+}
+
 android {
   namespace = "com.izzy2lost.x1box"
   compileSdk = 36
@@ -166,6 +174,7 @@ android {
   /* The hakuX core (android/hakux, GPLv3): its own native build, packed from here. */
   if (hakuxCoreEnabled) {
     sourceSets.getByName("main").jniLibs.directories += hakuxJniLibs.absolutePath
+    sourceSets.getByName("main").assets.directories += hakuxModAssets.absolutePath
   }
 
   externalNativeBuild {
@@ -223,5 +232,8 @@ if (hakuxCoreEnabled) {
   /* Every task that reads jniLibs sees the freshly built core. */
   tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
     dependsOn(buildHakuxCore)
+  }
+  tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(syncHakuxMods)
   }
 }

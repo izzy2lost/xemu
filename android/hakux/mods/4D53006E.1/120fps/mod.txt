@@ -1,0 +1,13 @@
+name: 120 fps
+description: The game at 120 frames a second (on a 120 Hz screen) instead of 30. Each frame shows at the next vblank and the game steps 1/120 s a frame; a frame the device doesn't finish in time shows late, and the game slows down with it. Use it instead of the 60 fps mod, not with it.
+author: hakuX
+refresh: 120
+
+[default.xbe]
+# The vblanks a frame takes (0x554944): the present interval set at 0x1DA4A0
+# (TWO_OR_IMMEDIATE -> ONE_OR_IMMEDIATE), as the 60 fps mod. The frame time
+# the game steps by (0x1D9660, vblanks / refresh rate) divides by a 120 in
+# .rdata (0x488070) instead of the rate the game keeps (0x554950, the TV's
+# 60, which its movie player also reads): 1/120 s a frame.
+0x00554944: 02 -> 01
+0x001D9668: 50 49 55 00 -> 70 80 48 00

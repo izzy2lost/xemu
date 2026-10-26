@@ -61,7 +61,7 @@ class HakuxRelaunchActivity : Activity() {
         /* a savestate's load, or the title's own reboot */
         val state = intent.getStringExtra(HakuxCoreActivity.EXTRA_LOADSTATE)
         if (state != null) putExtra(HakuxCoreActivity.EXTRA_LOADSTATE, state)
-        else putExtra(HakuxCoreActivity.EXTRA_RELAUNCH, true)
+        else if (!intent.getBooleanExtra(EXTRA_RESTART, false)) putExtra(HakuxCoreActivity.EXTRA_RELAUNCH, true)
       }
       .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
     startActivity(core, noTransition(this).toBundle())
@@ -86,6 +86,8 @@ class HakuxRelaunchActivity : Activity() {
   companion object {
     private const val TAG = "x1box-hakux"
     private const val WAIT_MS = 3000L
+    /** The game from its start (its mods changed): neither a savestate nor the title's own reboot. */
+    const val EXTRA_RESTART = "restart"
 
     /** The frame on screen when the title rebooted, held across the core's restart. */
     fun heldFrame(context: Context) = File(context.cacheDir, "hakux_relaunch_frame.jpg")

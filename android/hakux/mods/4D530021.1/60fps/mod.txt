@@ -1,0 +1,18 @@
+name: 60 fps
+description: Lifts the 30 fps cap: up to 60 frames a second, the game at its normal speed.
+author: hakuX
+
+# Crimson Skies paces its frames itself: the gate at 0x12FB70 lets a frame
+# through once the QueryPerformanceCounter time since the last one reaches
+# the device object's minimum period (0x321A88), set at device creation
+# (0x1308D9, 0x130B23) from 1/30 (0x2C8368; PAL: 1/25). Those loads take
+# 1/60 (0x10F20) instead. The game advances by the frame's time in whole ms
+# (the gate's _ftol2 truncates: 16 of 16.67 at 60 fps, 4% slow); the hook at
+# 0x12FBCD (0x10F24) puts the dropped fraction back into the gate's time
+# base. Both live in the header page (sizeof_headers raised to 0x1000).
+[default.xbe]
+0x00010108: 1C 0F 00 00 -> 00 10 00 00
+0x00010F20: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 -> 89 88 88 3C D9 C0 E8 FD 0A 1E 00 50 50 DA 24 24 DF 6E 08 DE C9 D8 35 18 EE 28 00 DB 1C 24 59 29 4E 10 83 5E 14 00 58 C3
+0x001308D9: F3 0F 10 05 68 83 2C 00 -> F3 0F 10 05 20 0F 01 00
+0x00130B23: F3 0F 10 05 68 83 2C 00 -> F3 0F 10 05 20 0F 01 00
+0x0012FBCD: E8 56 1E 0C 00 -> E8 52 13 EE FF

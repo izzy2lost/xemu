@@ -1,0 +1,13 @@
+name: 60 fps
+description: The game at 60 frames a second instead of 30 (split screen too, instead of 30 or 20). The game steps by the vblanks each frame took, so it keeps its speed when the device can't hold 60.
+author: hakuX
+
+[default.xbe]
+# The vblanks a frame takes: the game's present interval setter (0x2A78D0,
+# called with 1, 2, or 3 for split screen) keeps it at 0x6C0268 and resets
+# the device with it; the setter now always takes 1 (ONE, no IMMEDIATE: every
+# caller asks for none), and so does the device's creation (0x2A7513). The
+# game's frame time (0x2A7CA5) is (those vblanks + the vblanks the swap
+# missed, 0x2A8020) / the refresh rate: 2/60 -> 1/60 s.
+0x002A78D3: 84 C0 88 15 68 02 6C 00 74 06 81 CA 00 00 00 80 -> BA 01 00 00 00 88 15 68 02 6C 00 0F 1F 44 00 00
+0x006C0268: 02 -> 01

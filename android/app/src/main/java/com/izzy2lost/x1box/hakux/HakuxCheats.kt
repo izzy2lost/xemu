@@ -41,21 +41,18 @@ class HakuxCheatStore(context: Context, gameKey: String) {
   }
 
   /**
-   * The run's manifest for the core (hakux/core/native/core/mods.h): every cheat with
-   * whether it is on. Null when the game has none. The core numbers the cheats in this
-   * order (nativeSetCheat's index).
+   * The cheats' part of the run's manifest (HakuxModRun, hakux/core/native/core/mods.h):
+   * each with whether it is on, then its code lines. The core numbers them in this order
+   * (nativeSetCheat's index).
    */
-  fun writeManifest(target: File): List<HakuxCheat>? {
-    val cheats = load().takeIf { it.isNotEmpty() } ?: return null
+  fun manifestLines(cheats: List<HakuxCheat>): List<String> {
     val on = enabled()
     val lines = mutableListOf<String>()
     for (c in cheats) {
       lines += "cheat\t${if (c.name in on) 1 else 0}\t${if (c.once) 1 else 0}\t${c.name.tabless()}"
       for (l in c.code) lines += "code\t${l.tabless()}"
     }
-    target.parentFile?.mkdirs()
-    target.writeText(lines.joinToString("\n", postfix = "\n"))
-    return cheats
+    return lines
   }
 
   companion object {

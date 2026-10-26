@@ -1,0 +1,9 @@
+name: 60 fps
+description: The game at 60 frames a second instead of 30. Each frame shows at the next vblank and the game steps 1/60 s a frame; a frame the device doesn't finish in time shows late, and the game slows down with it.
+author: hakuX
+
+[default.xbe]
+# The vblanks a frame takes (0x554944): the present interval set at
+# 0x1DA4A0 (TWO_OR_IMMEDIATE -> ONE_OR_IMMEDIATE) and the frame time the
+# game steps by at 0x1D9660 (vblanks / refresh rate, 2/60 -> 1/60 s).
+0x00554944: 02 -> 01

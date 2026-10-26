@@ -1,0 +1,11 @@
+name: 60 fps
+description: Races at 60 frames a second instead of 30 (50 instead of 25 on a European disc without PAL 60 Hz). Each frame shows at the next vblank and the race steps a vblank's time a frame; a frame the device doesn't finish in time shows late, and the race slows down with it.
+author: hakuX
+
+[default.xbe]
+# The vblanks a race frame takes: the PresentInterval setting (0x291A04),
+# which the race's start (0xEBD3A, 0xF5A49, 0xF5C29) gives the present
+# interval setter (0x177C70: TWO_OR_IMMEDIATE -> ONE_OR_IMMEDIATE). The menus
+# already take one. The game steps by the vblanks a frame takes / the refresh
+# rate (0x4860F1, 0x48614B; 0xD9073, 0xEFE91...): 2/60 -> 1/60 s.
+0x00291A04: 02 -> 01

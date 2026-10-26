@@ -69,6 +69,9 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var fastForward = false
   /** The game's cheats (by its disc release); null: the disc's XBE couldn't be read. */
   private var cheatStore: HakuxCheatStore? = null
+  /** The disc release's key (4D530004.9) and the mods hakuX has for it. */
+  private var gameKey: String? = null
+  private var gameMods: List<HakuxMod> = emptyList()
   /** The core's number for each cheat it has, by name: the run's manifest's, and those added since. */
   private val cheatIndex = mutableMapOf<String, Int>()
   private var fpsView: TextView? = null
@@ -104,22 +107,22 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     /* Player 1: every physical controller (HakuxPadRouter) plus the on-screen controls. */
     args += "pads=1"
     vkDriverArg()?.let { args += it }
-    cheatsArg()?.let { args += it }
+    modsArg()?.let { args += it }
     return args.toTypedArray()
   }
 
-  /** "mods=<manifest>" with the game's cheats (HakuxCheatStore), when it has any. */
-  private fun cheatsArg(): String? {
+  /** "mods=<manifest>" with the game's mods that are on and its cheats (HakuxModRun), when it has any. */
+  private fun modsArg(): String? {
     val uri = discUri ?: return null
     val key = runCatching { XbeMetadataReader.read(this, uri, icon = false)?.gameKey }.getOrNull() ?: return null
-    val store = HakuxCheatStore(this, key)
-    cheatStore = store
-    val manifest = File(filesDir, "hakux/cheats/run.txt")
-    val cheats = runCatching { store.writeManifest(manifest) }
-      .onFailure { Log.e(TAG, "cheats: ${it.message}") }
+    gameKey = key
+    cheatStore = HakuxCheatStore(this, key)
+    gameMods = runCatching { HakuxModCatalog.load(this, key) }.getOrDefault(emptyList())
+    val manifest = File(filesDir, "hakux/run-mods.txt")
+    val cheats = runCatching { HakuxModRun.write(this, key, manifest) }
+      .onFailure { Log.e(TAG, "mods: ${it.message}") }
       .getOrNull() ?: return null
     cheats.forEachIndexed { i, c -> cheatIndex[c.name] = i }
-    Log.i(TAG, "cheats: $key, ${cheats.size}, ${store.enabled().size} on")
     return "mods=${manifest.absolutePath}"
   }
 
@@ -551,6 +554,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       setFastForward(!fastForward)
     }
     val cheats = Spec(getString(R.string.hakux_cheats)) { showCheats() }
+    val mods = Spec(getString(R.string.hakux_mods)) { showMods() }
     val remap = Spec(getString(R.string.in_game_menu_remap_controller)) {
       val done = holdPause()
       ControllerRemap.showEditor(
@@ -573,6 +577,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       setPadding((20 * dp).toInt(), (12 * dp).toInt(), (20 * dp).toInt(), 0)
       row(this, resume, touch)
       if (cheatStore != null) row(this, speed, cheats) else row(this, speed)
+      if (gameMods.isNotEmpty()) row(this, mods)
       row(this, remap, layout)
       /* savestates: the core has them for push-buffer titles */
       if (nativeStatesAvailable()) row(this, save, load)
@@ -594,6 +599,117 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       .create()
     menuDialog = dialog
     dialog.show()
+  }
+
+  // ---------------------------------------------------------------- mods
+
+  /**
+   * hakuX's mods for this disc release (60 / 120 fps and the like), each on or off. They
+   * patch the game's code as it loads, so a change takes the game's next start: Restart
+   * starts it again now.
+   */
+  private fun showMods() {
+    val key = gameKey ?: return
+    val mods = gameMods.takeIf { it.isNotEmpty() } ?: return
+    val choices = HakuxModChoices(this, key)
+    val done = holdPause()
+    val before = choices.enabled()
+    var restart = false
+    val dp = resources.displayMetrics.density
+    val pad = (24 * dp).toInt()
+    val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    content.addView(TextView(this).apply {
+      setText(R.string.hakux_mods_hint)
+      setPadding(pad, (8 * dp).toInt(), pad, (8 * dp).toInt())
+    })
+    // 60 fps before 120 fps: by the number a folder starts with (the manifest keeps folder order)
+    val shown = mods.sortedWith(compareBy({ it.id.takeWhile(Char::isDigit).toIntOrNull() ?: Int.MAX_VALUE }, { it.id }))
+    val list = checkList(
+      shown.map { it.name to it.description },
+      BooleanArray(shown.size) { shown[it].id in before },
+    ) { i, on -> choices.set(shown[i].id, on) }
+    content.addView(list, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+    MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(R.string.hakux_mods)
+      .setView(content)
+      .setPositiveButton(R.string.hakux_mods_restart) { _, _ -> restart = true }
+      .setNegativeButton(R.string.hakux_cheats_close, null)
+      .setOnDismissListener {
+        val changed = choices.enabled() != before
+        when {
+          restart -> restartGame()
+          changed -> Toast.makeText(this, R.string.hakux_mods_next_start, Toast.LENGTH_LONG).show()
+        }
+        hideSystemBars()
+        done()
+      }
+      .show()
+  }
+
+  /**
+   * A list of switches for the mods and cheats dialogs: each row a name, what it does
+   * under it (whole, smaller), a checkbox; a tap (or a gamepad's A) flips it.
+   */
+  private fun checkList(
+    items: List<Pair<String, String>>,
+    checked: BooleanArray,
+    onLongPress: ((Int) -> Unit)? = null,
+    onToggle: (Int, Boolean) -> Unit,
+  ): android.widget.ListView {
+    val dp = resources.displayMetrics.density
+    val muted = androidx.core.content.ContextCompat.getColor(this, R.color.xemu_text_muted)
+    val list = android.widget.ListView(this)
+    list.adapter = object : android.widget.BaseAdapter() {
+      override fun getCount() = items.size
+      override fun getItem(position: Int) = items[position]
+      override fun getItemId(position: Int) = position.toLong()
+      override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+        val (title, detail) = items[position]
+        val text = LinearLayout(this@HakuxCoreActivity).apply {
+          orientation = LinearLayout.VERTICAL
+          addView(TextView(context).apply {
+            text = title
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+          })
+          if (detail.isNotEmpty()) addView(TextView(context).apply {
+            text = detail
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(muted)
+          })
+        }
+        val box = com.google.android.material.checkbox.MaterialCheckBox(this@HakuxCoreActivity).apply {
+          isChecked = checked[position]
+          isClickable = false
+          isFocusable = false
+        }
+        return LinearLayout(this@HakuxCoreActivity).apply {
+          orientation = LinearLayout.HORIZONTAL
+          gravity = Gravity.CENTER_VERTICAL
+          setPadding((24 * dp).toInt(), (10 * dp).toInt(), (16 * dp).toInt(), (10 * dp).toInt())
+          addView(text, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+          addView(box)
+        }
+      }
+    }
+    list.setOnItemClickListener { _, _, i, _ ->
+      checked[i] = !checked[i]
+      (list.adapter as android.widget.BaseAdapter).notifyDataSetChanged()
+      onToggle(i, checked[i])
+    }
+    if (onLongPress != null) {
+      list.setOnItemLongClickListener { _, _, i, _ ->
+        onLongPress(i)
+        true
+      }
+    }
+    return list
+  }
+
+  /** The game from its start in a new core process (its mods changed). */
+  private fun restartGame() {
+    Log.i(TAG, "mods: starting the game again")
+    HakuxRelaunchActivity.heldFrame(this).delete()    // no old frame meanwhile: black
+    startRelaunch(restart = true)
   }
 
   // ---------------------------------------------------------------- cheats
@@ -618,21 +734,14 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     })
     lateinit var dialog: androidx.appcompat.app.AlertDialog
     if (cheats.isNotEmpty()) {
-      val list = android.widget.ListView(this).apply {
-        choiceMode = android.widget.ListView.CHOICE_MODE_MULTIPLE
-        adapter = android.widget.ArrayAdapter(
-          this@HakuxCoreActivity,
-          android.R.layout.simple_list_item_multiple_choice,
-          cheats.map { c -> if (c.note.isEmpty()) c.name else "${c.name}\n${c.note}" },
-        )
-        cheats.forEachIndexed { i, c -> setItemChecked(i, c.name in on) }
-        setOnItemClickListener { _, _, i, _ -> setCheat(cheats[i], isItemChecked(i)) }
-        setOnItemLongClickListener { _, _, i, _ ->
+      val list = checkList(
+        cheats.map { it.name to it.note },
+        BooleanArray(cheats.size) { cheats[it].name in on },
+        onLongPress = { i ->
           next = { confirmDeleteCheat(cheats[i]) }
           dialog.dismiss()
-          true
-        }
-      }
+        },
+      ) { i, isOn -> setCheat(cheats[i], isOn) }
       content.addView(list, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
     }
     dialog = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
@@ -1033,13 +1142,14 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     startRelaunch(path)
   }
 
-  private fun startRelaunch(state: String? = null) {
+  private fun startRelaunch(state: String? = null, restart: Boolean = false) {
     if (relaunchStarted) return
     relaunchStarted = true
     startActivity(
       Intent(this, HakuxRelaunchActivity::class.java)
         .putExtra(EXTRA_DVD_URI, discUri?.toString() ?: intent.getStringExtra(EXTRA_DVD_URI))
         .apply { if (state != null) putExtra(EXTRA_LOADSTATE, state) }
+        .putExtra(HakuxRelaunchActivity.EXTRA_RESTART, restart)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
       HakuxRelaunchActivity.noTransition(this).toBundle(),
     )

@@ -1,0 +1,31 @@
+name: 120 fps
+description: The game at 120 frames a second (on a 120 Hz screen) instead of 30. The game steps by the time each frame took, so it keeps its speed when the device can't hold 120; what it counts in whole sixtieths of a second (many timers and countdowns) still moves 60 times a second. Use it instead of the 60 fps mod, not with it.
+author: hakuX
+refresh: 120
+
+[default.xbe]
+# The vblanks a frame takes, as the 60 fps mod: the present interval setter
+# (0x2A78D0) always takes 1, and so does the device's creation (0x6C0268).
+# The frame timing (0x2A7B60) gets the vblanks the frame took (the interval
+# plus the ones the swap missed, 0x2A8020), at 120 Hz now. The game reads
+# them in 402 places as sixtieths of a second (countdowns, timers): the
+# count it keeps (0x7FA20C, 0x7FA208) is in sixtieths again, the half one
+# carried to the next frame (0 and 1 in turn at 120 fps). Its time step
+# (0x7FA21C) is the vblanks times 1/120 (0x2A7BCB loads it from 0x10E44,
+# not 1/60 from 0x7F9F58). The code is in the header page (sizeof_headers
+# raised to 0x1000).
+0x00010108: 40 0E 00 00 -> 00 10 00 00
+0x002A78D3: 84 C0 88 15 68 02 6C 00 74 06 81 CA 00 00 00 80 -> BA 01 00 00 00 88 15 68 02 6C 00 0F 1F 44 00 00
+0x006C0268: 02 -> 01
+0x00010E40: 00 00 00 00 00 00 00 00 -> 00 00 00 00 89 88 08 3C
+0x00010E50: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 -> 9C 50 A1 40 0E 01 00 03 C1 A3 0C A2 7F 00 83 E0 01 A3 40 0E 01 00 D1 2D 0C A2 7F 00 58 9D E9 68 6E 29 00
+0x00010E80: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 -> 8B 0D 0C A2 7F 00 89 0D 08 A2 7F 00 E9 32 6F 29 00
+0x002A7BCF: 58 9F 7F 00 -> 44 0E 01 00
+0x002A7CD5: 89 0D 0C A2 7F 00 -> E9 76 91 D6 FF 90
+0x002A7DBD: 89 0D 08 A2 7F 00 -> E9 BE 90 D6 FF 90
+# Movies (XMV) time their frames by the vblanks (the D3D field status)
+# times a vblank's length, set from the mode's refresh rate (0x4E22E8):
+# 16.683 ms at 60 Hz (16.16 fixed point), 1000 ms / the rate otherwise. At
+# 120 Hz a vblank lasts half that: 8.342 ms, 500 ms / the rate.
+0x004E2301: F0 AE 10 00 -> 78 57 08 00
+0x004E2308: 00 00 E8 03 -> 00 00 F4 01
