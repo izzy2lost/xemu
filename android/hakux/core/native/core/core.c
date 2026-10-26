@@ -361,6 +361,35 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
                nc_frame_eip(f));
     }
     if (!nc_kernel_page_fault(&c->kernel, f, (uint32_t)va, nc_cpu_fault_is_write(ucontext))) {
+        /* the guest's state for the report: its registers, the code at EIP and the stack top */
+        const uint32_t eip = nc_frame_eip(f);
+        nc_log("hakuX-native-frontier", "guest fault at %08x: eip %08x eax %08x ecx %08x edx %08x ebx %08x esp %08x "
+               "ebp %08x esi %08x edi %08x", (uint32_t)va, eip, nc_frame_gpr(f, NC_EAX), nc_frame_gpr(f, NC_ECX),
+               nc_frame_gpr(f, NC_EDX), nc_frame_gpr(f, NC_EBX), nc_frame_gpr(f, NC_ESP), nc_frame_gpr(f, NC_EBP),
+               nc_frame_gpr(f, NC_ESI), nc_frame_gpr(f, NC_EDI));
+        for (int part = 0; part < 2; part++) {
+            const uint32_t at = part ? nc_frame_gpr(f, NC_ESP) : eip - 32;
+            char hex[3 * 64 + 1];
+            int n = 0;
+            for (uint32_t i = 0; i < 64 && nc_vm_phys(&c->vm, at + i) != UINT32_MAX; i++) {
+                n += snprintf(hex + n, sizeof(hex) - (size_t)n, "%02x%s", *(const uint8_t *)nc_vm_host(&c->vm, at + i),
+                              i % 4 == 3 ? " " : "");
+            }
+            hex[n] = 0;
+            nc_log("hakuX-native-frontier", "guest fault: %s at %08x: %s", part ? "stack" : "code from eip-32", at,
+                   hex);
+        }
+        /* debug: NC_FAULT_DUMP=<file> writes the guest's low 8 MiB (the XBE image), unmapped pages as zeros */
+        const char *dump = getenv("NC_FAULT_DUMP");
+        FILE *df = dump ? fopen(dump, "wb") : NULL;
+        if (df) {
+            static uint8_t zero[NC_PAGE];
+            for (uint32_t p = 0; p < 0x800000; p += NC_PAGE) {
+                fwrite(nc_vm_phys(&c->vm, p) != UINT32_MAX ? nc_vm_host(&c->vm, p) : zero, 1, NC_PAGE, df);
+            }
+            fclose(df);
+            nc_log("hakuX-native-frontier", "guest fault: low memory written to %s", dump);
+        }
         return fault_report(c, pc, va, "the title doesn't handle it");
     }
     nc_cpu_fault_resume(c->cpu, ucontext);

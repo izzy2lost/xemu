@@ -24,9 +24,9 @@
 #define NC_STATE_V_MISC 1
 #define NC_STATE_MIN_MISC 1
 #define NC_STATE_H_MISC 0x04c0c5c8u
-#define NC_STATE_V_MM 1
+#define NC_STATE_V_MM 2
 #define NC_STATE_MIN_MM 1
-#define NC_STATE_H_MM 0x70bc2c15u
+#define NC_STATE_H_MM 0x288105c7u
 #define NC_STATE_V_MODS 1
 #define NC_STATE_MIN_MODS 1
 #define NC_STATE_H_MODS 0x0742f082u

@@ -10,11 +10,12 @@ NC_F(Region, protect, U32, 1, 1, 0)
 NC_F(Region, image, BOOL, 1, 1, 0)
 NC_END(Region)
 
-NC_REC(Contig, 16)
+NC_REC(Contig, 20)
 NC_F(Contig, va, U32, 1, 1, 0)
 NC_F(Contig, size, U32, 1, 1, 0)
 NC_F(Contig, ra, U32, 1, 1, 0)
 NC_F(Contig, slack, U32, 1, 1, 0)
+NC_F(Contig, protect, U32, 1, 2, 0)
 NC_END(Contig)
 
 NC_REC(KeptRange, 8)

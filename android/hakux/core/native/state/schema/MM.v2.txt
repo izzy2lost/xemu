@@ -1,0 +1,20 @@
+section MM
+record Region
+  base U32 x1 since 1
+  size U32 x1 since 1
+  protect U32 x1 since 1
+  image BOOL x1 since 1
+record Contig
+  va U32 x1 since 1
+  size U32 x1 since 1
+  ra U32 x1 since 1
+  slack U32 x1 since 1
+  protect U32 x1 since 2
+record KeptRange
+  va U32 x1 since 1
+  len U32 x1 since 1
+record NcMmState
+  nregions U32 x1 since 1
+  ncontig U32 x1 since 1
+  nkept U32 x1 since 1
+  gpu_instance_end U32 x1 since 1
