@@ -4,6 +4,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -12,6 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
@@ -598,6 +601,148 @@ class Relay {
 Relay* g_relay = nullptr;
 pthread_t g_thread;
 
+// --- Auto ------------------------------------------------------------------
+// Everyone can pick Auto. For kAutoScanMs this device broadcasts the Find
+// probe (the one SystemLink.discover sends) and listens on the discovery
+// port: a host's reply means join it (the one with the most consoles, then
+// the lowest address). Probes from other devices mean they are deciding too,
+// so with no host yet the lowest address hosts and the others join it (their
+// hellos connect once it is up). Nobody at all: host.
+constexpr int64_t kAutoScanMs = 2000;
+constexpr int64_t kAutoProbeEveryMs = 400;
+
+struct AutoHost {
+  sockaddr_in addr;
+  int consoles;
+};
+
+// This device's IPv4 addresses and the broadcast addresses of its LANs.
+void LocalNetworks(std::vector<uint32_t>* own, std::vector<uint32_t>* bcast) {
+  ifaddrs* list = nullptr;
+  if (getifaddrs(&list) != 0) return;
+  for (ifaddrs* i = list; i; i = i->ifa_next) {
+    if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET) continue;
+    if (!(i->ifa_flags & IFF_UP) || (i->ifa_flags & IFF_LOOPBACK)) continue;
+    own->push_back(reinterpret_cast<sockaddr_in*>(i->ifa_addr)->sin_addr.s_addr);
+    if ((i->ifa_flags & IFF_BROADCAST) && i->ifa_broadaddr) {
+      bcast->push_back(reinterpret_cast<sockaddr_in*>(i->ifa_broadaddr)->sin_addr.s_addr);
+    }
+  }
+  freeifaddrs(list);
+}
+
+// Turns an Auto config into Host or Join.
+void ResolveAuto(Config* cfg) {
+  std::vector<uint32_t> own, bcast;
+  LocalNetworks(&own, &bcast);
+  bcast.push_back(htonl(INADDR_BROADCAST));
+  int fd = OpenUdp(INADDR_ANY, kDiscoveryPort, nullptr);
+  const bool listening = fd >= 0;   // another relay here holds it: probe only
+  if (!listening) fd = OpenUdp(INADDR_ANY, 0, nullptr);
+  if (fd < 0) {
+    cfg->mode = Mode::Host;
+    return;
+  }
+  int on = 1;
+  setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+  // A few hundred ms of jitter: two phones started together don't probe in lockstep.
+  timespec jitter = {0, long(rand() % 400) * 1000000L};
+  nanosleep(&jitter, nullptr);
+
+  std::vector<AutoHost> hosts;
+  std::vector<uint32_t> deciding;
+  auto mine = [&](uint32_t a) {
+    for (uint32_t o : own) if (o == a) return true;
+    return false;
+  };
+  std::vector<uint8_t> buf(2048);
+  const int64_t end = NowMs() + kAutoScanMs;
+  int64_t next_probe = 0;
+  for (int64_t now = NowMs(); now < end; now = NowMs()) {
+    if (now >= next_probe) {
+      next_probe = now + kAutoProbeEveryMs;
+      for (uint32_t b : bcast) {
+        sockaddr_in to = {};
+        to.sin_family = AF_INET;
+        to.sin_addr.s_addr = b;
+        to.sin_port = htons(kDiscoveryPort);
+        sendto(fd, kDiscoverRequest, sizeof(kDiscoverRequest) - 1, MSG_DONTWAIT,
+               reinterpret_cast<const sockaddr*>(&to), sizeof(to));
+      }
+    }
+    pollfd p = {fd, POLLIN, 0};
+    const int64_t wait = std::min(next_probe, end) - now;
+    if (poll(&p, 1, int(wait > 0 ? wait : 0)) <= 0) continue;
+    for (;;) {
+      sockaddr_in from;
+      socklen_t len = sizeof(from);
+      ssize_t n = recvfrom(fd, buf.data(), buf.size() - 1, MSG_DONTWAIT,
+                           reinterpret_cast<sockaddr*>(&from), &len);
+      if (n < 0) break;
+      if (mine(from.sin_addr.s_addr)) continue;  // our own probes, looped back
+      const std::string text(reinterpret_cast<char*>(buf.data()), size_t(n));
+      if (text.compare(0, sizeof(kDiscoverReplyPrefix) - 1, kDiscoverReplyPrefix) == 0) {
+        // "X1LAN-HOST\n<port>\n<name>\n<game>\n<consoles>"
+        std::vector<std::string> f;
+        size_t at = sizeof(kDiscoverReplyPrefix) - 1;
+        while (at <= text.size()) {
+          size_t nl = text.find('\n', at);
+          f.push_back(text.substr(at, nl == std::string::npos ? std::string::npos : nl - at));
+          if (nl == std::string::npos) break;
+          at = nl + 1;
+        }
+        int port = f.empty() ? 0 : atoi(f[0].c_str());
+        if (port <= 0 || port > 65535) continue;
+        AutoHost h = {from, f.size() > 3 ? atoi(f[3].c_str()) : 1};
+        h.addr.sin_port = htons(uint16_t(port));
+        bool known = false;
+        for (const AutoHost& k : hosts) known |= SameAddr(k.addr, h.addr);
+        if (!known) hosts.push_back(h);
+      } else if (text.compare(0, sizeof(kDiscoverRequest) - 1, kDiscoverRequest) == 0) {
+        bool known = false;
+        for (uint32_t d : deciding) known |= d == from.sin_addr.s_addr;
+        if (!known) deciding.push_back(from.sin_addr.s_addr);
+      }
+    }
+  }
+  close(fd);
+
+  if (!hosts.empty()) {
+    const AutoHost* best = &hosts[0];
+    for (const AutoHost& h : hosts) {
+      if (h.consoles > best->consoles ||
+          (h.consoles == best->consoles && ntohl(h.addr.sin_addr.s_addr) < ntohl(best->addr.sin_addr.s_addr))) {
+        best = &h;
+      }
+    }
+    cfg->mode = Mode::Join;
+    cfg->host_addr = AddrStr(best->addr);
+    LAN_INFO("auto: joining the host at %s", cfg->host_addr.c_str());
+    return;
+  }
+  // No host yet. Among the devices deciding now, the lowest address hosts.
+  uint32_t lowest = 0;
+  for (uint32_t d : deciding) {
+    if (!lowest || ntohl(d) < ntohl(lowest)) lowest = d;
+  }
+  uint32_t me = 0;
+  for (uint32_t o : own) {
+    if (!me || ntohl(o) < ntohl(me)) me = o;
+  }
+  if (lowest && me && ntohl(lowest) < ntohl(me)) {
+    sockaddr_in a = {};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = lowest;
+    a.sin_port = htons(cfg->port);
+    cfg->mode = Mode::Join;
+    cfg->host_addr = AddrStr(a);
+    LAN_INFO("auto: no host yet; %s starts one, joining it", cfg->host_addr.c_str());
+    return;
+  }
+  cfg->mode = Mode::Host;
+  LAN_INFO("auto: no host found, hosting");
+}
+
 void* RelayThread(void* arg) {
   static_cast<Relay*>(arg)->Run();
   return nullptr;
@@ -608,11 +753,14 @@ void* RelayThread(void* arg) {
 Mode ParseMode(const std::string& value) {
   if (value == "host") return Mode::Host;
   if (value == "join") return Mode::Join;
+  if (value == "auto") return Mode::Auto;
   return Mode::Off;
 }
 
-bool Start(const Config& cfg, std::string* qemu_bind, std::string* qemu_remote) {
-  if (g_relay || cfg.mode == Mode::Off) return false;
+bool Start(const Config& config, std::string* qemu_bind, std::string* qemu_remote) {
+  if (g_relay || config.mode == Mode::Off) return false;
+  Config cfg = config;
+  if (cfg.mode == Mode::Auto) ResolveAuto(&cfg);
   Relay* relay = new Relay(cfg);
   if (!relay->Init(qemu_bind, qemu_remote)) {
     delete relay;

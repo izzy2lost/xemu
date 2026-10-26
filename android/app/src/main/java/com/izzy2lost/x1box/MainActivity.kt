@@ -345,11 +345,11 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private fun setupSystemLink() {
     val prefs = getSharedPreferences("x1box_prefs", MODE_PRIVATE)
     val mode = prefs.getString(SystemLink.PREF_MODE, SystemLink.MODE_OFF)
-    if (mode != SystemLink.MODE_HOST && mode != SystemLink.MODE_JOIN) return
+    if (mode != SystemLink.MODE_HOST && mode != SystemLink.MODE_JOIN && mode != SystemLink.MODE_AUTO) return
     lanHostAddress = prefs.getString(SystemLink.PREF_HOST, "").orEmpty()
-    if (mode == SystemLink.MODE_HOST) {
+    if (mode == SystemLink.MODE_HOST || mode == SystemLink.MODE_AUTO) {
       // Wi-Fi drivers may filter broadcast frames to save power, and the
-      // "Find" probes from joining devices are broadcasts.
+      // "Find" probes from joining devices are broadcasts (Auto may host).
       val wifi = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
       lanMulticastLock = wifi?.createMulticastLock("x1box-system-link")?.apply {
         setReferenceCounted(false)

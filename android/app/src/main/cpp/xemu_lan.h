@@ -24,7 +24,9 @@ namespace xemu_lan {
 constexpr uint16_t kDefaultPort = 9368;
 constexpr uint16_t kDiscoveryPort = 9369;
 
-enum class Mode { Off, Host, Join };
+// Auto: look for a host on the LAN for a couple of seconds and join it, else
+// host (Start decides; see ResolveAuto in xemu_lan.cpp).
+enum class Mode { Off, Host, Join, Auto };
 
 Mode ParseMode(const std::string& value);
 

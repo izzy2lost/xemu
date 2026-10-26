@@ -125,10 +125,10 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
    */
   private fun lanArg(): String? {
     val mode = prefs.getString(SystemLink.PREF_MODE, SystemLink.MODE_OFF)
-    if (mode != SystemLink.MODE_HOST && mode != SystemLink.MODE_JOIN) return null
+    if (mode != SystemLink.MODE_HOST && mode != SystemLink.MODE_JOIN && mode != SystemLink.MODE_AUTO) return null
     lanHost = prefs.getString(SystemLink.PREF_HOST, "").orEmpty()
-    if (mode == SystemLink.MODE_HOST) {
-      // Wi-Fi drivers may filter broadcasts to save power, and the Find probes are broadcasts
+    if (mode == SystemLink.MODE_HOST || mode == SystemLink.MODE_AUTO) {
+      // Wi-Fi drivers may filter broadcasts to save power, and the Find probes are broadcasts (Auto may host)
       val wifi = applicationContext.getSystemService(WIFI_SERVICE) as? android.net.wifi.WifiManager
       lanMulticastLock = wifi?.createMulticastLock("x1box-system-link")?.apply {
         setReferenceCounted(false)

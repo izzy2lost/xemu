@@ -207,6 +207,8 @@
   <string name="settings_insignia_guide_action">Insignia Guide</string>
   <string name="settings_lan_title">System Link (LAN)</string>
   <string name="settings_lan_off">Off</string>
+  <string name="settings_lan_auto">Auto</string>
+  <string name="settings_lan_status_auto">Every player picks Auto: when a game starts, it joins a System Link game on this Wi-Fi or hotspot, or hosts one if there is none yet. No addresses to type.\nThis console\'s MAC: %1$s</string>
   <string name="settings_lan_host">Host</string>
   <string name="settings_lan_join">Join</string>
   <string name="settings_lan_host_address">Host address</string>

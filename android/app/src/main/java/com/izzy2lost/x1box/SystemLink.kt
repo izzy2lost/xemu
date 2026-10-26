@@ -18,6 +18,8 @@ internal object SystemLink {
   const val PREF_HOST = "setting_lan_host"
 
   const val MODE_OFF = "off"
+  /** Join a host the relay finds on the LAN, else host (xemu_lan.cpp ResolveAuto). */
+  const val MODE_AUTO = "auto"
   const val MODE_HOST = "host"
   const val MODE_JOIN = "join"
 

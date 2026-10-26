@@ -1440,6 +1440,7 @@ class SettingsActivity : AppCompatActivity() {
 
   private fun setupSystemLink() {
     when (prefs.getString(SystemLink.PREF_MODE, SystemLink.MODE_OFF)) {
+      SystemLink.MODE_AUTO -> toggleLanMode.check(R.id.btn_lan_auto)
       SystemLink.MODE_HOST -> toggleLanMode.check(R.id.btn_lan_host)
       SystemLink.MODE_JOIN -> toggleLanMode.check(R.id.btn_lan_join)
       else                 -> toggleLanMode.check(R.id.btn_lan_off)
@@ -1457,6 +1458,7 @@ class SettingsActivity : AppCompatActivity() {
   }
 
   private fun selectedLanMode(): String = when (toggleLanMode.checkedButtonId) {
+    R.id.btn_lan_auto -> SystemLink.MODE_AUTO
     R.id.btn_lan_host -> SystemLink.MODE_HOST
     R.id.btn_lan_join -> SystemLink.MODE_JOIN
     else              -> SystemLink.MODE_OFF
@@ -1486,6 +1488,7 @@ class SettingsActivity : AppCompatActivity() {
         }
       }
       SystemLink.MODE_JOIN -> getString(R.string.settings_lan_status_join, currentMacLabel())
+      SystemLink.MODE_AUTO -> getString(R.string.settings_lan_status_auto, currentMacLabel())
       else -> getString(R.string.settings_lan_status_off)
     }
   }

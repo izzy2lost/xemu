@@ -95,6 +95,31 @@ static NvNet g_net;
 /* debug: debug.hakux.nvnet.trace 1 (or NC_NVNET_TRACE): the guest's register accesses, the first few thousand */
 static int g_trace;
 #define TRACE(...) do { if (g_trace > 0) { g_trace--; nc_log("hakuX-native-nvnet", __VA_ARGS__); } } while (0)
+static int g_frame_trace;               /* the same switch: the first frames each way, summed up */
+
+/* A frame in a line: who to whom, and for IPv4 the protocol, addresses and ports. */
+static void trace_frame(const char *dir, const uint8_t *f, size_t n)
+{
+    if (g_frame_trace <= 0 || n < 14) {
+        return;
+    }
+    g_frame_trace--;
+    char ip[96] = "";
+    const unsigned type = (unsigned)f[12] << 8 | f[13];
+    if (type == 0x0800 && n >= 34) {
+        const uint8_t *h = f + 14;
+        const unsigned ihl = (h[0] & 15u) * 4u, proto = h[9];
+        unsigned sp = 0, dp = 0;
+        if ((proto == 6 || proto == 17) && n >= 14 + ihl + 4) {
+            sp = (unsigned)h[ihl] << 8 | h[ihl + 1];
+            dp = (unsigned)h[ihl + 2] << 8 | h[ihl + 3];
+        }
+        snprintf(ip, sizeof(ip), " ip proto %u %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u", proto, h[12], h[13], h[14], h[15], sp,
+                 h[16], h[17], h[18], h[19], dp);
+    }
+    nc_log("hakuX-native-nvnet", "%s %zu bytes %02x:%02x:%02x:%02x:%02x:%02x <- %02x:%02x:%02x:%02x:%02x:%02x type %04x%s",
+           dir, n, f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], type, ip);
+}
 static char g_lan[96];                  /* "bind_ip:port,remote_ip:port" (nc_dev_nvnet_set_lan) */
 
 static uint64_t now_ns(void)
@@ -325,6 +350,7 @@ static void advance_next_tx_ring_desc_addr(NvNet *s)
 static void send_packet(NvNet *s, const uint8_t *buf, size_t size)
 {
     s->tx_frames++;
+    trace_frame("tx", buf, size);
     if (s->sock >= 0) {
         sendto(s->sock, buf, size, MSG_DONTWAIT, (const struct sockaddr *)&s->remote, sizeof(s->remote));
     }
@@ -426,6 +452,7 @@ static void receive(NvNet *s, const uint8_t *buf, size_t size)
     if (size > RX_ALLOC_BUFSIZE || !receive_filter(s, buf, size)) {
         return;
     }
+    trace_frame("rx", buf, size);
     drain_rxq(s);
     if (!s->rxq_n && dma_packet_to_guest(s, buf, size)) {
         s->rx_frames++;
@@ -667,6 +694,7 @@ void nc_dev_nvnet_init(NcVm *vm)
 #endif
     const char *e = getenv("NC_NVNET_TRACE");
     g_trace = (v[0] == '1' || (e && *e == '1')) ? 4000 : 0;
+    g_frame_trace = g_trace ? 400 : 0;
     s->vm = vm;
     s->sock = g_lan[0] ? open_wire(s) : -1;
     reset(s);

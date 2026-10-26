@@ -842,6 +842,14 @@
               android:text="@string/settings_lan_off" />
 
             <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_lan_auto"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/settings_lan_auto" />
+
+            <com.google.android.material.button.MaterialButton
               android:id="@+id/btn_lan_host"
               style="?attr/materialButtonOutlinedStyle"
               android:layout_width="0dp"
