@@ -202,7 +202,8 @@ static int init_compat(HleVk *v, HleCaps *c, const VkExtensionProperties *ext, u
     need(c, v->qfam != UINT32_MAX, "graphics+compute queue");
     c->wide_lines = q.features.wideLines;
     need(c, q.features.largePoints, "largePoints");
-    need(c, q.features.dualSrcBlend, "dualSrcBlend");
+    /* x1box: dualSrcBlend is enabled when present, never required: no blend factor or
+     * shader uses a second source (the Mali-G57's r40 driver has none) */
     need(c, q.features.depthClamp, "depthClamp");
     c->bc = q.features.textureCompressionBC;   /* else DXT decoded on the CPU */
     need(c, e_bda && q_bda.bufferDeviceAddress, "bufferDeviceAddress");
@@ -260,7 +261,8 @@ static int init_compat(HleVk *v, HleCaps *c, const VkExtensionProperties *ext, u
     VkPhysicalDeviceFeatures2 f = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
     f.features.wideLines = c->wide_lines;
     f.features.largePoints = VK_TRUE;
-    f.features.dualSrcBlend = f.features.depthClamp = VK_TRUE;
+    f.features.dualSrcBlend = q.features.dualSrcBlend;
+    f.features.depthClamp = VK_TRUE;
     f.features.textureCompressionBC = c->bc;
     f.features.samplerAnisotropy = c->aniso;
     f.features.occlusionQueryPrecise = c->occl_precise;
@@ -489,7 +491,8 @@ int hle_vk_init(void)
     need(c, v->qfam != UINT32_MAX, "graphics+compute queue");
     c->wide_lines = q.features.wideLines;
     need(c, q.features.largePoints, "largePoints");
-    need(c, q.features.dualSrcBlend, "dualSrcBlend");
+    /* x1box: dualSrcBlend is enabled when present, never required: no blend factor or
+     * shader uses a second source (the Mali-G57's r40 driver has none) */
     need(c, q.features.depthClamp, "depthClamp");
     c->bc = q.features.textureCompressionBC;   /* x1box: else DXT decoded on the CPU */
     need(c, q12.timelineSemaphore, "timelineSemaphore");
@@ -582,7 +585,8 @@ int hle_vk_init(void)
     f.features.wideLines = c->wide_lines;
     f.features.largePoints = VK_TRUE;
     f.features.logicOp = q.features.logicOp;
-    f.features.dualSrcBlend = f.features.depthClamp = VK_TRUE;
+    f.features.dualSrcBlend = q.features.dualSrcBlend;
+    f.features.depthClamp = VK_TRUE;
     f.features.textureCompressionBC = c->bc;
     f.features.samplerAnisotropy = c->aniso;
     f.features.occlusionQueryPrecise = c->occl_precise;
