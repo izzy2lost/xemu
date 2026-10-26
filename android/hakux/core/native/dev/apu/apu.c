@@ -282,8 +282,27 @@ static void sleep_until(MCPXAPUState *d, int64_t deadline_us)
     }
 }
 
+/* Fast-forward (nc_speed): every GP frame at that many times real time, the
+ * output dropped (se_frame): sound played faster would only be noise. */
+static void throttle_fast(MCPXAPUState *d, unsigned speed)
+{
+    int64_t now_us = apu_host_us();
+    if (d->next_frame_time_us == 0 || now_us - d->next_frame_time_us > EP_FRAME_US) {
+        d->next_frame_time_us = now_us;
+    }
+    sleep_until(d, d->next_frame_time_us);
+    d->next_frame_time_us += GP_FRAME_US / speed;
+    d->pace_gp = false;
+    d->sleep_acc_us += apu_host_us() - now_us;
+}
+
 static void throttle(MCPXAPUState *d)
 {
+    const unsigned speed = nc_speed();
+    if (speed > 1) {
+        throttle_fast(d, speed);
+        return;
+    }
     /* GP frames one at a time, as the hardware runs them. The GP DSP takes
      * DirectSound's commands once per frame while the CPU spins waiting;
      * rendered in bursts (a whole output callback, ~43 ms, then a sleep) or
@@ -390,7 +409,7 @@ static void se_frame(MCPXAPUState *d)
             }
         }
 
-        if (d->monitor.fifo_capacity_bytes > 0) {
+        if (d->monitor.fifo_capacity_bytes > 0 && nc_speed() == 1) {
             apu_out_push(d->monitor.frame_buf, sizeof(d->monitor.frame_buf));
         }
         memset(d->monitor.frame_buf, 0, sizeof(d->monitor.frame_buf));

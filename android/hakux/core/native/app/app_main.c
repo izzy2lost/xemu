@@ -27,6 +27,7 @@
 #include "native/app/app.h"
 #include "native/core/cheats.h"
 #include "native/core/core.h"
+#include "native/core/irq.h"
 #include "native/core/mods.h"
 #include "native/dev/usb.h"
 #include "native/kernel/kernel.h"
@@ -156,6 +157,13 @@ EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_n
 {
     nc_kernel_set_paused(&g_core.kernel, on != JNI_FALSE);
     nc_audio_set_paused(on != JNI_FALSE);
+}
+
+/* Fast-forward: the game's time at speed times real time, 1 normal (nc_speed_request). */
+EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeSetSpeed(JNIEnv *env,
+                                                                                        jclass cls, jint speed)
+{
+    nc_speed_request(speed < 1 ? 1u : (unsigned)speed);
 }
 
 /* Savestates (native/state): the running game saved to path, on the

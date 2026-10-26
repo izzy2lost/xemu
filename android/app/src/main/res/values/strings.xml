@@ -401,6 +401,8 @@
   <string name="in_game_menu_restart_game">Restart Game</string>
   <string name="in_game_menu_show_touch_controls">Show Touch Controls</string>
   <string name="in_game_menu_hide_touch_controls">Hide Touch Controls</string>
+  <string name="in_game_menu_fast_forward">Fast Forward</string>
+  <string name="in_game_menu_normal_speed">Normal Speed</string>
   <string name="in_game_menu_reboot_system">Reboot</string>
   <string name="in_game_menu_reboot_title">Reboot System</string>
   <string name="in_game_menu_reboot_message">Are you sure you want to reboot the emulated Xbox system?</string>

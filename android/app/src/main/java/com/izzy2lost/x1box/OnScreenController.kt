@@ -52,6 +52,29 @@ class OnScreenController @JvmOverloads constructor(
 
   var onMenuButtonTapped: (() -> Unit)? = null
 
+  /**
+   * Whether the fast-forward button exists (the core supports it). xemu shares
+   * this view and the saved layout, and has no such button.
+   */
+  var fastForwardAvailable: Boolean = false
+    set(value) {
+      if (field == value) return
+      field = value
+      if (width > 0 && height > 0) initializeControls(width, height)
+      invalidate()
+    }
+
+  /** Fast-forward on: the button stays lit. Set by its tap or by the host (its menu). */
+  var fastForward: Boolean = false
+    set(value) {
+      if (field == value) return
+      field = value
+      invalidate()
+    }
+
+  /** The fast-forward button was tapped: [fastForward] is the new state. */
+  var onFastForwardChanged: ((Boolean) -> Unit)? = null
+
   private var controllerListener: ControllerListener? = null
 
   enum class Button {
@@ -60,7 +83,9 @@ class OnScreenController @JvmOverloads constructor(
     LEFT_TRIGGER, RIGHT_TRIGGER,
     START, BACK,
     LEFT_STICK_BUTTON, RIGHT_STICK_BUTTON,
-    BLACK, WHITE
+    BLACK, WHITE,
+    /** Not a pad button: toggles [fastForward]; only where [fastForwardAvailable]. */
+    FAST_FORWARD
   }
 
   enum class Stick {
@@ -81,6 +106,7 @@ class OnScreenController @JvmOverloads constructor(
     BLACK("Black"),
     LEFT_STICK_BUTTON("LS"),
     RIGHT_STICK_BUTTON("RS"),
+    FAST_FORWARD("Fast Forward"),
   }
 
   /**
@@ -287,6 +313,16 @@ class OnScreenController @JvmOverloads constructor(
       smallButtonRadius
     )
 
+    // Fast forward - beside the right trigger, out of the way of the face buttons
+    if (fastForwardAvailable) {
+      buttons[Button.FAST_FORWARD] = ButtonState(
+        PointF(w - shoulderEdgeMargin - shoulderButtonRadius * 3.2f, shoulderEdgeMargin),
+        smallButtonRadius * 1.25f
+      )
+    } else {
+      buttons.remove(Button.FAST_FORWARD)
+    }
+
     // Menu button — bottom-right corner, opens in-game menu
     menuButtonRadius = smallButtonRadius * 1.25f
     menuButtonCenter = PointF(
@@ -314,6 +350,7 @@ class OnScreenController @JvmOverloads constructor(
     Button.BLACK -> Element.BLACK
     Button.LEFT_STICK_BUTTON -> Element.LEFT_STICK_BUTTON
     Button.RIGHT_STICK_BUTTON -> Element.RIGHT_STICK_BUTTON
+    Button.FAST_FORWARD -> Element.FAST_FORWARD
   }
 
   private fun elementOf(stick: Stick): Element = when (stick) {
@@ -322,6 +359,11 @@ class OnScreenController @JvmOverloads constructor(
   }
 
   private fun isVisible(element: Element) = layoutOverrides[element]?.visible ?: true
+
+  /** The elements this view has controls for (the editor's): not fast-forward where it isn't available. */
+  private fun editableElements(): List<Element> = Element.entries.filter { e ->
+    defaultButtons.keys.any { elementOf(it) == e } || defaultSticks.keys.any { elementOf(it) == e }
+  }
 
   private fun defaultCentroid(element: Element): PointF {
     val points = defaultButtons.filterKeys { elementOf(it) == element }.values.map { it.first } +
@@ -412,7 +454,7 @@ class OnScreenController @JvmOverloads constructor(
   }
 
   private fun elementAt(x: Float, y: Float): Element? {
-    return Element.entries
+    return editableElements()
       .map { e -> val c = elementCenter(e); Triple(e, c, elementBoundRadius(e, c)) }
       .filter { (_, c, r) -> hypot(x - c.x, y - c.y) <= r + editSlop }
       .minByOrNull { (_, _, r) -> r }
@@ -525,8 +567,9 @@ class OnScreenController @JvmOverloads constructor(
       if (hidden && !editMode) return@forEach
 
       paint.style = Paint.Style.FILL
+      val lit = state.isPressed || (button == Button.FAST_FORWARD && fastForward)
       setPaintColor(
-        if (state.isPressed) getButtonPressedColor(button) else getButtonColor(button),
+        if (lit) getButtonPressedColor(button) else getButtonColor(button),
         hidden
       )
       canvas.drawCircle(state.center.x, state.center.y, state.radius, paint)
@@ -571,7 +614,7 @@ class OnScreenController @JvmOverloads constructor(
 
   private fun drawEditOverlay(canvas: Canvas) {
     paint.style = Paint.Style.STROKE
-    Element.entries.forEach { element ->
+    editableElements().forEach { element ->
       val c = elementCenter(element)
       val r = elementBoundRadius(element, c) + editSlop * 0.5f
       val selected = element == selectedElement
@@ -612,6 +655,7 @@ class OnScreenController @JvmOverloads constructor(
       Button.Y -> Color.argb(255, 255, 255, 100)
       Button.BLACK -> Color.argb(255, 80, 80, 80)
       Button.WHITE -> Color.argb(255, 255, 255, 255)
+      Button.FAST_FORWARD -> Color.argb(230, 255, 170, 40)
       else -> Color.argb(200, 200, 200, 200)
     }
   }
@@ -634,6 +678,7 @@ class OnScreenController @JvmOverloads constructor(
       Button.WHITE -> "WH"
       Button.LEFT_STICK_BUTTON -> "LS"
       Button.RIGHT_STICK_BUTTON -> "RS"
+      Button.FAST_FORWARD -> "▶▶"
     }
   }
 
@@ -763,8 +808,9 @@ class OnScreenController @JvmOverloads constructor(
       // Only slide to a new button when this pointer was already tracking one.
       // This prevents other pointers from stealing a just-released button in the
       // same ACTION_MOVE batch, which would cause triggers (LT/RT) to get stuck.
+      // Never onto fast-forward: a slide must not toggle it.
       val hoveredButton = buttons.entries.firstOrNull { (b, s) ->
-        s.activePointerId == -1 && isVisible(elementOf(b)) &&
+        b != Button.FAST_FORWARD && s.activePointerId == -1 && isVisible(elementOf(b)) &&
           isPointInCircle(x, y, s.center, s.radius)
       }
       if (hoveredButton != null) {
@@ -857,12 +903,18 @@ class OnScreenController @JvmOverloads constructor(
   private fun pressButton(button: Button, state: ButtonState, pointerId: Int) {
     state.isPressed = true
     state.activePointerId = pointerId
+    if (button == Button.FAST_FORWARD) {
+      fastForward = !fastForward
+      onFastForwardChanged?.invoke(fastForward)
+      return
+    }
     controllerListener?.onButtonPressed(button)
   }
 
   private fun releaseButton(button: Button, state: ButtonState) {
     state.isPressed = false
     state.activePointerId = -1
+    if (button == Button.FAST_FORWARD) return
     controllerListener?.onButtonReleased(button)
   }
 

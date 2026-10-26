@@ -395,6 +395,21 @@ bool nc_paused(void)
     return __atomic_load_n(&g_paused, __ATOMIC_ACQUIRE);
 }
 
+static unsigned g_speed = 1;
+
+void nc_speed_request(unsigned speed)
+{
+    speed = speed < 1 ? 1 : speed > 8 ? 8 : speed;
+    if (__atomic_exchange_n(&g_speed, speed, __ATOMIC_RELEASE) != speed) {
+        nc_log("hakuX-native", "speed: %ux", speed);
+    }
+}
+
+unsigned nc_speed(void)
+{
+    return __atomic_load_n(&g_speed, __ATOMIC_ACQUIRE);
+}
+
 void nc_pause_wait(void)
 {
     pthread_once(&g_once, init_cv);

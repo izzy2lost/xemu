@@ -1514,6 +1514,34 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle)
     }
     const uint64_t ns = nc_ke_pause_end();
     nc_log("hakuX-native", "resumed after %.1f s: the guest's time leaves it out", ns / 1e9);
+    nc_kernel_speed_restart();
+}
+
+/* Fast-forward (nc_speed): the guest's time at that speed, the kernel's
+ * (nc_ke_set_speed) and RDTSC's. FEX counts RDTSC at the host counter's
+ * rate, so each entry moves it on by what the speed adds to the host cycles
+ * since the last one: between entries it runs at 1x, and it never goes
+ * back. g_speed_c: the host cycles at the last entry (0: start over). */
+static uint64_t g_speed_c;
+
+void nc_kernel_speed_restart(void)
+{
+    g_speed_c = 0;
+}
+
+static void speed_point(NcKernel *k)
+{
+    const unsigned sp = nc_speed();
+    nc_ke_set_speed(sp);
+    if (sp == 1 || !k->cpu) {
+        g_speed_c = 0;
+        return;
+    }
+    const uint64_t c = nc_cpu_host_cycles();
+    if (g_speed_c) {
+        nc_cpu_cycle_offset_add(k->cpu, (uint64_t)0 - (c - g_speed_c) * (sp - 1));
+    }
+    g_speed_c = c;
 }
 
 /* The samplers tell a kernel call or an HLE hook (set) from FEX itself. */
@@ -1521,6 +1549,7 @@ bool nc_kernel_sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
 {
     g_nc_in_sysop = 1;
     nc_kernel_pause_point(opaque, f, false);
+    speed_point(opaque);
     nc_ke_time_enter();
     if (g_slow_sysops < 0) {
         const char *e = getenv("NC_IRQ_SCHED");

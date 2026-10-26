@@ -74,12 +74,15 @@ static uint64_t coarse_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-/* The emulation paused (nc_kernel_pause_point): the guest's time stops where
- * the pause began and goes on from there, the time paused left out (g_off,
- * host ns). A seqlock: the guest's CPU writes, any thread reads. */
+/* The guest's time is g_ag at host time g_ar, and runs g_speed times the
+ * host's from there (fast-forward: nc_ke_set_speed). The emulation paused
+ * (nc_kernel_pause_point): it stops where the pause began (g_tpause_guest)
+ * and goes on from there, the time paused left out. A seqlock: the guest's
+ * CPU writes, any thread reads. */
 static uint32_t g_tseq;
 static bool g_tpaused;
-static uint64_t g_tpause_raw, g_off;
+static uint64_t g_tpause_raw, g_tpause_guest, g_ag, g_ar;
+static uint32_t g_speed = 1;
 
 static uint64_t raw_ns(void)
 {
@@ -96,13 +99,22 @@ static uint64_t guest_of_raw(uint64_t raw)
             continue;                   /* the guest's CPU is writing it */
         }
         const bool p = __atomic_load_n(&g_tpaused, __ATOMIC_RELAXED);
-        const uint64_t pr = __atomic_load_n(&g_tpause_raw, __ATOMIC_RELAXED);
-        const uint64_t off = __atomic_load_n(&g_off, __ATOMIC_RELAXED);
+        const uint64_t pg = __atomic_load_n(&g_tpause_guest, __ATOMIC_RELAXED);
+        const uint64_t ag = __atomic_load_n(&g_ag, __ATOMIC_RELAXED);
+        const uint64_t ar = __atomic_load_n(&g_ar, __ATOMIC_RELAXED);
+        const uint32_t sp = __atomic_load_n(&g_speed, __ATOMIC_RELAXED);
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
         if (__atomic_load_n(&g_tseq, __ATOMIC_RELAXED) == s) {
-            return (p ? pr : raw) - off;
+            /* raw read before a new anchor: the anchor's time */
+            return p ? pg : ag + (raw > ar ? raw - ar : 0) * sp;
         }
     }
+}
+
+/* The writer's side: the guest's CPU, under the seqlock. */
+static uint64_t guest_at(uint64_t raw)
+{
+    return g_tpaused ? g_tpause_guest : g_ag + (raw > g_ar ? raw - g_ar : 0) * g_speed;
 }
 
 static void time_write(bool paused)
@@ -110,9 +122,11 @@ static void time_write(bool paused)
     const uint64_t raw = raw_ns();
     __atomic_fetch_add(&g_tseq, 1, __ATOMIC_ACQ_REL);
     if (paused) {
+        __atomic_store_n(&g_tpause_guest, guest_at(raw), __ATOMIC_RELAXED);
         __atomic_store_n(&g_tpause_raw, raw, __ATOMIC_RELAXED);
     } else {
-        __atomic_store_n(&g_off, g_off + (raw - g_tpause_raw), __ATOMIC_RELAXED);
+        __atomic_store_n(&g_ag, g_tpause_guest, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_ar, raw, __ATOMIC_RELAXED);
     }
     __atomic_store_n(&g_tpaused, paused, __ATOMIC_RELAXED);
     __atomic_fetch_add(&g_tseq, 1, __ATOMIC_RELEASE);
@@ -126,9 +140,26 @@ void nc_ke_pause_begin(void)
 
 uint64_t nc_ke_pause_end(void)
 {
-    const uint64_t was = g_off;
     time_write(false);
-    return g_off - was;
+    return g_ar - g_tpause_raw;
+}
+
+void nc_ke_set_speed(unsigned speed)
+{
+    speed = speed < 1 ? 1 : speed;
+    if (speed == g_speed) {
+        return;
+    }
+    const uint64_t raw = raw_ns();
+    __atomic_fetch_add(&g_tseq, 1, __ATOMIC_ACQ_REL);
+    if (!g_tpaused) {
+        /* from now on at the new speed, the guest's time where it is */
+        __atomic_store_n(&g_ag, guest_at(raw), __ATOMIC_RELAXED);
+        __atomic_store_n(&g_ar, raw, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&g_speed, speed, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_tseq, 1, __ATOMIC_RELEASE);
+    g_entry_ns = 0;
 }
 
 void nc_ke_state(uint64_t *boot_ns, uint64_t *time_offset, uint64_t *guest_ns)
@@ -145,7 +176,8 @@ void nc_ke_state_set(uint64_t boot_ns, uint64_t time_offset, uint64_t guest_ns)
     g_time_offset = time_offset;
     const uint64_t raw = raw_ns();
     __atomic_fetch_add(&g_tseq, 1, __ATOMIC_ACQ_REL);
-    __atomic_store_n(&g_off, raw - guest_ns, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_ag, guest_ns, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_ar, raw, __ATOMIC_RELAXED);
     __atomic_store_n(&g_tpause_raw, raw, __ATOMIC_RELAXED);
     __atomic_store_n(&g_tpaused, false, __ATOMIC_RELAXED);
     __atomic_fetch_add(&g_tseq, 1, __ATOMIC_RELEASE);
@@ -154,7 +186,20 @@ void nc_ke_state_set(uint64_t boot_ns, uint64_t time_offset, uint64_t guest_ns)
 
 uint64_t nc_ke_host_ns(uint64_t guest_ns)
 {
-    return guest_ns + __atomic_load_n(&g_off, __ATOMIC_RELAXED);
+    for (;;) {
+        const uint32_t s = __atomic_load_n(&g_tseq, __ATOMIC_ACQUIRE);
+        if (s & 1) {
+            continue;
+        }
+        const uint64_t ag = __atomic_load_n(&g_ag, __ATOMIC_RELAXED);
+        const uint64_t ar = __atomic_load_n(&g_ar, __ATOMIC_RELAXED);
+        const uint32_t sp = __atomic_load_n(&g_speed, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&g_tseq, __ATOMIC_RELAXED) == s) {
+            /* a time already past: the anchor's, due now */
+            return ar + (guest_ns > ag ? guest_ns - ag : 0) / sp;
+        }
+    }
 }
 
 uint64_t nc_ke_now_ns(void)

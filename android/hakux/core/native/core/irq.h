@@ -58,6 +58,12 @@ bool nc_irq_take_work(void);
 void nc_pause_set(bool on);
 bool nc_paused(void);
 void nc_pause_wait(void);
+/* Fast-forward: the guest's time runs speed times real time (1: normal), the
+ * app's from any thread. The guest's CPU takes it up at its next kernel entry
+ * (the kernel's time and RDTSC); the devices that keep time on their own
+ * (vblanks, the APU, AC97) read nc_speed. */
+void nc_speed_request(unsigned speed);
+unsigned nc_speed(void);
 /* Savestates: a device thread that waits in nc_pause_wait registers once
  * (its name for the logs); nc_pause_quiesce waits, paused, until every
  * registered thread is there (false after timeout_ns: *who names one that

@@ -438,7 +438,7 @@ static void *pcm_thread(void *arg)
             nc_pause_wait();                /* the emulation paused: no samples played */
             clock_gettime(CLOCK_MONOTONIC, &next);
         }
-        next.tv_nsec += 5000000; /* 5 ms: 240 frames */
+        next.tv_nsec += 5000000 / nc_speed(); /* 5 ms: 240 frames (fast-forward: sooner) */
         if (next.tv_nsec >= 1000000000) {
             next.tv_nsec -= 1000000000;
             next.tv_sec++;

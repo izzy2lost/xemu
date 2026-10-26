@@ -423,6 +423,9 @@ void nc_ke_time_stale(void);
  * time stands still between the two; _end returns how long that was (ns). */
 void nc_ke_pause_begin(void);
 uint64_t nc_ke_pause_end(void);
+/* The guest's CPU: from now on the guest's time runs speed times the host's
+ * (nc_speed: fast-forward), going on from where it is. */
+void nc_ke_set_speed(unsigned speed);
 /* A time in nc_ke_now_ns's terms on the host's CLOCK_MONOTONIC (a timed
  * wait's deadline): later by the time the emulation was paused. */
 uint64_t nc_ke_host_ns(uint64_t guest_ns);
@@ -434,6 +437,9 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle);
 /* The host cycle counter when the current pause began (RDTSC stood still
  * from there). */
 uint64_t nc_kernel_pause_cycles(void);
+/* RDTSC's fast-forward counts from the next entry on (a pause, a savestate
+ * set the count). */
+void nc_kernel_speed_restart(void);
 /* debug: an x86mmio site's state: 1 hooked, -n dropped (n strikes), 0 none */
 int nc_x86mmio_site_state(uint32_t eip);
 /* Now as NT times: system time (FILETIME) and interrupt time (since boot), 100 ns. */

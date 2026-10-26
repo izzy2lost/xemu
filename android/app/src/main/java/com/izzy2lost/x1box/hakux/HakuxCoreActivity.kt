@@ -64,6 +64,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var discArg = ""
   private var onScreenController: OnScreenController? = null
   private var controlsShown: Boolean? = null
+  private var fastForward = false
   private var fpsView: TextView? = null
   private var shaderLine: TextView? = null
 
@@ -377,8 +378,10 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     val overlay = OnScreenController(this).apply {
       layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
       alpha = settings.controllerOpacity
+      fastForwardAvailable = true
       setLayout(settings.touchLayout)
       onLayoutEdited = { settings.touchLayout = it }
+      onFastForwardChanged = { setFastForward(it) }
     }
     overlay.setControllerListener(OverlayBridge())
     overlay.onMenuButtonTapped = { showMenu() }
@@ -387,6 +390,13 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     router = HakuxPadRouter(ControllerRemap.load(this)) { b, a, lx, ly, rx, ry -> nativeSetPad(0, b, a, lx, ly, rx, ry) }
     (getSystemService(Context.INPUT_SERVICE) as InputManager).registerInputDeviceListener(this, null)
     updateControllerVisibility()
+  }
+
+  /** Fast-forward on or off: the overlay's button or the menu's, kept in step. */
+  private fun setFastForward(on: Boolean) {
+    fastForward = on
+    nativeSetSpeed(if (on) FAST_FORWARD_SPEED else 1)
+    onScreenController?.fastForward = on
   }
 
   /** The controls show while no gamepad is attached, unless the menu said otherwise. */
@@ -514,6 +524,10 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       controlsShown = !shown
       updateControllerVisibility()
     }
+    // The menu's too: with the touch controls hidden (a gamepad) the button is gone.
+    val speed = Spec(getString(if (fastForward) R.string.in_game_menu_normal_speed else R.string.in_game_menu_fast_forward)) {
+      setFastForward(!fastForward)
+    }
     val remap = Spec(getString(R.string.in_game_menu_remap_controller)) {
       val done = holdPause()
       ControllerRemap.showEditor(
@@ -535,6 +549,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       orientation = LinearLayout.VERTICAL
       setPadding((20 * dp).toInt(), (12 * dp).toInt(), (20 * dp).toInt(), 0)
       row(this, resume, touch)
+      row(this, speed)
       row(this, remap, layout)
       /* savestates: the core has them for push-buffer titles */
       if (nativeStatesAvailable()) row(this, save, load)
@@ -847,6 +862,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
         OnScreenController.Button.BACK -> bit(PAD_BACK, down)
         OnScreenController.Button.LEFT_STICK_BUTTON -> bit(PAD_LTHUMB, down)
         OnScreenController.Button.RIGHT_STICK_BUTTON -> bit(PAD_RTHUMB, down)
+        OnScreenController.Button.FAST_FORWARD -> {} /* the view keeps it (onFastForwardChanged) */
       }
     }
 
@@ -887,6 +903,9 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     private const val FATAL_BOOT = 5
     private const val FATAL_DISC = 6
 
+    /** Fast-forward's speed: the game's time at this many times real time. */
+    private const val FAST_FORWARD_SPEED = 2
+
     private const val POLL_MS = 500L
     private const val RUMBLE_MS = 50L
     private const val RELAUNCH_COPY_MS = 1000L
@@ -911,6 +930,8 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     @JvmStatic external fun nativeGetRumble(player: Int): Int
     /** The emulation paused (onPause, a menu) or resumed. */
     @JvmStatic external fun nativeSetPaused(paused: Boolean)
+    /** Fast-forward: the game runs speed times real time, 1 normal. */
+    @JvmStatic external fun nativeSetSpeed(speed: Int)
     /** Saves the running game to path (not on the UI thread): null, or why it couldn't. */
     @JvmStatic external fun nativeSaveState(path: String): String?
     /** Whether the savestate at path can load into this game: null, or why not. */

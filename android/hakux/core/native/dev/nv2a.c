@@ -316,13 +316,14 @@ plain:
     switch (off) {
     case NV_PMC_INTR_0:
         return pmc_intr();
-    case NV_PTIMER_TIME_0:
-        return (uint32_t)now_ns() & ~0x1Fu;
+    case NV_PTIMER_TIME_0: /* the guest's time: fast-forward runs it faster */
+        return (uint32_t)nc_ke_now_ns() & ~0x1Fu;
     case NV_PTIMER_TIME_1:
-        return (uint32_t)(now_ns() >> 32) & 0x1FFFFFFFu;
+        return (uint32_t)(nc_ke_now_ns() >> 32) & 0x1FFFFFFFu;
     case NV_PCRTC_RASTER: { /* the line since the last vblank */
+        const uint64_t frame = g_frame_ns / nc_speed();
         const uint64_t since = now_ns() - __atomic_load_n(&g_last_vblank_ns, __ATOMIC_ACQUIRE);
-        return (uint32_t)((since % g_frame_ns) * LINES / g_frame_ns);
+        return (uint32_t)((since % frame) * LINES / frame);
     }
     default:
         break;
@@ -564,6 +565,10 @@ void nc_dev_nv2a_display_pickup(uint64_t ns)
 static uint64_t next_vblank(uint64_t prev)
 {
     const uint64_t frame = __atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
+    const unsigned sp = nc_speed();
+    if (sp > 1) {
+        return prev + frame / sp;           /* fast-forward: free running, faster */
+    }
     const uint64_t vs = __atomic_load_n(&g_disp_vsync_ns, __ATOMIC_ACQUIRE);
     const uint64_t pd = __atomic_load_n(&g_disp_period_ns, __ATOMIC_RELAXED);
     if (!vs || !pd || now_ns() - vs > VSYNC_STALE) {

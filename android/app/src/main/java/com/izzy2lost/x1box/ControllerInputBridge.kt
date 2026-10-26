@@ -206,6 +206,7 @@ class ControllerInputBridge : OnScreenController.ControllerListener {
       OnScreenController.Button.RIGHT_STICK_BUTTON -> KeyEvent.KEYCODE_BUTTON_THUMBR
       OnScreenController.Button.WHITE -> KeyEvent.KEYCODE_BUTTON_L1
       OnScreenController.Button.BLACK -> KeyEvent.KEYCODE_BUTTON_R1
+      OnScreenController.Button.FAST_FORWARD -> KeyEvent.KEYCODE_UNKNOWN /* never sent: the view keeps it */
     }
   }
 }
