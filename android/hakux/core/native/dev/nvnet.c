@@ -33,6 +33,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -89,6 +92,9 @@ typedef struct NvNet {
 } NvNet;
 
 static NvNet g_net;
+/* debug: debug.hakux.nvnet.trace 1 (or NC_NVNET_TRACE): the guest's register accesses, the first few thousand */
+static int g_trace;
+#define TRACE(...) do { if (g_trace > 0) { g_trace--; nc_log("hakuX-native-nvnet", __VA_ARGS__); } } while (0)
 static char g_lan[96];                  /* "bind_ip:port,remote_ip:port" (nc_dev_nvnet_set_lan) */
 
 static uint64_t now_ns(void)
@@ -507,6 +513,7 @@ static uint64_t nvnet_read(void *opaque, uint32_t off, unsigned size)
     }
     pthread_mutex_lock(&s->lock);
     const uint32_t v = get_reg_ext(s, off, size);
+    TRACE("rd%u %03x -> %08x", size, off, v);
     pthread_mutex_unlock(&s->lock);
     return v;
 }
@@ -524,6 +531,7 @@ static void nvnet_write(void *opaque, uint32_t off, uint64_t val64, unsigned siz
         nc_log("hakuX-native-nvnet", "the title's network stack drives the controller (%03x <- %08x)", off, val);
     }
     pthread_mutex_lock(&s->lock);
+    TRACE("wr%u %03x <- %08x", size, off, val);
     switch (off) {
     case NVNET_MDIO_ADDR:
         set_reg_ext(s, off, val, size);
@@ -653,6 +661,12 @@ void nc_dev_nvnet_init(NcVm *vm)
 {
     NvNet *s = &g_net;
     pthread_mutex_init(&s->lock, NULL);
+    char v[92] = "";
+#ifdef __ANDROID__
+    __system_property_get("debug.hakux.nvnet.trace", v);
+#endif
+    const char *e = getenv("NC_NVNET_TRACE");
+    g_trace = (v[0] == '1' || (e && *e == '1')) ? 4000 : 0;
     s->vm = vm;
     s->sock = g_lan[0] ? open_wire(s) : -1;
     reset(s);
