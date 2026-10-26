@@ -931,8 +931,19 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
     NcFile *nf = NULL;
 
     if (dev == -2) {
-        nc_log("hakuX-native-io", "open %s: unknown device", path);
-        return STATUS_OBJECT_PATH_NOT_FOUND;
+        /* As NT: a name straight in an object directory that isn't there
+         * ("\??\simpletree_leavesc256.dds", a bare file name GTA III's loader
+         * tries first) is a missing name; only a missing directory along the
+         * way is a missing path. GTA takes the second for a bad disc. */
+        const char *leaf = NULL;
+        if (!strncasecmp(path, "\\??\\", 4)) {
+            leaf = path + 4;
+        } else if (!strncasecmp(path, "\\Device\\", 8)) {
+            leaf = path + 8;
+        }
+        const bool lone = leaf && *leaf && !strchr(leaf, '\\');
+        nc_log("hakuX-native-io", "open %s: unknown device%s", path, lone ? " (no such name)" : "");
+        return lone ? STATUS_OBJECT_NAME_NOT_FOUND : STATUS_OBJECT_PATH_NOT_FOUND;
     }
     if (dev == -1) {
         if (disposition != FILE_OPEN && disposition != FILE_OPEN_IF) {
