@@ -296,6 +296,21 @@ static uint64_t RtlNtStatusToDosError(NcKernel *k, NcFrame *f, const uint32_t *a
 
 uint32_t nc_rtl_status_to_dos(uint32_t status)
 {
+    /* NT's own rules first: a customer status is its own code; 0xD is 0xC; a
+     * Win32 error carried in a status (0xC001xxxx, or HRESULT_FROM_WIN32's
+     * 0x8007xxxx) is that error. XNet's sockets hand Winsock errors through
+     * here as 0x8007xxxx: WSAEWOULDBLOCK (0x80072733) must come out 10035, or
+     * Halo takes a non-blocking connect for a failure and can't create a
+     * System Link game. */
+    if (!status || (status & 0x20000000u)) {
+        return status;
+    }
+    if ((status & 0xF0000000u) == 0xD0000000u) {
+        status &= ~0x10000000u;
+    }
+    if ((status >> 16) == 0xC001u || (status >> 16) == 0x8007u) {
+        return status & 0xFFFFu;
+    }
     /* every status the kernel returns (Windows' mapping) */
     static const uint32_t map[][2] = {
         {0x00000000u, 0},   {0x00000102u, 258}, {0x00000103u, 997}, {0x80000005u, 234}, {0x80000006u, 18},
