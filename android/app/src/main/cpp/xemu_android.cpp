@@ -1100,7 +1100,7 @@ static SetupFiles SyncSetupFiles() {
       env, activity, "setting_surface_scale",
       GetPrefInt(env, activity, "surface_scale", 1));
   if (ds.surface_scale < 1) ds.surface_scale = 1;
-  if (ds.surface_scale > 4) ds.surface_scale = 4;
+  if (ds.surface_scale > 6) ds.surface_scale = 6;
   ds.vsync = GetPrefBool(
       env, activity, "setting_vsync",
       GetPrefBool(env, activity, "vsync", false));

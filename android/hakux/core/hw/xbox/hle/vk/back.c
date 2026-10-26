@@ -829,7 +829,7 @@ uint32_t g_hle_rscale = 1;
 
 static void cmd_device(const HleCmdDevice *c, bool reset)
 {
-    uint32_t scale = MIN(MAX(hle_host_render_scale(), 1), 4);
+    uint32_t scale = MIN(MAX(hle_host_render_scale(), 1), 6);
     /* A Reset replaces only the device's surfaces (the front end destroys the
      * old ones by OBJ_DESTROY): the title's own render targets and textures
      * keep their images. A new scale resizes every image. */

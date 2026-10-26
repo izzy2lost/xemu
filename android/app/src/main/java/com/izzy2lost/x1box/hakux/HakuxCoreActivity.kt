@@ -96,9 +96,9 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()?.let {
       args += "version=$it"
     }
-    /* The app's own display settings: the resolution scale (1-3x) and the
+    /* The app's own display settings: the resolution scale (1-6x) and the
      * picture's shape (0 stretch, 1 4:3, 2 16:9). */
-    val scale = setting("setting_surface_scale")?.toIntOrNull()?.coerceIn(1, 4) ?: 1
+    val scale = setting("setting_surface_scale")?.toIntOrNull()?.coerceIn(1, 6) ?: 1
     args += "scale=$scale"
     args += "aspect=" + when (setting("setting_display_mode")?.toIntOrNull() ?: 0) {
       1 -> "4:3"

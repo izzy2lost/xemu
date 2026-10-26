@@ -123,7 +123,7 @@ static int g_render_scale = 1;
 
 void nc_hle_set_render_scale(int scale)
 {
-    g_render_scale = scale < 1 ? 1 : scale > 4 ? 4 : scale;
+    g_render_scale = scale < 1 ? 1 : scale > 6 ? 6 : scale;
 }
 
 int hle_host_render_scale(void)

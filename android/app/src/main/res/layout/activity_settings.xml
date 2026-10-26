@@ -197,7 +197,11 @@
               android:layout_width="0dp"
               android:layout_height="wrap_content"
               android:layout_weight="1"
-              android:text="@string/settings_resolution_scale_1x" />
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
+              android:text="@string/settings_resolution_scale_1x_short" />
 
             <com.google.android.material.button.MaterialButton
               android:id="@+id/btn_scale_2x"
@@ -205,7 +209,11 @@
               android:layout_width="0dp"
               android:layout_height="wrap_content"
               android:layout_weight="1"
-              android:text="@string/settings_resolution_scale_2x" />
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
+              android:text="@string/settings_resolution_scale_2x_short" />
 
             <com.google.android.material.button.MaterialButton
               android:id="@+id/btn_scale_3x"
@@ -213,7 +221,47 @@
               android:layout_width="0dp"
               android:layout_height="wrap_content"
               android:layout_weight="1"
-              android:text="@string/settings_resolution_scale_3x" />
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
+              android:text="@string/settings_resolution_scale_3x_short" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_scale_4x"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
+              android:text="@string/settings_resolution_scale_4x_short" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_scale_5x"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
+              android:text="@string/settings_resolution_scale_5x_short" />
+
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_scale_6x"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:minWidth="0dp"
+              android:paddingStart="0dp"
+              android:paddingEnd="0dp"
+              android:maxLines="1"
+              android:text="@string/settings_resolution_scale_6x_short" />
 
           </com.google.android.material.button.MaterialButtonToggleGroup>
 

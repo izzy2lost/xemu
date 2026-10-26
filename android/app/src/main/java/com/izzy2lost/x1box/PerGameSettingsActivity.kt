@@ -94,6 +94,9 @@ class PerGameSettingsActivity : AppCompatActivity() {
           SettingOption("1", R.string.settings_resolution_scale_1x),
           SettingOption("2", R.string.settings_resolution_scale_2x),
           SettingOption("3", R.string.settings_resolution_scale_3x),
+          SettingOption("4", R.string.settings_resolution_scale_4x),
+          SettingOption("5", R.string.settings_resolution_scale_5x),
+          SettingOption("6", R.string.settings_resolution_scale_6x),
         ),
       ),
       SettingField(

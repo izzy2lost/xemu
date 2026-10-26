@@ -181,6 +181,15 @@
   <string name="settings_resolution_scale_1x">1x (Native 480p)</string>
   <string name="settings_resolution_scale_2x">2x (960p)</string>
   <string name="settings_resolution_scale_3x">3x (1440p)</string>
+  <string name="settings_resolution_scale_4x">4x (1920p)</string>
+  <string name="settings_resolution_scale_5x">5x (2400p)</string>
+  <string name="settings_resolution_scale_6x">6x (2880p)</string>
+  <string name="settings_resolution_scale_1x_short">1x</string>
+  <string name="settings_resolution_scale_2x_short">2x</string>
+  <string name="settings_resolution_scale_3x_short">3x</string>
+  <string name="settings_resolution_scale_4x_short">4x</string>
+  <string name="settings_resolution_scale_5x_short">5x</string>
+  <string name="settings_resolution_scale_6x_short">6x</string>
 
   <string name="settings_section_performance">Performance</string>
   <string name="settings_tcg_thread">CPU Threading Mode</string>

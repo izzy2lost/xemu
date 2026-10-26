@@ -14,7 +14,7 @@ int hle_tl_init(void (*on_complete)(uint64_t completed));
 VkSemaphore hle_tl_sem(void);
 void hle_tl_signaled(uint64_t value);
 
-/* Resolution scale (the surface_scale setting, 1-4, read at DEVICE_CREATE):
+/* Resolution scale (the surface_scale setting, 1-6, read at DEVICE_CREATE):
  * every render target and depth surface is rendered at d.w * scale by
  * d.h * scale. Guest-facing values stay in guest pixels (D3D viewports,
  * clear rects, readbacks, visibility counts) and are converted where the

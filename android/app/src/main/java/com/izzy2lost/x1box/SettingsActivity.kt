@@ -447,6 +447,9 @@ class SettingsActivity : AppCompatActivity() {
     when (scale) {
       2    -> toggleScale.check(R.id.btn_scale_2x)
       3    -> toggleScale.check(R.id.btn_scale_3x)
+      4    -> toggleScale.check(R.id.btn_scale_4x)
+      5    -> toggleScale.check(R.id.btn_scale_5x)
+      6    -> toggleScale.check(R.id.btn_scale_6x)
       else -> toggleScale.check(R.id.btn_scale_1x)
     }
 
@@ -583,6 +586,9 @@ class SettingsActivity : AppCompatActivity() {
       val selectedScale = when (toggleScale.checkedButtonId) {
         R.id.btn_scale_2x -> 2
         R.id.btn_scale_3x -> 3
+        R.id.btn_scale_4x -> 4
+        R.id.btn_scale_5x -> 5
+        R.id.btn_scale_6x -> 6
         else              -> 1
       }
       val selectedThread = when (toggleThread.checkedButtonId) {
@@ -1233,7 +1239,7 @@ class SettingsActivity : AppCompatActivity() {
     parseTomlBoolean(sections, "display.window", "vsync")
       ?.let { editor.putBoolean("setting_vsync", it) }
     parseTomlInt(sections, "display.quality", "surface_scale")
-      ?.coerceIn(1, 3)
+      ?.coerceIn(1, 6)
       ?.let { editor.putInt("setting_surface_scale", it) }
     parseTomlBoolean(sections, "audio", "use_dsp")
       ?.let { editor.putBoolean("setting_use_dsp", it) }
