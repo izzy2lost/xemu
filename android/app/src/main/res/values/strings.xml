@@ -9,6 +9,8 @@
   <string name="setup_back">Back</string>
   <string name="setup_next">Next</string>
   <string name="setup_finish">Finish</string>
+  <string name="setup_skip">Skip</string>
+  <string name="setup_subtitle_hakux">The hakuX core only needs your games folder. The boot ROM, BIOS and hard disk are for the xemu core: skip them if you won\'t use it.</string>
 
   <string name="setup_mcpx_title">MCPX Boot ROM</string>
   <string name="setup_mcpx_body">Choose the MCPX boot ROM file for your console. The wizard verifies the required 512-byte mcpx_1.0.bin MD5.</string>
@@ -116,7 +118,7 @@
   <string name="settings_filtering_linear">Linear</string>
   <string name="settings_filtering_nearest">Nearest</string>
   <string name="settings_vsync">VSync</string>
-  <string name="frontend_launch_setup_required">Finish core setup before launching from a frontend.</string>
+  <string name="xemu_files_required">This game runs in xemu, which needs the MCPX boot ROM, flash ROM and hard disk.</string>
   <string name="frontend_launch_unresolved">Could not access that game from the frontend intent. Pick the same folder in x1box first, or use a content URI.</string>
   <string name="settings_gpu_driver_title">GPU Driver</string>
   <string name="settings_gpu_driver_desc">Use a custom Vulkan driver for better performance or compatibility on Adreno devices.</string>
@@ -473,7 +475,6 @@
   <string name="save_manager_storage">E: %1$s free of %2$s · %3$d games</string>
   <string name="save_manager_empty">No game saves on this HDD yet.
 Play a game and save, or import a save backup ZIP.</string>
-  <string name="save_manager_no_hdd">No local HDD image is configured. Set one up in Settings first.</string>
   <string name="save_manager_read_failed">Could not read the HDD: %1$s</string>
   <string name="save_manager_title_details">%1$s · %2$s · %3$s</string>
   <plurals name="save_manager_save_count">

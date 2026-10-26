@@ -55,6 +55,7 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
             android:layout_marginTop="6dp"
+            android:gravity="center"
             android:text="@string/setup_subtitle"
             android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
             android:textColor="@color/xemu_text_muted" />

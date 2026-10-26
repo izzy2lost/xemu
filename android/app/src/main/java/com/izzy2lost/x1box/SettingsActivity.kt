@@ -423,7 +423,7 @@ class SettingsActivity : AppCompatActivity() {
     updateEmulatorFilesActionState()
 
     // Load current values
-    if (prefs.getString(HakuxLaunch.PREF_CORE, HakuxLaunch.CORE_XEMU) == HakuxLaunch.CORE_HAKUX) {
+    if (HakuxLaunch.globalCore(prefs) == HakuxLaunch.CORE_HAKUX) {
       toggleCore.check(R.id.btn_core_hakux)
     } else {
       toggleCore.check(R.id.btn_core_xemu)

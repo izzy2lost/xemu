@@ -45,6 +45,9 @@ class LauncherActivity : Activity() {
     val hasHdd = hasLocalFile(hddPath) || (hddUri != null && hasPersistedReadPermission(hddUri))
     val hasDvd = hasLocalFile(dvdPath) || (dvdUri != null && hasPersistedReadPermission(dvdUri))
     val hasGamesFolder = gamesFolderUri != null && hasPersistedReadPermission(gamesFolderUri)
+    // Only xemu boots the MCPX ROM, flash and hard disk; the hakuX core needs none of them.
+    val hasXemuFiles = hasMcpx && hasFlash && hasHdd
+    val needsXemuFiles = HakuxLaunch.globalCore(prefs) == HakuxLaunch.CORE_XEMU
 
     val editor = prefs.edit()
     var clearedCore = false
@@ -119,20 +122,42 @@ class LauncherActivity : Activity() {
       }
       launchEditor.commit()
 
-      if (hasMcpx && hasFlash && hasHdd) {
+      // The game's core, as from the library (GameLibraryActivity.startGame).
+      val hakuxDisc = HakuxLaunch.discUri(frontendLaunch.dvdUri?.toString(), frontendLaunch.dvdPath)
+      if (hakuxDisc != null && HakuxLaunch.selectedCore(this) == HakuxLaunch.CORE_HAKUX) {
+        DebugLog.i(TAG) { "Frontend launch resolved via ${frontendLaunch.source} (hakuX)" }
+        HakuxHddSync.async({ HakuxHddSync.exportBeforeRun(this) }) { ok ->
+          runOnUiThread {
+            if (!ok) {
+              Toast.makeText(this, R.string.hakux_sync_failed, Toast.LENGTH_LONG).show()
+            }
+            HakuxLaunch.launch(this, hakuxDisc)
+          }
+        }
+        return
+      }
+
+      if (hasXemuFiles) {
         DebugLog.i(TAG) { "Frontend launch resolved via ${frontendLaunch.source}" }
+        if (HakuxHddSync.pending(this)) {
+          // a hakuX run's saves go back into the image before xemu opens it
+          HakuxHddSync.async({ HakuxHddSync.importAfterRun(this) }) {
+            runOnUiThread { EmulationProcessHandoff.launch(this, Intent(this, MainActivity::class.java)) }
+          }
+          return
+        }
         EmulationProcessHandoff.launch(this, Intent(this, MainActivity::class.java))
         return
       }
 
-      DebugLog.i(TAG) { "Frontend launch queued, but core setup is incomplete" }
-      Toast.makeText(this, R.string.frontend_launch_setup_required, Toast.LENGTH_SHORT).show()
+      DebugLog.i(TAG) { "Frontend launch queued, but xemu's files are missing" }
+      Toast.makeText(this, R.string.xemu_files_required, Toast.LENGTH_LONG).show()
     } else if (hasExternalLaunchPayload(intent)) {
       DebugLog.w(TAG) { "Frontend intent received but no accessible game target was resolved" }
       Toast.makeText(this, R.string.frontend_launch_unresolved, Toast.LENGTH_LONG).show()
     }
 
-    val needsSetup = !setupComplete || !hasMcpx || !hasFlash || !hasHdd || !hasGamesFolder
+    val needsSetup = !setupComplete || !hasGamesFolder || (needsXemuFiles && !hasXemuFiles)
     val next = if (needsSetup) SetupWizardActivity::class.java else GameLibraryActivity::class.java
 
     startActivity(Intent(this, next))

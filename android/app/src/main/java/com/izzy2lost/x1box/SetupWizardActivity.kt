@@ -26,6 +26,9 @@ class SetupWizardActivity : AppCompatActivity() {
 
     /* Xbox flash/BIOS dumps are 256 KB, 512 KB or 1 MB. */
     private val VALID_FLASH_SIZE_BYTES = setOf(262144L, 524288L, 1048576L)
+
+    /** Ask for xemu's files even though the global core is hakuX (a game set to xemu). */
+    const val EXTRA_REQUIRE_XEMU_FILES = "requireXemuFiles"
   }
 
   private data class FileFingerprint(
@@ -62,6 +65,8 @@ class SetupWizardActivity : AppCompatActivity() {
   private var hddPath: String? = null
   private var currentStep = 0
   private var isCopying = false
+  /* The MCPX, flash and hard disk steps are only for xemu: with the hakuX core they can be skipped. */
+  private var requireXemuFiles = true
 
   private val mcpxExts = setOf("bin", "rom", "img")
   private val flashExts = setOf("bin", "rom", "img")
@@ -165,7 +170,10 @@ class SetupWizardActivity : AppCompatActivity() {
     hddUri = prefs.getString("hddUri", null)?.let(Uri::parse)
     gamesFolderUri = prefs.getString("gamesFolderUri", null)?.let(Uri::parse)
 
-    val coreReady = isFileReady(mcpxPath) && isFileReady(flashPath) && isFileReady(hddPath)
+    requireXemuFiles = intent.getBooleanExtra(EXTRA_REQUIRE_XEMU_FILES, false) ||
+      HakuxLaunch.globalCore(prefs) == HakuxLaunch.CORE_XEMU
+    val coreReady =
+      !requireXemuFiles || isFileReady(mcpxPath) && isFileReady(flashPath) && isFileReady(hddPath)
     val gamesFolderReady = hasGamesFolderReady()
     if (prefs.getBoolean("setup_complete", false) && coreReady && gamesFolderReady) {
       goToLibrary()
@@ -183,6 +191,10 @@ class SetupWizardActivity : AppCompatActivity() {
       if (target > 0) {
         setupCard.minimumHeight = target
       }
+    }
+
+    if (!requireXemuFiles) {
+      findViewById<TextView>(R.id.setup_subtitle).setText(R.string.setup_subtitle_hakux)
     }
 
     pageMcpx = findViewById(R.id.page_mcpx)
@@ -264,8 +276,20 @@ class SetupWizardActivity : AppCompatActivity() {
 
   private fun updateButtons() {
     btnBack.visibility = if (currentStep == 0) View.INVISIBLE else View.VISIBLE
-    btnNext.text =
-      getString(if (currentStep == pages.size - 1) R.string.setup_finish else R.string.setup_next)
+    val stepFile = when (currentStep) {
+      0 -> mcpxPath
+      1 -> flashPath
+      2 -> hddPath
+      else -> null
+    }
+    val skipping = currentStep < pages.size - 1 && !isFileReady(stepFile)
+    btnNext.text = getString(
+      when {
+        currentStep == pages.size - 1 -> R.string.setup_finish
+        skipping && !requireXemuFiles -> R.string.setup_skip
+        else -> R.string.setup_next
+      }
+    )
     if (isCopying) {
       btnNext.isEnabled = false
       btnBack.isEnabled = false
@@ -274,10 +298,8 @@ class SetupWizardActivity : AppCompatActivity() {
     btnBack.isEnabled = true
     btnNext.isEnabled =
       when (currentStep) {
-        0 -> isFileReady(mcpxPath)
-        1 -> isFileReady(flashPath)
-        2 -> isFileReady(hddPath)
-        else -> hasGamesFolderReady()
+        pages.size - 1 -> hasGamesFolderReady()
+        else -> !skipping || !requireXemuFiles
       }
   }
 

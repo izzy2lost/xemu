@@ -125,16 +125,14 @@ class SaveManagerActivity : AppCompatActivity() {
     super.onDestroy()
   }
 
-  private fun resolveHddFile(): File? =
+  /* xemu's HDD image, or without one the hakuX core's E: folder. */
+  private fun resolveDrive(): File =
     prefs.getString("hddPath", null)?.let(::File)?.takeIf { it.isFile }
+      ?: HakuxHddSync.drive(this)
 
   /* Runs [work] off the main thread with the controls disabled, then [done] on it. */
   private fun <T> runBusy(work: (File) -> T, done: (Result<T>) -> Unit) {
-    val hddFile = resolveHddFile()
-    if (hddFile == null) {
-      showNoHdd()
-      return
-    }
+    val hddFile = resolveDrive()
     if (busy) {
       return
     }
@@ -156,15 +154,6 @@ class SaveManagerActivity : AppCompatActivity() {
     busyBar.visibility = if (value) View.VISIBLE else View.INVISIBLE
     importButton.isEnabled = !value
     exportAllButton.isEnabled = !value
-  }
-
-  private fun showNoHdd() {
-    storageText.text = ""
-    storageBar.visibility = View.GONE
-    importButton.isEnabled = false
-    exportAllButton.isEnabled = false
-    emptyText.setText(R.string.save_manager_no_hdd)
-    emptyText.visibility = View.VISIBLE
   }
 
   private fun refresh() {

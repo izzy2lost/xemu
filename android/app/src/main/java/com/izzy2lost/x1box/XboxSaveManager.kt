@@ -2,6 +2,7 @@ package com.izzy2lost.x1box
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.StatFs
 import java.io.BufferedInputStream
 import java.io.Closeable
 import java.io.File
@@ -14,8 +15,10 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /**
- * Game saves on the HDD image's E: partition, read and written in place
- * through the FATX code in xemu_fatx_import.c.
+ * Game saves on the E: partition, read and written in place: the HDD image's
+ * through the FATX code in xemu_fatx_import.c, or, with no image, the hakuX
+ * core's E: folder (HakuxHddSync.drive) as plain files. Each function's drive
+ * is the one or the other: an image file or that folder.
  *
  * The dashboard's layout: E:\UDATA\<title id>\ holds a game's saves, one
  * folder each, beside TitleMeta.xbx (the game's name) and TitleImage.xbx (its
@@ -69,13 +72,31 @@ internal object XboxSaveManager {
 
   private class Entry(val name: String, val isDirectory: Boolean, val size: Long, val modifiedMillis: Long)
 
-  private class Volume(hddFile: File, writable: Boolean) : Closeable {
-    private var handle = NativeBridge.nativeOpen(hddFile.absolutePath, writable)
-
-    fun space(): LongArray = NativeBridge.nativeSpace(handle)
+  private interface Volume : Closeable {
+    /** Total and free bytes. */
+    fun space(): LongArray
 
     /** Null when the folder doesn't exist. */
-    fun list(path: String, directorySizes: Boolean = false): List<Entry>? {
+    fun list(path: String, directorySizes: Boolean = false): List<Entry>?
+
+    fun read(path: String): ByteArray
+
+    /** [fatxPath], a file or a folder, copied to [hostPath]. */
+    fun export(fatxPath: String, hostPath: File)
+
+    /** The contents of [hostDir] merged into [fatxDir], replacing files that exist. */
+    fun import(hostDir: File, fatxDir: String)
+
+    /** A file, or a folder and everything in it. */
+    fun remove(path: String)
+  }
+
+  private class FatxVolume(hddFile: File, writable: Boolean) : Volume {
+    private var handle = NativeBridge.nativeOpen(hddFile.absolutePath, writable)
+
+    override fun space(): LongArray = NativeBridge.nativeSpace(handle)
+
+    override fun list(path: String, directorySizes: Boolean): List<Entry>? {
       val lines = NativeBridge.nativeList(handle, path, directorySizes) ?: return null
       return lines.mapNotNull { line ->
         val fields = line.split('\t', limit = 4)
@@ -91,15 +112,15 @@ internal object XboxSaveManager {
       }
     }
 
-    fun read(path: String): ByteArray = NativeBridge.nativeReadFile(handle, path)
+    override fun read(path: String): ByteArray = NativeBridge.nativeReadFile(handle, path)
 
-    fun export(fatxPath: String, hostPath: File) =
+    override fun export(fatxPath: String, hostPath: File) =
       NativeBridge.nativeExport(handle, fatxPath, hostPath.absolutePath)
 
-    fun import(hostDir: File, fatxDir: String) =
+    override fun import(hostDir: File, fatxDir: String) =
       NativeBridge.nativeImport(handle, hostDir.absolutePath, fatxDir)
 
-    fun remove(path: String) = NativeBridge.nativeRemove(handle, path)
+    override fun remove(path: String) = NativeBridge.nativeRemove(handle, path)
 
     override fun close() {
       val open = handle
@@ -108,11 +129,107 @@ internal object XboxSaveManager {
     }
   }
 
+  /**
+   * The hakuX core's E: folder. Names match case-insensitively, as FATX and the
+   * core (kernel/io.c) match them, so "/UDATA/4d530004" finds udata/4D530004.
+   */
+  private class FolderVolume(private val root: File) : Volume {
+
+    /** Null when some part of [path] doesn't exist. */
+    private fun find(path: String): File? {
+      var file = root
+      for (part in path.split('/').filter { it.isNotEmpty() }) {
+        file = file.child(part) ?: return null
+      }
+      return file
+    }
+
+    private fun File.child(name: String): File? =
+      listFiles()?.firstOrNull { it.name.equals(name, ignoreCase = true) }
+
+    override fun space(): LongArray {
+      val stat = StatFs(root.absolutePath)
+      return longArrayOf(stat.totalBytes, stat.availableBytes)
+    }
+
+    override fun list(path: String, directorySizes: Boolean): List<Entry>? {
+      val dir = find(path)?.takeIf { it.isDirectory } ?: return null
+      return dir.listFiles().orEmpty().map { file ->
+        Entry(
+          name = file.name,
+          isDirectory = file.isDirectory,
+          size = when {
+            !file.isDirectory -> file.length()
+            directorySizes -> file.walk().filter { it.isFile }.sumOf { it.length() }
+            else -> 0L
+          },
+          modifiedMillis = file.lastModified(),
+        )
+      }
+    }
+
+    override fun read(path: String): ByteArray =
+      find(path)?.takeIf { it.isFile }?.readBytes() ?: throw IOException("$path not found")
+
+    override fun export(fatxPath: String, hostPath: File) {
+      val source = find(fatxPath) ?: throw IOException("$fatxPath not found")
+      if (source.isDirectory) {
+        hostPath.mkdirs()
+        merge(source, hostPath)
+      } else {
+        copyFile(source, hostPath)
+      }
+    }
+
+    override fun import(hostDir: File, fatxDir: String) {
+      var dir = root
+      for (part in fatxDir.split('/').filter { it.isNotEmpty() }) {
+        dir = dir.child(part) ?: File(dir, part)
+        if (!dir.isDirectory && !dir.mkdir()) {
+          throw IOException("Could not make the folder $fatxDir")
+        }
+      }
+      merge(hostDir, dir)
+    }
+
+    /** [from]'s contents into [into], each name onto the one that matches it there. */
+    private fun merge(from: File, into: File) {
+      for (child in from.listFiles().orEmpty()) {
+        val existing = into.child(child.name)
+        if (child.isDirectory) {
+          val dir = existing ?: File(into, child.name)
+          if (!dir.isDirectory && !dir.mkdir()) {
+            throw IOException("Could not make the folder ${dir.name}")
+          }
+          merge(child, dir)
+        } else {
+          if (existing?.isDirectory == true) {
+            throw IOException("${child.name} is a folder on the drive")
+          }
+          copyFile(child, existing ?: File(into, child.name))
+        }
+      }
+    }
+
+    private fun copyFile(from: File, to: File) {
+      from.copyTo(to, overwrite = true)
+      to.setLastModified(from.lastModified())
+    }
+
+    override fun remove(path: String) {
+      val file = find(path) ?: throw IOException("$path not found")
+      if (!file.deleteRecursively()) {
+        throw IOException("Could not delete $path")
+      }
+    }
+
+    override fun close() {}
+  }
+
   /** Reads every game's saves. [knownTitles] names games whose TitleMeta.xbx is missing. */
   @Throws(IOException::class)
-  fun scan(hddFile: File, knownTitles: Map<Long, XbeMetadataCache.Entry> = emptyMap()): Inventory {
-    requireHdd(hddFile)
-    Volume(hddFile, writable = false).use { volume ->
+  fun scan(drive: File, knownTitles: Map<Long, XbeMetadataCache.Entry> = emptyMap()): Inventory {
+    openVolume(drive, writable = false).use { volume ->
       val space = volume.space()
       val titles = volume.list(UDATA, directorySizes = true).orEmpty()
         .filter { it.isDirectory && TITLE_ID_PATTERN.matches(it.name) }
@@ -206,16 +323,15 @@ internal object XboxSaveManager {
    */
   @Throws(IOException::class)
   fun exportZip(
-    hddFile: File,
+    drive: File,
     titleIds: Collection<String>,
     savePaths: Collection<String>,
     output: OutputStream,
     workDir: File,
   ) {
-    requireHdd(hddFile)
     val stagingRoot = createCleanDir(workDir)
     try {
-      Volume(hddFile, writable = false).use { volume ->
+      openVolume(drive, writable = false).use { volume ->
         for (titleId in titleIds) {
           volume.export("$UDATA/$titleId", File(stagingRoot, "UDATA/$titleId"))
           if (volume.list("$TDATA/$titleId") != null) {
@@ -268,8 +384,7 @@ internal object XboxSaveManager {
    * Returns the title ids imported.
    */
   @Throws(IOException::class)
-  fun importZip(hddFile: File, input: InputStream, workDir: File): List<String> {
-    requireHdd(hddFile)
+  fun importZip(drive: File, input: InputStream, workDir: File): List<String> {
     val extractRoot = createCleanDir(workDir)
     try {
       extractZip(input, extractRoot)
@@ -288,7 +403,7 @@ internal object XboxSaveManager {
         parent.listFiles()?.firstOrNull { it.isDirectory && it.name.equals("TDATA", ignoreCase = true) }
       }
 
-      Volume(hddFile, writable = true).use { volume ->
+      openVolume(drive, writable = true).use { volume ->
         for (dir in titleDirs) {
           volume.import(dir, "$UDATA/${dir.name.lowercase(Locale.ROOT)}")
         }
@@ -356,16 +471,14 @@ internal object XboxSaveManager {
 
   /** Deletes a save. */
   @Throws(IOException::class)
-  fun delete(hddFile: File, save: SaveGame) {
-    requireHdd(hddFile)
-    Volume(hddFile, writable = true).use { volume -> volume.remove(save.fatxPath) }
+  fun delete(drive: File, save: SaveGame) {
+    openVolume(drive, writable = true).use { volume -> volume.remove(save.fatxPath) }
   }
 
   /** Deletes all of a game's saves and its TDATA scratch data. */
   @Throws(IOException::class)
-  fun delete(hddFile: File, title: SaveTitle) {
-    requireHdd(hddFile)
-    Volume(hddFile, writable = true).use { volume ->
+  fun delete(drive: File, title: SaveTitle) {
+    openVolume(drive, writable = true).use { volume ->
       volume.remove(title.fatxPath)
       if (volume.list("$TDATA/${title.titleId}") != null) {
         volume.remove("$TDATA/${title.titleId}")
@@ -378,9 +491,8 @@ internal object XboxSaveManager {
    * [hostRoot]/<name>, emptied first; a folder the image lacks is left empty.
    */
   @Throws(IOException::class)
-  fun exportDirs(hddFile: File, fatxDirs: List<String>, hostRoot: File) {
-    requireHdd(hddFile)
-    Volume(hddFile, writable = false).use { volume ->
+  fun exportDirs(drive: File, fatxDirs: List<String>, hostRoot: File) {
+    openVolume(drive, writable = false).use { volume ->
       for (dir in fatxDirs) {
         val dest = File(hostRoot, dir.trimStart('/'))
         dest.deleteRecursively()
@@ -398,9 +510,8 @@ internal object XboxSaveManager {
    * deleted from it.
    */
   @Throws(IOException::class)
-  fun applyChanges(hddFile: File, imports: List<Pair<File, String>>, removals: List<String>) {
-    requireHdd(hddFile)
-    Volume(hddFile, writable = true).use { volume ->
+  fun applyChanges(drive: File, imports: List<Pair<File, String>>, removals: List<String>) {
+    openVolume(drive, writable = true).use { volume ->
       for ((host, fatx) in imports) {
         volume.import(host, fatx)
       }
@@ -414,10 +525,10 @@ internal object XboxSaveManager {
     }
   }
 
-  private fun requireHdd(hddFile: File) {
-    if (!hddFile.isFile) {
-      throw IOException("No local HDD image is configured.")
-    }
+  private fun openVolume(drive: File, writable: Boolean): Volume = when {
+    drive.isFile -> FatxVolume(drive, writable)
+    drive.isDirectory -> FolderVolume(drive)
+    else -> throw IOException("No local HDD image is configured.")
   }
 
   private fun createCleanDir(dir: File): File {

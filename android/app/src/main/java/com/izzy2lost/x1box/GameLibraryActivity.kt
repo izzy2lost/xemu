@@ -599,7 +599,7 @@ class GameLibraryActivity : AppCompatActivity() {
     // Snapshots belong to the core that made them: xemu's are the whole console,
     // hakuX's its own kernel and GPU, and neither can load the other's. The dialog
     // shows one core's at a time, the selected core's first.
-    var hakux = prefs.getString(HakuxLaunch.PREF_CORE, HakuxLaunch.CORE_XEMU) == HakuxLaunch.CORE_HAKUX
+    var hakux = HakuxLaunch.globalCore(prefs) == HakuxLaunch.CORE_HAKUX
     val pad = (16 * resources.displayMetrics.density).toInt()
     val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     val header = LinearLayout(this).apply {
@@ -2015,8 +2015,9 @@ class GameLibraryActivity : AppCompatActivity() {
       .commit()
 
     // The game's core (its per-game override, else the global choice). The
-    // hakuX core reads its disc from the intent; a local path has no URI to give it.
-    if (dvdUri != null && HakuxLaunch.selectedCore(this) == HakuxLaunch.CORE_HAKUX) {
+    // hakuX core reads its disc from the intent, a local path as a file:// URI.
+    val hakuxDisc = HakuxLaunch.discUri(dvdUri, dvdPath)
+    if (hakuxDisc != null && HakuxLaunch.selectedCore(this) == HakuxLaunch.CORE_HAKUX) {
       // One hard disk for both cores: the image's saves go to the hakuX core's
       // folder first (HakuxHddSync), and come back when it returns.
       HakuxHddSync.async({ HakuxHddSync.exportBeforeRun(this) }) { ok ->
@@ -2024,9 +2025,20 @@ class GameLibraryActivity : AppCompatActivity() {
           if (!ok) {
             Toast.makeText(this, R.string.hakux_sync_failed, Toast.LENGTH_LONG).show()
           }
-          HakuxLaunch.launch(this, dvdUri)
+          HakuxLaunch.launch(this, hakuxDisc)
         }
       }
+      return
+    }
+
+    // Setup lets a hakuX user skip xemu's boot ROM, flash and hard disk; a game
+    // set to xemu sends them back for those first.
+    if (!HakuxLaunch.xemuFilesReady(this)) {
+      Toast.makeText(this, R.string.xemu_files_required, Toast.LENGTH_LONG).show()
+      startActivity(
+        Intent(this, SetupWizardActivity::class.java)
+          .putExtra(SetupWizardActivity.EXTRA_REQUIRE_XEMU_FILES, true)
+      )
       return
     }
 

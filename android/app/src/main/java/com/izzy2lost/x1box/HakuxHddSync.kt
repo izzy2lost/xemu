@@ -34,6 +34,9 @@ object HakuxHddSync {
   private fun partition1(context: Context) = File(hddRoot(context), "Partition1")
   private fun manifestFile(context: Context) = File(hddRoot(context), MANIFEST)
 
+  /** The hakuX core's E: (where its saves stay when there is no image), made if missing. */
+  fun drive(context: Context): File = partition1(context).apply { mkdirs() }
+
   private fun hddFile(context: Context): File? =
     context.getSharedPreferences("x1box_prefs", Context.MODE_PRIVATE)
       .getString("hddPath", null)?.let(::File)?.takeIf { it.isFile }
