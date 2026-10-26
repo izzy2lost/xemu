@@ -68,11 +68,30 @@ val buildHakuxCore by tasks.registering(Exec::class) {
 }
 
 /* hakuX's mods (android/hakux/mods: XBE patches per disc release, mods/README.md),
- * packed as assets/mods for the core's mods menu; the README stays out. */
-val hakuxModAssets = layout.buildDirectory.dir("hakux-modAssets").get().asFile
-val syncHakuxMods by tasks.registering(Sync::class) {
-  from(rootProject.file("hakux/mods")) { exclude("README.md") }
-  into(File(hakuxModAssets, "mods"))
+ * packed as assets/mods for the core's mods menu; the README stays out. A generated
+ * assets folder of each variant (androidComponents below), so every task that reads
+ * assets (merging, lint) depends on it. */
+abstract class SyncHakuxModsTask : DefaultTask() {
+  @get:InputDirectory
+  abstract val modsDir: DirectoryProperty
+
+  @get:OutputDirectory
+  abstract val outputDir: DirectoryProperty
+
+  @get:Inject
+  abstract val fs: FileSystemOperations
+
+  @TaskAction
+  fun sync() {
+    fs.sync {
+      from(modsDir) { exclude("README.md") }
+      into(outputDir.dir("mods"))
+    }
+  }
+}
+
+val syncHakuxMods by tasks.registering(SyncHakuxModsTask::class) {
+  modsDir.set(rootProject.layout.projectDirectory.dir("hakux/mods"))
 }
 
 android {
@@ -177,7 +196,6 @@ android {
   /* The hakuX core (android/hakux, GPLv3): its own native build, packed from here. */
   if (hakuxCoreEnabled) {
     sourceSets.getByName("main").jniLibs.directories += hakuxJniLibs.absolutePath
-    sourceSets.getByName("main").assets.directories += hakuxModAssets.absolutePath
   }
 
   externalNativeBuild {
@@ -228,6 +246,9 @@ androidComponents {
     if (variant.buildType != "release") {
       variant.packaging.jniLibs.keepDebugSymbols.add("**/*.so")
     }
+    if (hakuxCoreEnabled) {
+      variant.sources.assets?.addGeneratedSourceDirectory(syncHakuxMods, SyncHakuxModsTask::outputDir)
+    }
   }
 }
 
@@ -235,8 +256,5 @@ if (hakuxCoreEnabled) {
   /* Every task that reads jniLibs sees the freshly built core. */
   tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
     dependsOn(buildHakuxCore)
-  }
-  tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
-    dependsOn(syncHakuxMods)
   }
 }
