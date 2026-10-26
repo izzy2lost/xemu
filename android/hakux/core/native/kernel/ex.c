@@ -234,6 +234,35 @@ static uint8_t *eeprom(NcKernel *k)
             nc_log("hakuX-native", "ex: this console's MAC is now %02x:%02x:%02x:%02x:%02x:%02x", g_eeprom[0x40],
                    g_eeprom[0x41], g_eeprom[0x42], g_eeprom[0x43], g_eeprom[0x44], g_eeprom[0x45]);
         }
+        /* The HD key, which titles sign their saves with, was the 16 bytes
+         * at 0x36 (serial and MAC); it is kept in its own field (0x1C, the
+         * encrypted section's) from now on, so a new serial or MAC leaves
+         * every save valid. */
+        static const uint8_t k_zero16[16];
+        if (!memcmp(g_eeprom + 0x1C, k_zero16, 16)) {
+            memcpy(g_eeprom + 0x1C, g_eeprom + 0x36, 16);
+            eeprom_store();
+        }
+        /* Every console had the same serial (eeprom_create's) and an empty
+         * online key: Insignia (Xbox Live) tells consoles apart by them, so
+         * this one takes its own, kept. */
+        if (!memcmp(g_eeprom + 0x34, "000000000001", 12)) {
+            uint8_t r[12];
+            arc4random_buf(r, sizeof(r));
+            for (int i = 0; i < 12; i++) {
+                g_eeprom[0x34 + i] = (uint8_t)('0' + r[i] % 10);
+            }
+            if (g_eeprom[0x34] == '0') {
+                g_eeprom[0x34] = '1';
+            }
+            if (!memcmp(g_eeprom + 0x48, k_zero16, 16)) {
+                arc4random_buf(g_eeprom + 0x48, 16);
+            }
+            eeprom_seal();
+            eeprom_store();
+            nc_log("hakuX-native", "ex: this console's serial is now %.12s, with an online key of its own",
+                   (const char *)g_eeprom + 0x34);
+        }
         /* The regions follow the running title (a library mixes NTSC and
          * PAL discs); the rest stays as stored. A title always sees the
          * same image. */
@@ -592,6 +621,12 @@ static uint64_t AvSetDisplayMode(NcKernel *k, NcFrame *f, const uint32_t *a)
         nc_dev_nv2a_refresh(a[2] & 0x40000000u ? 50 : 60);
         nc_dev_nv2a_display_mode(a[4], a[3], a[2] & 0x40000000u ? 50 : 60);
     }
+    /* The kernel points the scanout at the frame buffer. D3D flips move it
+     * after; nxdk's XVideoSetMode never does, its programs (SDL, the Insignia
+     * Setup Assistant) draw into this one with the CPU. */
+    if (a[5]) {
+        nc_dev_nv2a_display_start(a[5] & 0x7FFFFFFFu);
+    }
     return 0;
 }
 
@@ -807,11 +842,16 @@ void nc_kernel_title_loaded(NcKernel *k, const NcDisc *disc, const NcDiscFile *x
     nc_kernel_set_hd_key(k);
 }
 
+const uint8_t *nc_kernel_eeprom(NcKernel *k)
+{
+    return eeprom(k);
+}
+
 void nc_kernel_set_hd_key(NcKernel *k)
 {
     const uint32_t va = data_va(k, "XboxHDKey");
     if (va) {
-        memcpy(nc_vm_host(k->vm, va), eeprom(k) + 0x36, 16);
+        memcpy(nc_vm_host(k->vm, va), eeprom(k) + 0x1C, 16);   /* see eeprom() */
     }
 }
 

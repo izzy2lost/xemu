@@ -12,6 +12,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.izzy2lost.x1box.XboxInsigniaHelper
 import com.izzy2lost.x1box.ControllerRemap
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -111,7 +112,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     args += "pads=" + Integer.toHexString(router?.pluggedMask() ?: 1)
     vkDriverArg()?.let { args += it }
     modsArg()?.let { args += it }
-    lanArg()?.let { args += it }
+    (lanArg() ?: natArg())?.let { args += it }
     return args.toTypedArray()
   }
 
@@ -141,6 +142,21 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     handler.post(lanEvents)
     val pair = nativeStartLan(mode, lanHost, Build.MODEL ?: "Android", gameName()) ?: return null
     Log.i(TAG, "System Link: $mode, relay $pair")
+    return "lan=$pair"
+  }
+
+  /**
+   * The internet (Settings > Online's network on, System Link off: xemu's "user" network):
+   * slirp in this process behind the core's Ethernet controller, its DNS Insignia's and
+   * Xbox Live's names answered from Insignia's zones (InsigniaZones).
+   */
+  private fun natArg(): String? {
+    if (!prefs.getBoolean("setting_network_enable", false)) return null
+    val pair = runCatching {
+      System.loadLibrary("x1net")
+      nativeStartNat(XboxInsigniaHelper.PRIMARY_DNS, InsigniaZones.lines(this))
+    }.onFailure { Log.w(TAG, "network: ${it.message}") }.getOrNull() ?: return null
+    Log.i(TAG, "network: the internet through $pair")
     return "lan=$pair"
   }
 
@@ -1344,6 +1360,8 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     /** Fast-forward: the game runs speed times real time, 1 normal. */
     @JvmStatic external fun nativeSetSpeed(speed: Int)
     /** System Link's relay started (mode, the host to join, names for Find): "<bind>,<remote>", or null. */
+    /** libx1net (x1box_nat.c): "<the core's bind>,<its address>", or null. */
+    @JvmStatic external fun nativeStartNat(dns: String, zones: String): String?
     @JvmStatic external fun nativeStartLan(mode: String, host: String, name: String, game: String): String?
     /** The relay's next event, (event << 32) | arg, 0 when none. */
     @JvmStatic external fun nativePollLanEvent(): Long

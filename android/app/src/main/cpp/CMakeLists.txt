@@ -1266,6 +1266,26 @@ target_link_libraries(slirp_static PRIVATE
 )
 add_dependencies(slirp_static glib_ep)
 
+# --- x1net: the hakuX core's internet (slirp behind its Ethernet controller) ---
+add_library(x1net SHARED
+  x1box_nat.c
+  libintl_stub.c
+)
+target_include_directories(x1net PRIVATE
+  "${libslirp_SOURCE_DIR}/src"
+  "${LIBSLIRP_GENERATED_DIR}"
+  "${GLIB_INSTALL_DIR}/include/glib-2.0"
+  "${GLIB_INSTALL_DIR}/lib/glib-2.0/include"
+)
+target_link_libraries(x1net PRIVATE
+  slirp_static
+  iconv_stub
+  glib-2.0
+  log
+)
+target_link_options(x1net PRIVATE "-Wl,--exclude-libs,ALL")
+add_dependencies(x1net glib_ep)
+
 add_library(xemu SHARED
   xemu_android.cpp
   xemu_lan.cpp

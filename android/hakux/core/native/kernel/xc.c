@@ -54,8 +54,45 @@ static uint64_t XcSHAFinal(NcKernel *k, NcFrame *f, const uint32_t *a)
 }
 
 /* XcHMAC(pbKey, dwKeyLength, pbInput, dwInputLength, pbInput2, dwInputLength2, pbDigest) */
+/*
+ * The EEPROM's encrypted section (0x00 checksum, 0x14 confounder, 0x1C HD key,
+ * 0x2C region) is kept in the clear here: no title reads it but through
+ * the kernel, which decrypts it at boot with the console's EEPROM key. A
+ * program that decrypts it itself (the Insignia Setup Assistant, which then
+ * compares the HD key inside with XboxHDKey) reads it with
+ * ExQueryNonVolatileSetting(XC_ENCRYPTED_SECTION) and begins with the RC4
+ * key, XcHMAC(its EEPROM key, the section's 20-byte checksum). That call
+ * finds the section in the program's memory: it is encrypted there with
+ * the key the program gave, as the console's own would be (checksum =
+ * HMAC(key, confounder | data), RC4 key = HMAC(key, checksum)), and the
+ * HMAC is taken of the new checksum. The key is used and not kept.
+ */
+static void encrypt_eeprom_section(NcKernel *k, const uint32_t *a)
+{
+    if (!a[0] || a[1] != 16 || !a[2] || a[3] != 20 || a[4] ||
+        nc_vm_phys(k->vm, a[2]) == UINT32_MAX || nc_vm_phys(k->vm, a[2] + 0x2F) == UINT32_MAX) {
+        return;
+    }
+    const uint8_t *e = nc_kernel_eeprom(k);
+    uint8_t *sec = host(k, a[2]);
+    if (memcmp(sec, e, 0x30)) {
+        return;     /* not the section as the kernel gave it (already encrypted: not again) */
+    }
+    uint8_t digest[20], rkey[20], cipher[0x1C];
+    nc_hmac_sha1(host(k, a[0]), 16, e + 0x14, 0x1C, NULL, 0, digest);
+    nc_hmac_sha1(host(k, a[0]), 16, digest, 20, NULL, 0, rkey);
+    memcpy(cipher, e + 0x14, sizeof(cipher));
+    NcRc4 r;
+    nc_rc4_key(&r, rkey, sizeof(rkey));
+    nc_rc4_crypt(&r, cipher, sizeof(cipher));
+    memcpy(sec, digest, 20);
+    memcpy(sec + 20, cipher, sizeof(cipher));
+    nc_log("hakuX-native", "xc: the EEPROM's encrypted section, decrypted by the title: encrypted with its key");
+}
+
 static uint64_t XcHMAC(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
+    encrypt_eeprom_section(k, a);
     nc_hmac_sha1(host(k, a[0]), a[1], a[2] ? host(k, a[2]) : NULL, a[2] ? a[3] : 0, a[4] ? host(k, a[4]) : NULL,
                  a[4] ? a[5] : 0, host(k, a[6]));
     return 0;

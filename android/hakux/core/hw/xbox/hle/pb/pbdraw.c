@@ -1308,6 +1308,22 @@ bool hle_pbd_flip_due(void)
     return t && hle_now_ns() - t < 1000000000;
 }
 
+/* A frame buffer no push buffer drew: the video mode's (AvSetDisplayMode)
+ * size and format over that memory, the CPU's pixels uploaded as they
+ * change (hle_pbd_scanout). nxdk programs draw so, never using the GPU
+ * (SDL's software frame buffer: the Insignia Setup Assistant). */
+static uint32_t display_object(uint32_t pa)
+{
+    uint32_t w, h, seq, pitch, xfmt;
+    unsigned hz;
+    if (!mode_size(0, &w, &h, &seq)) {
+        return 0;
+    }
+    hle_pb_display_mode_get(&pitch, &xfmt, &hz);
+    device(w, h);
+    return object(pa, xfmt, pitch, w, h);
+}
+
 void hle_pbd_display(uint32_t pa, bool flip)
 {
     if (!g_pd.on) {
@@ -1324,6 +1340,9 @@ void hle_pbd_display(uint32_t pa, bool flip)
         return;
     }
     uint32_t id = object_at(pa & 0x0FFFFFFFu);
+    if (!id) {
+        id = display_object(pa & 0x0FFFFFFFu);
+    }
     if (!id) {
         static unsigned s_logged;
         if (s_logged++ < 4) {

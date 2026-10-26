@@ -378,6 +378,8 @@ void nc_kernel_title_loaded(NcKernel *k, const struct NcDisc *disc, const struct
  * title's start, and after a state load (the state holds its run's kernel
  * memory). */
 void nc_kernel_set_hd_key(NcKernel *k);
+/* The console's EEPROM image (ex.c), the encrypted section in the clear. */
+const uint8_t *nc_kernel_eeprom(NcKernel *k);
 
 /* XLaunchNewImage: a title quick-reboots (HalReturnToFirmware 2) into another
  * XBE with a launch data page. The page goes to the file at nc_kernel_relaunch_file;
