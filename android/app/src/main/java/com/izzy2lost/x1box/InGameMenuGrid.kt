@@ -19,7 +19,7 @@ import com.google.android.material.color.MaterialColors
 
 /**
  * The in-game menus' buttons (MainActivity's for xemu, HakuxCoreActivity's): a tile per
- * item, three to a row; a short last row keeps the tiles' width and is centred. On a short screen (a
+ * item, three to a row; a short last row keeps the tiles' width. On a short screen (a
  * phone in landscape) the icon sits beside its label, so four rows fit; on a tall one
  * it stands above it. Tiles size to their content, so the menu scrolls rather than
  * squeezing them (Material buttons with a top icon clipped their labels on a Pixel).
@@ -45,20 +45,14 @@ object InGameMenuGrid {
           layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
           ).also { it.bottomMargin = spacing }
-          // a short last row is centred: half the missing tiles' room (and gaps) either side
-          val missing = COLUMNS - rowItems.size
-          fun pad(start: Boolean) = addView(Space(context), LinearLayout.LayoutParams(0, 0, missing / 2f).also { lp ->
-            if (start) lp.marginEnd = missing * spacing / 2 else lp.marginStart = missing * spacing / 2
-          })
-          if (missing > 0) pad(start = true)
-          rowItems.forEachIndexed { i, item ->
+          for (i in 0 until COLUMNS) {
+            val item = rowItems.getOrNull(i)
+            val cell: View = if (item != null) tile(context, item, compact, onPick) else Space(context)
             // a row's tiles share its height: the tallest label sets it
-            addView(tile(context, item, compact, onPick),
-              LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).also { lp ->
-                if (i < rowItems.size - 1) lp.marginEnd = spacing
-              })
+            addView(cell, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).also { lp ->
+              if (i < COLUMNS - 1) lp.marginEnd = spacing
+            })
           }
-          if (missing > 0) pad(start = false)
         })
       }
     }

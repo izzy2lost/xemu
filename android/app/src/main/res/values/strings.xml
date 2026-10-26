@@ -415,6 +415,7 @@
   <string name="hakux_controllers_reset">Reset Players</string>
   <string name="hakux_controllers_reset_done">Press a button on each controller, player 1 first</string>
   <string name="hakux_mods_hint">Mods patch the game\'s code as it starts: a change takes effect when the game starts again. Turn on one frame rate mod at a time.</string>
+  <string name="hakux_mods_none">There are no mods for this game yet.</string>
   <string name="hakux_mods_restart">Restart Game</string>
   <string name="hakux_mods_next_start">The mods change the next time the game starts.</string>
   <string name="hakux_cheats_empty">No cheats for this game yet. Add one, or import a cheats.txt in hakuX\'s format.</string>

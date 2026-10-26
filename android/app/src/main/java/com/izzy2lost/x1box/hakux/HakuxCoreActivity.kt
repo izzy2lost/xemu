@@ -608,7 +608,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       if (nativeStatesAvailable()) { add(save); add(load) }
       if (cheatStore != null) add(cheats)
       add(players); add(remap); add(layout)
-      if (gameMods.isNotEmpty()) add(mods)
+      add(mods)
       add(exit); add(quit)
     }
     val list = InGameMenuGrid.build(this, items) { picked ->
@@ -670,8 +670,12 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
    * starts it again now.
    */
   private fun showMods() {
-    val key = gameKey ?: return
-    val mods = gameMods.takeIf { it.isNotEmpty() } ?: return
+    val key = gameKey
+    val mods = gameMods
+    if (key == null || mods.isEmpty()) {
+      Toast.makeText(this, R.string.hakux_mods_none, Toast.LENGTH_SHORT).show()
+      return
+    }
     val choices = HakuxModChoices(this, key)
     val done = holdPause()
     val before = choices.enabled()
