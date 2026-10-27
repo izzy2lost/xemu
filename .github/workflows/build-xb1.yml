@@ -1,0 +1,185 @@
+name: X1 BOX - Signed
+
+# Manual only. Builds a signed release APK for GitHub distribution and
+# publishes it as a GitHub Release tagged <app-name>-<versionName>.
+#
+# Toolchain versions below must match android/app/build.gradle.kts
+# (compileSdk / buildToolsVersion / ndkVersion / externalNativeBuild.cmake.version).
+# AGP downloads any missing pinned component itself, so a mismatch here wastes
+# time rather than failing, but keep them aligned so the run is predictable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      perf_log:
+        description: "Compile in nv2a performance telemetry (XEMU_ENABLE_PERF_LOG)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: x1-box-signed
+  cancel-in-progress: false
+
+env:
+  ANDROID_PLATFORM: "36"
+  ANDROID_BUILD_TOOLS: "36.1.0"
+  ANDROID_NDK_VERSION: "30.0.15729638"
+  ANDROID_CMAKE_VERSION: "3.22.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: release
+
+    steps:
+      # No submodules: the roms/ and tests/ submodules are QEMU firmware and CI
+      # tooling the Android build never reads. fetch-depth 0 keeps tags for
+      # `git describe`, which stamps the xemu version header.
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Install SDK platform / build-tools / NDK / CMake
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "cmake;${ANDROID_CMAKE_VERSION}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      # meson + ninja build GLib for Android inside CMake; python runs QEMU's
+      # QAPI / block / trace generators.
+      - name: Install Linux build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            meson \
+            pkg-config \
+            python3 \
+            python3-setuptools \
+            curl \
+            unzip
+          meson --version
+          ninja --version
+          python3 --version
+
+      # Rust builds the DSP56300 JIT (required) and the ISO->XISO converter.
+      # CMake exports the NDK linker / ar for cargo itself, so no CC_*/AR_*
+      # variables are needed here. RUSTUP_TOOLCHAIN is pinned by CMake too.
+      - name: Install Rust with Android target
+        shell: bash
+        run: |
+          set -e
+          echo "CARGO_HOME=$HOME/.cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$HOME/.rustup" >> "$GITHUB_ENV"
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" target add aarch64-linux-android
+          "$HOME/.cargo/bin/rustc" --version
+          "$HOME/.cargo/bin/cargo" --version
+          "$HOME/.cargo/bin/rustup" target list --installed
+
+      - name: Detect app name and version
+        shell: bash
+        run: |
+          set -e
+          GRADLE="android/app/build.gradle.kts"
+          STRINGS="android/app/src/main/res/values/strings.xml"
+          VERSION_NAME=$(grep -m1 -E 'versionName\s*=' "$GRADLE" | sed -E 's/.*"([^"]+)".*/\1/')
+          APP_NAME=$(grep -m1 -E '<string\s+name="app_name"\s*>' "$STRINGS" | sed -E 's/.*>([^<]+)<\/string>.*/\1/')
+          APP_NAME_SAFE=$(echo "$APP_NAME" | tr ' ' '-' | tr -cd 'A-Za-z0-9._-')
+          test -n "$VERSION_NAME" && test -n "$APP_NAME_SAFE"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "APP_NAME=$APP_NAME" >> "$GITHUB_ENV"
+          echo "APP_NAME_SAFE=$APP_NAME_SAFE" >> "$GITHUB_ENV"
+          echo "REL_TAG=${APP_NAME_SAFE}-${VERSION_NAME}" >> "$GITHUB_ENV"
+
+      # Overrides android/gradle.properties (2 GB, 1 worker). Packaging deflates
+      # the ~39 MB libxemu.so in memory and OOMs below ~2 GB; the runner has
+      # room for more. Single worker is kept: one module, and the GLib
+      # ExternalProject is already forced to -j1.
+      - name: Gradle JVM settings
+        run: |
+          mkdir -p "$HOME/.gradle"
+          cat > "$HOME/.gradle/gradle.properties" << 'EOF'
+          org.gradle.jvmargs=-Xmx6g -Xms512m -Dfile.encoding=UTF-8
+          org.gradle.daemon=false
+          org.gradle.caching=true
+          EOF
+
+      - name: Decode keystore
+        run: echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > android/app/release.jks
+
+      # storeFile is resolved by app/build.gradle.kts relative to android/app/.
+      - name: Write key.properties
+        run: |
+          {
+            echo "storeFile=release.jks"
+            echo "storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
+            echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}"
+            echo "keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}"
+          } > android/key.properties
+
+      - name: Build signed release APK
+        working-directory: android
+        env:
+          PERF_LOG_FLAG: ${{ inputs.perf_log && 'ON' || 'OFF' }}
+        run: |
+          chmod +x gradlew
+          rm -rf app/.cxx app/build
+          ./gradlew --no-daemon \
+            "-Pandroid.experimental.cmake.arguments=-DXEMU_ENABLE_PERF_LOG=${PERF_LOG_FLAG}" \
+            :app:assembleRelease
+
+      - name: Rename signed APK
+        run: |
+          set -e
+          APK_DIR="android/app/build/outputs/apk/release"
+          SRC_APK=$(find "$APK_DIR" -type f -name "*release*.apk" ! -name "*unsigned*" | head -n 1)
+          if [ -z "$SRC_APK" ]; then
+            echo "No signed APK found; contents of outputs/apk:"
+            find android/app/build/outputs/apk -type f -name "*.apk" || true
+            exit 1
+          fi
+          FINAL_APK="$APK_DIR/${APP_NAME_SAFE}-${VERSION_NAME}.apk"
+          mv "$SRC_APK" "$FINAL_APK"
+          echo "SIGNED_APK=$FINAL_APK" >> "$GITHUB_ENV"
+
+      - name: Verify APK signature
+        run: |
+          "$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}/apksigner" verify --verbose "$SIGNED_APK"
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4
+        with:
+          name: ${{ env.REL_TAG }}
+          path: ${{ env.SIGNED_APK }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release and upload APK
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ env.REL_TAG }}
+          name: ${{ env.REL_TAG }}
+          files: ${{ env.SIGNED_APK }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
