@@ -4,64 +4,84 @@
   <img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Get it on Google Play" height="80"/>
 </a>
 
-X1 BOX is an original Xbox emulator for Android, based on xemu.
+X1 BOX is an original Xbox emulator for Android. It also runs Sega Chihiro arcade games.
 
-> [!IMPORTANT]
-> X1 BOX is resource-heavy. A device with **8 GB RAM or more is recommended**.  
-> Lower-end devices may run poorly or fail to run games correctly.  
-> **Vulkan support is required.**
+> [!NOTE]
+> **4 GB of RAM or more is recommended.** Performance depends on your device and the game.
 
-## Project Origin
+## Two Emulation Cores
 
-- This project is forked from: https://github.com/xemu-project/xemu
-- Upstream xemu project: https://xemu.app
+Choose the core in Settings. You can also set a different core for each game.
 
-## What It Does
+- **xemu** emulates the full console. It runs the most games. Based on [xemu](https://xemu.app).
+- **hakuX** is a faster core that runs fewer games. Based on [hakuX](https://github.com/rfandango/hakuX).
 
-X1 BOX packages xemu for Android with an Android-first flow and launcher UI.
+## Features
 
-## Key Features
+### Playing
+- Game library with list, cover-grid and carousel views, plus optional online box-art lookup
+- Settings for each game
+- Save states with thumbnails, in several slots
+- Fast forward
+- Internal resolution scale up to 6x
+- Widescreen and aspect ratio options
+- Vulkan and OpenGL ES renderers
+- Custom GPU drivers such as Turnip, on supported Adreno devices
+- Cheats and mods (hakuX core)
 
-- Setup wizard to configure required Xbox files
-- Game library browser with list and cover-grid views
-- Optional online box-art lookup in the game library
-- On-screen virtual Xbox controller for touch devices
-- Automatic hide/show of on-screen controls when a physical controller is connected
-- Support for physical USB/Bluetooth game controllers
-- ARM64 (`arm64-v8a`) Android target
+### Controls
+- On-screen controller with an editable layout. It hides when a physical controller connects.
+- USB and Bluetooth controllers, with button remapping
+- **Local multiplayer** with more than one controller
+
+### Multiplayer and Online
+- **System Link over LAN:** play System Link games with other X1 BOX devices on the same Wi-Fi. One device hosts and the others join, with host discovery built in. It also works with xemu on PC.
+- **XLink Kai:** play System Link games with people over the internet through a PC running the XLink Kai Engine.
+- **Insignia:** play on the Xbox Live replacement service. A setup guide in the app walks you through creating and recovering your account.
+
+### Console Tools
+- Setup wizard for your Xbox files
+- Save manager to browse, export, import and delete game saves
+- Xbox dashboard support, including importing a dashboard and booting it from the library
+- HDD tools and an EEPROM editor for language, video modes, widescreen and MAC address
+- ISO to XISO converter
+
+### Sega Chihiro (Arcade)
+- Chihiro mode with light-gun and driving controls
+- Widescreen hacks for supported games
 
 ## Device Requirements
 
-- Android 8.0+ (API 26 or newer)
-- 64-bit ARM device (`arm64-v8a`)
-- Vulkan-capable GPU/device
-- Recommended: 8 GB RAM or higher for better stability and performance
+- Android 10 or newer
+- A 64-bit ARM device (`arm64-v8a`)
+- A GPU with Vulkan 1.1 or newer. The xemu core can also use OpenGL ES.
+- 4 GB of RAM or more recommended
 
-## Setup Requirements (User Files)
+## Your Files
 
-To use the emulator, you must provide your own legally obtained original Xbox files, such as:
+You must provide your own legally obtained games, dumped from your own discs.
+
+The **xemu core** also needs these original Xbox files:
 
 - MCPX Boot ROM
-- Flash ROM / BIOS
+- Flash ROM (BIOS)
 - Xbox hard disk image
-- Game files/images from your own discs
 
-X1 BOX does not include copyrighted BIOS or game content.
+The **hakuX core does not need them**. It has its own built-in system software, so you only need your games.
+
+X1 BOX does not include any BIOS files or games.
+
+## Project Origin
+
+- Forked from [xemu](https://github.com/xemu-project/xemu)
+- The hakuX core comes from [rfandango/hakuX](https://github.com/rfandango/hakuX)
 
 ## License
 
-This repository inherits xemu/QEMU licensing:
-
-- Emulator code is primarily under **GNU GPL v2**
-- Some components are under other GPLv2-compatible licenses (for example BSD/MIT in parts of TCG)
-
-See these files for details:
-
-- `LICENSE`
-- `COPYING`
-- `COPYING.LIB`
+- The xemu-based emulator follows the xemu and QEMU licensing. It is mostly **GNU GPL v2**, with some GPLv2-compatible parts (for example BSD or MIT code in TCG). See `LICENSE`, `COPYING` and `COPYING.LIB`.
+- The hakuX core in `android/hakux/core` is **GNU GPL v3 or later**. See `android/hakux/core/LICENSE`.
 
 ## Notes
 
-- X1 BOX is not affiliated with Microsoft.
+- X1 BOX is not affiliated with Microsoft or Sega.
 - Compatibility and performance vary by device and game.
