@@ -693,12 +693,13 @@ bool nc_kernel_launch_xbe(const uint8_t page[NC_LAUNCH_PAGE], char *out, size_t 
     return m > 1;
 }
 
-bool nc_kernel_launch_hdd(const uint8_t page[NC_LAUNCH_PAGE], int *part, char *dir, size_t dn, char *file,
-                          size_t fn)
+void nc_kernel_launch_path(const uint8_t page[NC_LAUNCH_PAGE], char *out, size_t n)
 {
-    char p[LAUNCH_PATH_LEN + 1];
-    memcpy(p, page + LAUNCH_PATH_OFF, LAUNCH_PATH_LEN);
-    p[LAUNCH_PATH_LEN] = 0;
+    snprintf(out, n, "%.*s", LAUNCH_PATH_LEN, (const char *)page + LAUNCH_PATH_OFF);
+}
+
+bool nc_kernel_hdd_path(const char *p, int *part, char *dir, size_t dn, char *file, size_t fn)
+{
     static const char hd[] = "\\Device\\Harddisk0\\Partition";
     if (strncasecmp(p, hd, sizeof(hd) - 1) != 0 || p[sizeof(hd) - 1] < '1' || p[sizeof(hd) - 1] > '9') {
         return false;
@@ -717,13 +718,21 @@ bool nc_kernel_launch_hdd(const uint8_t page[NC_LAUNCH_PAGE], int *part, char *d
     while (*rest == '\\') {
         rest++;
     }
-    size_t dl = (size_t)(semi - rest);
+    size_t dl = rest < semi ? (size_t)(semi - rest) : 0;
     while (dl && rest[dl - 1] == '\\') {
         dl--;
     }
     snprintf(dir, dn, "%.*s", (int)dl, rest);
     snprintf(file, fn, "%s", semi + 1);
     return true;
+}
+
+bool nc_kernel_launch_hdd(const uint8_t page[NC_LAUNCH_PAGE], int *part, char *dir, size_t dn, char *file,
+                          size_t fn)
+{
+    char p[LAUNCH_PATH_LEN + 1];
+    nc_kernel_launch_path(page, p, sizeof(p));
+    return nc_kernel_hdd_path(p, part, dir, dn, file, fn);
 }
 
 void nc_kernel_launch_page_restore(NcKernel *k, const uint8_t page[NC_LAUNCH_PAGE])

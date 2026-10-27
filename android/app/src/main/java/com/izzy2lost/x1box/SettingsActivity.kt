@@ -126,6 +126,8 @@ class SettingsActivity : AppCompatActivity() {
     val bootNote: String?,
     val bootAliasCreated: Boolean,
     val retailBootReady: Boolean,
+    /** Into the hakuX core's hard disk folders (C: Partition2, E: Partition1), not hddFile. */
+    val hakux: Boolean = false,
   )
 
   private data class DashboardBootPreparation(
@@ -224,6 +226,7 @@ class SettingsActivity : AppCompatActivity() {
   private lateinit var btnPrepareInsignia: MaterialButton
   private lateinit var btnRegisterInsignia: MaterialButton
   private lateinit var btnImportDashboard: MaterialButton
+  private lateinit var toggleCore: MaterialButtonToggleGroup
   private lateinit var layoutAdvancedExperimentalContent: LinearLayout
   private lateinit var dropdownUiOrientation: AutoCompleteTextView
   private lateinit var dropdownGameOrientation: AutoCompleteTextView
@@ -348,7 +351,7 @@ class SettingsActivity : AppCompatActivity() {
     EdgeToEdgeHelper.applySystemBarPadding(findViewById(R.id.settings_scroll))
 
     val toggleGraphicsApi = findViewById<MaterialButtonToggleGroup>(R.id.toggle_graphics_api)
-    val toggleCore = findViewById<MaterialButtonToggleGroup>(R.id.toggle_core)
+    toggleCore = findViewById(R.id.toggle_core)
     val toggleFiltering   = findViewById<MaterialButtonToggleGroup>(R.id.toggle_filtering)
     val toggleScale       = findViewById<MaterialButtonToggleGroup>(R.id.toggle_resolution_scale)
     val btn1x             = findViewById<MaterialButton>(R.id.btn_scale_1x)
@@ -432,6 +435,8 @@ class SettingsActivity : AppCompatActivity() {
     } else {
       toggleCore.check(R.id.btn_core_xemu)
     }
+    // Insignia's steps differ by core (hakuxSelected)
+    toggleCore.addOnButtonCheckedListener { _, _, isChecked -> if (isChecked) refreshInsigniaStatus() }
 
     val renderer = prefs.getString("setting_renderer", "vulkan") ?: "vulkan"
     if (renderer == "opengl") {
@@ -575,6 +580,10 @@ class SettingsActivity : AppCompatActivity() {
       showInsigniaSetupAssistantPrompt()
     }
     btnImportDashboard.setOnClickListener {
+      showDashboardImportSourcePicker()
+    }
+    // the same, beside Insignia's other steps (the dashboard is where the account is made)
+    findViewById<MaterialButton>(R.id.btn_insignia_import_dashboard).setOnClickListener {
       showDashboardImportSourcePicker()
     }
     findViewById<MaterialButton>(R.id.btn_manage_saves).setOnClickListener {
@@ -1580,6 +1589,32 @@ class SettingsActivity : AppCompatActivity() {
   }
 
   private fun refreshInsigniaStatus() {
+    if (hakuxSelected()) {
+      val setupUri = resolveInsigniaSetupAssistantUri()
+      val setupName = resolveInsigniaSetupAssistantName()
+      val lines = listOf(
+        getString(R.string.settings_insignia_status_hakux),
+        getString(
+          if (switchNetworkEnable.isChecked && selectedLanMode() == SystemLink.MODE_OFF)
+            R.string.settings_insignia_status_hakux_network_ready
+          else R.string.settings_insignia_status_hakux_network_off,
+        ),
+        getString(
+          if (HakuxLaunch.hakuxDashboard(this).isFile) R.string.settings_insignia_status_hakux_dashboard_ready
+          else R.string.settings_insignia_status_hakux_dashboard_missing,
+        ),
+        when {
+          setupUri != null && hasPersistedReadPermission(setupUri) -> getString(
+            R.string.settings_insignia_status_setup_selected,
+            setupName ?: getString(R.string.settings_insignia_setup_source_unknown),
+          )
+          setupName != null -> getString(R.string.settings_insignia_status_setup_inaccessible, setupName)
+          else -> getString(R.string.settings_insignia_status_setup_missing)
+        },
+      )
+      tvInsigniaStatus.text = lines.joinToString("\n")
+      return
+    }
     val hddFile = resolveHddFile()
     val eepromFile = resolveEepromFile()
     val setupUri = resolveInsigniaSetupAssistantUri()
@@ -1662,8 +1697,30 @@ class SettingsActivity : AppCompatActivity() {
     ).joinToString("\n")
   }
 
+  /** The core picked on this screen (saved or not): Insignia's steps follow it. */
+  private fun hakuxSelected(): Boolean = toggleCore.checkedButtonId == R.id.btn_core_hakux
+
+  /**
+   * The hakuX core's network for Insignia: its own internet (x1box_nat.c, which answers
+   * Xbox Live's names from Insignia's list), so the network on and System Link off.
+   */
+  private fun prepareHakuxInsigniaNetworking() {
+    switchNetworkEnable.isChecked = true
+    toggleLanMode.check(R.id.btn_lan_off)
+    prefs.edit()
+      .putBoolean("setting_network_enable", true)
+      .putString(SystemLink.PREF_MODE, SystemLink.MODE_OFF)
+      .apply()
+  }
+
   private fun prepareInsigniaNetworking() {
     if (isPreparingInsignia || isInitializingHdd || isImportingDashboard) {
+      return
+    }
+    if (hakuxSelected()) {
+      prepareHakuxInsigniaNetworking()
+      refreshInsigniaStatus()
+      Toast.makeText(this, R.string.settings_insignia_prepare_hakux, Toast.LENGTH_LONG).show()
       return
     }
 
@@ -1755,6 +1812,12 @@ class SettingsActivity : AppCompatActivity() {
 
   private fun launchInsigniaSetupAssistant(uri: Uri) {
     persistUriPermission(uri)
+    if (hakuxSelected()) {
+      prefs.edit().putString(HakuxLaunch.PREF_CORE, HakuxLaunch.CORE_HAKUX).apply()
+      prepareHakuxInsigniaNetworking()
+      HakuxLaunch.launch(this, uri.toString())
+      return
+    }
     switchNetworkEnable.isChecked = true
     val launchEditor = prefs.edit()
     PerGameSettingsManager.applyRuntimeOverridesToEditor(
@@ -2226,7 +2289,7 @@ class SettingsActivity : AppCompatActivity() {
 
   private fun showDashboardImportSourcePicker() {
     val hddFile = resolveHddFile()
-    if (hddFile == null) {
+    if (hddFile == null && !hakuxSelected()) {
       Toast.makeText(this, R.string.settings_hdd_status_missing, Toast.LENGTH_LONG).show()
       return
     }
@@ -2272,7 +2335,7 @@ class SettingsActivity : AppCompatActivity() {
   }
 
   private fun prepareDashboardImportFromZip(uri: Uri) {
-    val hddFile = resolveHddFile()
+    val hddFile = if (hakuxSelected()) hakuxHddRoot() else resolveHddFile()
     if (hddFile == null) {
       Toast.makeText(this, R.string.settings_hdd_status_missing, Toast.LENGTH_LONG).show()
       return
@@ -2284,7 +2347,7 @@ class SettingsActivity : AppCompatActivity() {
   }
 
   private fun prepareDashboardImportFromFolder(uri: Uri) {
-    val hddFile = resolveHddFile()
+    val hddFile = if (hakuxSelected()) hakuxHddRoot() else resolveHddFile()
     if (hddFile == null) {
       Toast.makeText(this, R.string.settings_hdd_status_missing, Toast.LENGTH_LONG).show()
       return
@@ -2295,6 +2358,9 @@ class SettingsActivity : AppCompatActivity() {
     }
   }
 
+  /** The hakuX core's hard disk: a folder per partition (C: Partition2, E: Partition1). */
+  private fun hakuxHddRoot(): File = File(filesDir, "hakux/hdd")
+
   private fun startDashboardImportPreparation(
     hddFile: File,
     prepareSource: (File) -> File,
@@ -2302,6 +2368,7 @@ class SettingsActivity : AppCompatActivity() {
     if (isImportingDashboard) {
       return
     }
+    val hakux = hakuxSelected()
 
     isImportingDashboard = true
     btnImportDashboard.isEnabled = false
@@ -2328,6 +2395,7 @@ class SettingsActivity : AppCompatActivity() {
           bootNote = bootPreparation.note,
           bootAliasCreated = bootPreparation.aliasCreated,
           retailBootReady = bootPreparation.retailBootReady,
+          hakux = hakux,
         )
       }
 
@@ -2357,7 +2425,8 @@ class SettingsActivity : AppCompatActivity() {
       .setMessage(
         buildString {
           append(
-            getString(
+            if (plan.hakux) getString(R.string.settings_dashboard_import_message_hakux, plan.summary)
+            else getString(
               R.string.settings_dashboard_import_message,
               plan.summary,
               plan.backupDir.absolutePath,
@@ -2390,11 +2459,16 @@ class SettingsActivity : AppCompatActivity() {
 
     Thread {
       val result = runCatching {
-        XboxDashboardImporter.importDashboard(
-          hddFile = plan.hddFile,
-          sourceRoot = plan.sourceDir,
-          backupRoot = plan.backupDir,
-        )
+        if (plan.hakux) {
+          importHakuxDashboard(plan.sourceDir, plan.hddFile)
+          plan.backupDir.delete()                // nothing is backed up: the files are the user's
+        } else {
+          XboxDashboardImporter.importDashboard(
+            hddFile = plan.hddFile,
+            sourceRoot = plan.sourceDir,
+            backupRoot = plan.backupDir,
+          )
+        }
       }
 
       runOnUiThread {
@@ -2403,6 +2477,10 @@ class SettingsActivity : AppCompatActivity() {
         btnImportDashboard.isEnabled = true
         refreshInsigniaStatus()
         result.onSuccess {
+          if (plan.hakux) {
+            Toast.makeText(this, R.string.settings_dashboard_import_success_hakux, Toast.LENGTH_LONG).show()
+            return@onSuccess
+          }
           val messageRes = when {
             plan.bootAliasCreated -> R.string.settings_dashboard_import_success_with_alias
             !plan.retailBootReady -> R.string.settings_dashboard_import_success_without_retail_boot
@@ -2421,6 +2499,24 @@ class SettingsActivity : AppCompatActivity() {
         }
       }
     }.start()
+  }
+
+  /** The import layout's C and E folders into the hakuX core's Partition2 and Partition1, over what is there. */
+  private fun importHakuxDashboard(layoutRoot: File, hddRoot: File) {
+    for ((drive, partition) in listOf("C" to "Partition2", "E" to "Partition1")) {
+      val source = File(layoutRoot, drive)
+      if (!source.isDirectory) continue
+      val target = File(hddRoot, partition)
+      source.walkTopDown().forEach { f ->
+        val rel = f.relativeTo(source)
+        val out = File(target, rel.path)
+        if (f.isDirectory) {
+          if (!out.isDirectory && !out.mkdirs()) throw IOException("Failed to create ${out.absolutePath}.")
+        } else {
+          f.copyTo(out, overwrite = true)
+        }
+      }
+    }
   }
 
   private fun createDashboardWorkingDirectory(): File {

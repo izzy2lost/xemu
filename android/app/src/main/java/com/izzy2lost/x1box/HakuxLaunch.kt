@@ -56,6 +56,52 @@ object HakuxLaunch {
    * Starts the game at dvdUri in the hakuX core (into the savestate at loadState, when
    * given), the library's process handed off as for xemu.
    */
+  /** The dashboard's XBE on the hakuX core's hard disk (C:, Partition2), as the kernel names it. */
+  const val DASHBOARD_XBE = "\\Device\\Harddisk0\\Partition2\\xboxdash.xbe"
+
+  /** The dashboard's file in the hakuX core's C: (SettingsActivity imports it there). */
+  fun hakuxDashboard(context: Context): File = File(context.filesDir, "hakux/hdd/Partition2/xboxdash.xbe")
+
+  /**
+   * Starts the Xbox dashboard in the hakuX core from its hard disk. The core boots from a disc,
+   * so it gets an empty one (emptyDisc); the dashboard sees no disc in the tray.
+   */
+  fun launchDashboard(activity: Activity) {
+    val intent = Intent(activity, HakuxCoreActivity::class.java)
+      .putExtra(HakuxCoreActivity.EXTRA_DVD_URI, Uri.fromFile(emptyDisc(activity)).toString())
+      .putExtra(HakuxCoreActivity.EXTRA_BOOT_XBE, DASHBOARD_XBE)
+    EmulationProcessHandoff.launch(activity, intent)
+  }
+
+  /**
+   * An XDVDFS image with nothing in it (one empty file at its root): the volume descriptor at
+   * sector 32, the root directory at 33.
+   */
+  private fun emptyDisc(context: Context): File {
+    val file = File(context.filesDir, "hakux/empty-disc.iso")
+    if (file.length() == 34L * 2048) return file
+    val image = ByteArray(34 * 2048)
+    val magic = "MICROSOFT*XBOX*MEDIA".toByteArray(Charsets.US_ASCII)
+    val vd = 32 * 2048
+    magic.copyInto(image, vd)
+    fun le32(at: Int, v: Int) {
+      for (i in 0 until 4) image[at + i] = (v ushr (8 * i)).toByte()
+    }
+    le32(vd + 20, 33)
+    le32(vd + 24, 2048)
+    magic.copyInto(image, vd + 0x7EC)
+    val root = 33 * 2048
+    image.fill(0xFF.toByte(), root, root + 2048)
+    val name = "x1box.txt".toByteArray(Charsets.US_ASCII)
+    image.fill(0, root, root + 14)              // no subtrees, sector 0, size 0
+    image[root + 12] = 0x20                     // a normal file
+    image[root + 13] = name.size.toByte()
+    name.copyInto(image, root + 14)
+    file.parentFile?.mkdirs()
+    file.writeBytes(image)
+    return file
+  }
+
   fun launch(activity: Activity, dvdUri: String, loadState: String? = null) {
     val intent = Intent(activity, HakuxCoreActivity::class.java)
       .putExtra(HakuxCoreActivity.EXTRA_DVD_URI, dvdUri)

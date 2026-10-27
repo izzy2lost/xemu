@@ -30,6 +30,9 @@ bool nc_core_boot(NcCore *c, int disc_fd);
 /* The next boot goes into the savestate at path (native/state): the XBE it
  * was running boots, then the state replaces what the boot made. */
 void nc_core_set_loadstate(const char *path);
+/* Boot an XBE on the hard disk ("\\Device\\Harddisk0\\Partition2\\xboxdash.xbe": the
+ * dashboard) instead of the disc's default.xbe; its folder is its D:. */
+void nc_core_set_boot_xbe(const char *path);
 /* The next boot is a relaunch: it boots the XBE the saved launch data page
  * names (nc_kernel_relaunch_file) instead of default.xbe. */
 void nc_core_set_relaunch(bool on);

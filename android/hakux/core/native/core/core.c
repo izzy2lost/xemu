@@ -22,11 +22,17 @@
 static NcThread *g_boot;
 static bool g_relaunch;
 static char g_loadstate[512];   /* boot into this savestate (nc_core_set_loadstate) */
+static char g_boot_xbe[512];    /* an XBE on the hard disk to boot (nc_core_set_boot_xbe) */
 static bool g_loaded;
 
 void nc_core_set_relaunch(bool on)
 {
     g_relaunch = on;
+}
+
+void nc_core_set_boot_xbe(const char *path)
+{
+    snprintf(g_boot_xbe, sizeof(g_boot_xbe), "%s", path ? path : "");
 }
 
 void nc_core_set_loadstate(const char *path)
@@ -106,12 +112,23 @@ bool nc_core_boot(NcCore *c, int disc_fd)
         close(disc_fd);
         return disc_failed("The game's file isn't an Xbox disc image.");
     }
-    /* A relaunch (XLaunchNewImage, NativeCoreActivity starts the core again):
-     * the XBE the saved launch data page names, and the page for the title. */
+    /* What boots: the disc's default.xbe; a relaunch's XBE (XLaunchNewImage,
+     * NativeCoreActivity starts the core again) and the page for the title;
+     * a savestate's XBE; or an XBE on the hard disk the activity asked for
+     * (the dashboard). One on the hard disk sees its folder as D:, so the
+     * folder's files go over the disc's root before the overlay is sealed. */
     static uint8_t page[NC_LAUNCH_PAGE];
-    bool have_page = false, hdd = false;
+    bool have_page = false;
     char xbe_path[NC_LAUNCH_PAGE] = "\\default.xbe";
-    if (g_relaunch && !g_loadstate[0]) {
+    char hdd_path[NC_LAUNCH_PAGE] = "";         /* the hard disk's XBE, whole */
+    NcStateInfo info;
+    if (g_loadstate[0]) {
+        if (!nc_state_read_info(g_loadstate, &info)) {
+            nc_hle_set_fatal(NC_FATAL_STATE, "the savestate can't be read");
+            return false;
+        }
+        snprintf(hdd_path, sizeof(hdd_path), "%s", info.xbe_path);
+    } else if (g_relaunch) {
         char file[512];
         nc_kernel_relaunch_file(file, sizeof(file));
         FILE *fp = fopen(file, "rb");
@@ -120,40 +137,47 @@ bool nc_core_boot(NcCore *c, int disc_fd)
             fclose(fp);
             unlink(file);
         }
-        /* An XBE on the hard disk (the dashboard's xonlinedash.xbe): its D: is
-         * its folder, so the folder's files go over the disc's root. */
-        int part;
-        char dir[NC_LAUNCH_PAGE], name[NC_LAUNCH_PAGE];
-        if (have_page && nc_kernel_launch_hdd(page, &part, dir, sizeof(dir), name, sizeof(name))) {
-            hdd = true;
-            char host[512];
-            if (nc_io_host_path(part, *dir ? dir : ".", host, sizeof(host)) == 1 || !*dir) {
-                if (!*dir) {
-                    snprintf(host, sizeof(host), "%s/Partition%d", nc_io_hdd_root(), part);
-                }
-                const unsigned n = overlay_folder(&c->disc, host, "");
-                snprintf(xbe_path, sizeof(xbe_path), "\\%s", name);
-                snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "\\Device\\Harddisk0\\Partition%d%s%s\\%s",
-                         part, *dir ? "\\" : "", dir, name);
-                nc_log("hakuX-native-frontier", "relaunch: %s from the hard disk (%u files of %s as D:)",
-                       c->kernel.image_path, n, host);
-            } else {
-                nc_log("hakuX-native-frontier", "relaunch: Partition%d\\%s isn't on the hard disk", part, dir);
-                have_page = false;
-            }
+        if (have_page) {
+            nc_kernel_launch_path(page, hdd_path, sizeof(hdd_path));
         }
+    } else if (g_boot_xbe[0]) {
+        snprintf(hdd_path, sizeof(hdd_path), "%s", g_boot_xbe);
+    }
+    int part;
+    char dir[NC_LAUNCH_PAGE], name[NC_LAUNCH_PAGE];
+    const bool hdd = nc_kernel_hdd_path(hdd_path, &part, dir, sizeof(dir), name, sizeof(name));
+    if (hdd) {
+        char rel[NC_LAUNCH_PAGE * 2], host[512];
+        snprintf(rel, sizeof(rel), "%s%s%s", dir, *dir ? "\\" : "", name);
+        if (nc_io_host_path(part, rel, host, sizeof(host)) != 1) {
+            nc_log("hakuX-native-frontier", "boot: Partition%d\\%s isn't on the hard disk", part, rel);
+            if (!strcasecmp(name, "xboxdash.xbe")) {
+                /* the dialog without "try in xemu" (no game to try) */
+                return disc_failed("This needs the Xbox dashboard, which hakuX doesn't have yet. Import yours in "
+                                   "Settings, under Insignia: Import Dashboard.");
+            }
+            char why[NC_LAUNCH_PAGE * 2 + 64];
+            snprintf(why, sizeof(why), "%s isn't on the hard disk.", rel);
+            return boot_failed(why);
+        }
+        if (*dir) {
+            nc_io_host_path(part, dir, host, sizeof(host));
+        } else {
+            snprintf(host, sizeof(host), "%s/Partition%d", nc_io_hdd_root(), part);
+        }
+        const unsigned n = overlay_folder(&c->disc, host, "");
+        snprintf(xbe_path, sizeof(xbe_path), "\\%s", name);
+        snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "\\Device\\Harddisk0\\Partition%d\\%s", part,
+                 rel);
+        nc_log("hakuX-native-frontier", "boot: %s from the hard disk (%u files of %s as D:)", c->kernel.image_path,
+               n, host);
     }
     nc_mods_install(&c->disc);          /* the mods' files and XBE patches, the cheats */
     nc_disc_overlay_seal(&c->disc);     /* sealed by the mods, or for the hard disk's files */
+    static const char cd[] = "\\Device\\CdRom0";
     if (g_loadstate[0]) {
         /* a savestate: the XBE it was running (a relaunched title's own) */
-        NcStateInfo info;
-        static const char cd[] = "\\Device\\CdRom0";
-        if (!nc_state_read_info(g_loadstate, &info)) {
-            nc_hle_set_fatal(NC_FATAL_STATE, "the savestate can't be read");
-            return false;
-        }
-        if (!strncasecmp(info.xbe_path, cd, sizeof(cd) - 1) && info.xbe_path[sizeof(cd) - 1] == '\\') {
+        if (!hdd && !strncasecmp(info.xbe_path, cd, sizeof(cd) - 1) && info.xbe_path[sizeof(cd) - 1] == '\\') {
             snprintf(xbe_path, sizeof(xbe_path), "%s", info.xbe_path + sizeof(cd) - 1);
             snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "%s", info.xbe_path);
         }

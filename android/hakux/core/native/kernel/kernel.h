@@ -396,6 +396,10 @@ bool nc_kernel_launch_xbe(const uint8_t page[NC_LAUNCH_PAGE], char *out, size_t 
  * its partition, its folder ("XODash", "" at the root) and file name. */
 bool nc_kernel_launch_hdd(const uint8_t page[NC_LAUNCH_PAGE], int *part, char *dir, size_t dn, char *file,
                           size_t fn);
+/* The same of a path ("\\Device\\Harddisk0\\PartitionN\\dir\\f.xbe" or "...dir;f.xbe"),
+ * and a launch page's path as it is. */
+bool nc_kernel_hdd_path(const char *path, int *part, char *dir, size_t dn, char *file, size_t fn);
+void nc_kernel_launch_path(const uint8_t page[NC_LAUNCH_PAGE], char *out, size_t n);
 /* After title_loaded on a relaunch: a contiguous page with page's contents
  * becomes LaunchDataPage. */
 void nc_kernel_launch_page_restore(NcKernel *k, const uint8_t page[NC_LAUNCH_PAGE]);

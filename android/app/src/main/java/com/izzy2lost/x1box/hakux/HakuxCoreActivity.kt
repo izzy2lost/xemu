@@ -93,6 +93,8 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       args += "loadstate=$state"        /* boot into a savestate (HakuxSaveStates) */
     } else if (intent.getBooleanExtra(EXTRA_RELAUNCH, false)) {
       args += "relaunch"
+    } else {
+      intent.getStringExtra(EXTRA_BOOT_XBE)?.let { args += "boot=$it" }
     }
     runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()?.let {
       args += "version=$it"
@@ -1310,6 +1312,8 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     const val EXTRA_RELAUNCH = "relaunch"
     /** Boot into the savestate at this path (HakuxSaveStates' Load state). */
     const val EXTRA_LOADSTATE = "loadstate"
+    /** An XBE on the hard disk to boot instead of the disc's (HakuxLaunch.launchDashboard). */
+    const val EXTRA_BOOT_XBE = "bootXbe"
 
     /* hakux/core/native/dev/usb.h NC_PAD_* */
     private const val PAD_UP = 0x01

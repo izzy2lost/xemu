@@ -864,6 +864,14 @@
               android:text="@string/settings_insignia_register_action" />
           </LinearLayout>
 
+          <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_insignia_import_dashboard"
+            style="@style/Widget.Xemu.Button.Outlined.Pill"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp"
+            android:text="@string/settings_dashboard_import_action" />
+
           <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

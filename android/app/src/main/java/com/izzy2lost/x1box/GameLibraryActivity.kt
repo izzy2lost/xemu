@@ -427,6 +427,15 @@ class GameLibraryActivity : AppCompatActivity() {
   }
 
   private fun launchDashboard() {
+    // The hakuX core boots the dashboard imported into its own hard disk (Settings).
+    if (HakuxLaunch.globalCore(prefs) == HakuxLaunch.CORE_HAKUX) {
+      if (HakuxLaunch.hakuxDashboard(this).isFile) {
+        HakuxLaunch.launchDashboard(this)
+      } else {
+        Toast.makeText(this, getString(R.string.library_hakux_dashboard_missing), Toast.LENGTH_LONG).show()
+      }
+      return
+    }
     if (!hasAccessibleCoreFiles()) {
       Toast.makeText(this, getString(R.string.library_boot_dashboard_failed), Toast.LENGTH_LONG).show()
       return

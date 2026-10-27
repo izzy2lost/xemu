@@ -551,6 +551,10 @@ EXPORT int SDL_main(int argc, char *argv[])
         if (!strcmp(argv[i], "relaunch")) {
             nc_core_set_relaunch(true);
         }
+        if (!strncmp(argv[i], "boot=", 5)) {
+            nc_core_set_boot_xbe(argv[i] + 5);         /* the dashboard, from the hard disk */
+            nc_log("hakuX-app", "boot %s", argv[i] + 5);
+        }
         if (!strncmp(argv[i], "loadstate=", 10)) {
             nc_core_set_loadstate(argv[i] + 10);       /* boot into a savestate (native/state) */
             nc_log("hakuX-app", "savestate %s", argv[i] + 10);

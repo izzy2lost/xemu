@@ -222,6 +222,7 @@
   <string name="settings_lan_join">Join</string>
   <string name="settings_lan_host_address">Host address</string>
   <string name="settings_lan_kai">Kai</string>
+  <string name="library_hakux_dashboard_missing">The hakuX core has no Xbox dashboard yet. Import yours in Settings, under Insignia: Import Dashboard.</string>
   <string name="settings_kai_engine_address">XLink Kai Engine address</string>
   <string name="settings_lan_status_kai">Play System Link games online with XLink Kai. Run the XLink Kai Engine on a PC or Raspberry Pi on this Wi-Fi, sign in to it with your XTag, and type its address here. Pick a game\'s arena in the engine\'s web page, then choose System Link in the game.\nThis console\'s MAC: %1$s</string>
   <string name="settings_kai_needs_address">Enter the address of the computer running the XLink Kai Engine</string>
@@ -356,6 +357,14 @@
   <string name="settings_hdd_init_success">HDD layout initialized</string>
   <string name="settings_hdd_init_failed">Failed to initialize HDD: %1$s</string>
   <string name="settings_dashboard_import_action">Import Dashboard</string>
+  <string name="settings_dashboard_import_message_hakux">Copy the dashboard into the hakuX core\'s hard disk?\n\n%1$s\n\nFiles with the same names are replaced.</string>
+  <string name="settings_dashboard_import_success_hakux">Dashboard imported. Tap Dashboard in the game library to open it, or a game\'s Xbox Live sign-up will.</string>
+  <string name="settings_insignia_prepare_hakux">Insignia networking is ready for the hakuX core: the network is on and System Link is off. Insignia\'s addresses are answered by the app, so your router\'s DNS doesn\'t matter.</string>
+  <string name="settings_insignia_status_hakux">hakuX core: 1. Prepare networking. 2. Register with the Setup Assistant. 3. Import your Xbox dashboard (5960) and open it from the library to sign in or recover your account.</string>
+  <string name="settings_insignia_status_hakux_network_ready">Network: on, System Link off</string>
+  <string name="settings_insignia_status_hakux_network_off">Network: not ready. Tap Prepare Insignia Networking.</string>
+  <string name="settings_insignia_status_hakux_dashboard_ready">Dashboard: imported</string>
+  <string name="settings_insignia_status_hakux_dashboard_missing">Dashboard: not imported yet</string>
   <string name="settings_dashboard_import_source_title">Choose Dashboard Source</string>
   <string name="settings_dashboard_import_source_zip">Import ZIP</string>
   <string name="settings_dashboard_import_source_folder">Import Folder</string>
