@@ -30,6 +30,9 @@
 static bool g_apu_stats;
 static int g_apu_fifo_min = INT_MAX, g_apu_fifo_max;
 extern uint32_t g_vp_oob_clamps;
+extern uint32_t g_vp_held_skips, g_vp_held_waits, g_vp_held_wait_max_us, g_vp_held_run_max; /* vp.c voice_take */
+/* NC_APU_TRAP_PARK=1: the frames stop while the FE is trapped (frames_stopped) */
+static bool g_trap_park;
 
 MCPXAPUState *g_state; /* the one APU: the savestate section's */
 uint8_t *g_apu_ram;
@@ -159,6 +162,7 @@ static void mcpx_apu_write(MCPXAPUState *d, uint32_t addr, uint64_t val,
     case NV_PAPU_ISTS:
         /* the bits of the interrupts to clear are written */
         apu_and(&d->regs[NV_PAPU_ISTS], ~val);
+        apu_inc(&d->ists_writes);
         update_irq(d);
         pthread_cond_broadcast(&d->cond);
         break;
@@ -359,6 +363,61 @@ static void throttle(MCPXAPUState *d)
     d->sleep_acc_us += apu_host_us() - start_us;
 }
 
+/* Once a second, from the frame thread: states of the guest's that last,
+ * the APU left waiting on it: a hang's evidence for the session log, each
+ * logged when it has lasted from one look to the next, and again only after
+ * it ended. The FE trapped (the trap's handler never ran: the guest's
+ * interrupts or its DPCs held off), the interrupt up and not acknowledged.
+ * A voice the guest holds is vp.c voice_take's. */
+enum { STUCK_TRAP = 1, STUCK_IRQ = 2 };
+
+static void stuck_check(MCPXAPUState *d, int64_t now_ms)
+{
+    if (now_ms - d->stuck.at_ms < 1000) {
+        return;
+    }
+    d->stuck.at_ms = now_ms;
+    const uint32_t fectl = apu_ld(&d->regs[NV_PAPU_FECTL]), ists = apu_ld(&d->regs[NV_PAPU_ISTS]);
+    const uint32_t acks = apu_ld(&d->ists_writes);
+    unsigned now = 0;
+    if ((fectl & NV_PAPU_FECTL_FEMETHMODE) == NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
+        now |= STUCK_TRAP;
+    }
+    if ((ists & NV_PAPU_ISTS_GINTSTS) && acks == d->stuck.ists_writes) {
+        now |= STUCK_IRQ;
+    }
+    d->stuck.ists_writes = acks;
+    const unsigned fresh = now & d->stuck.seen & ~d->stuck.logged;
+    d->stuck.seen = now;
+    d->stuck.logged &= now;
+    if (fresh) {
+        d->stuck.logged |= fresh;
+        nc_log("hakuX-apu", "stuck: %s%s%s for a second | FECTL %08x (method %04x %08x) ISTS %08x IEN %08x "
+                            "SECTL %08x, VOICE_OFFs waiting: %s",
+               fresh & STUCK_TRAP ? "the FE trapped" : "", fresh == (STUCK_TRAP | STUCK_IRQ) ? ", " : "",
+               fresh & STUCK_IRQ ? "the interrupt up, not acknowledged" : "", fectl,
+               apu_ld(&d->regs[NV_PAPU_FEDECMETH]), apu_ld(&d->regs[NV_PAPU_FEDECPARAM]), ists,
+               apu_ld(&d->regs[NV_PAPU_IEN]), apu_ld(&d->regs[NV_PAPU_SECTL]),
+               mcpx_apu_vp_off_pending() ? "yes" : "no");
+    }
+}
+
+/* The frames stop for the guest's SECTL (XCNTMODE off) and FECTL (halted),
+ * not for a trap: the FE's trap holds its methods, not the SE nor the GP
+ * and EP DSPs, separate engines on the hardware. Stopped for one, a guest
+ * that waits on the APU at DISPATCH_LEVEL (DirectSound's lock), the trap's
+ * DPC kept out, waited for good: for the GP to take a mailbox command, a
+ * voice's notification (Blood Wake, its VOICE_OFF's: the 64-frame wait
+ * below). A trap's idle reports wait for its handler (vp.c idle_report). */
+static bool frames_stopped(MCPXAPUState *d)
+{
+    /* a mode, not bits: TRAPPED (0xE0) has HALTED's (0x80) */
+    const uint32_t mode = apu_ld(&d->regs[NV_PAPU_FECTL]) & NV_PAPU_FECTL_FEMETHMODE;
+    return GET_MASK(apu_ld(&d->regs[NV_PAPU_SECTL]), NV_PAPU_SECTL_XCNTMODE) == NV_PAPU_SECTL_XCNTMODE_OFF ||
+           (mode != NV_PAPU_FECTL_FEMETHMODE_FREE_RUNNING &&
+            (mode != NV_PAPU_FECTL_FEMETHMODE_TRAPPED || g_trap_park));
+}
+
 static void se_frame(MCPXAPUState *d)
 {
     mcpx_apu_update_dsp_preference(d);
@@ -374,12 +433,16 @@ static void se_frame(MCPXAPUState *d)
         float t = 1.0f - ((double)d->sleep_acc_us /
                           (double)((now - d->frame_count_time_ms) * 1000));
 
+        stuck_check(d, now);
         if (g_apu_stats) {
             uint32_t cb, short_cb;
             apu_out_stats(&cb, &short_cb);
-            nc_log("hakuX-apu", "frames=%d util=%.2f fifo=%d-%d short=%u cb=%u vp_oob=%u",
+            nc_log("hakuX-apu", "frames=%d util=%.2f fifo=%d-%d short=%u cb=%u vp_oob=%u held: skipped=%u "
+                                "run=%u waited=%u (max %u us)",
                    d->frame_count, t, g_apu_fifo_min == INT_MAX ? 0 : g_apu_fifo_min,
-                   g_apu_fifo_max, short_cb, cb, apu_ld(&g_vp_oob_clamps));
+                   g_apu_fifo_max, short_cb, cb, apu_ld(&g_vp_oob_clamps), apu_xchg(&g_vp_held_skips, 0),
+                   apu_xchg(&g_vp_held_run_max, 0), apu_xchg(&g_vp_held_waits, 0),
+                   apu_xchg(&g_vp_held_wait_max_us, 0));
             g_apu_fifo_min = INT_MAX;
             g_apu_fifo_max = 0;
         }
@@ -531,6 +594,7 @@ void mcpx_apu_post_load(MCPXAPUState *d)
 static void *mcpx_apu_frame_thread(void *arg)
 {
     MCPXAPUState *d = arg;
+    int64_t off_since_us = 0;   /* the frames stopped, VOICE_OFFs waiting: since */
 
     /* Paused (a savestate, the activity): parked between frames, the lock
      * free for the state to be taken or replaced. Running on, it wrote guest
@@ -572,24 +636,29 @@ static void *mcpx_apu_frame_thread(void *arg)
             }
         }
 
-        xcntmode = GET_MASK(apu_ld(&d->regs[NV_PAPU_SECTL]),
-                            NV_PAPU_SECTL_XCNTMODE);
-        fectl = apu_ld(&d->regs[NV_PAPU_FECTL]);
-        if (xcntmode == NV_PAPU_SECTL_XCNTMODE_OFF ||
-            (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
-            (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED)) {
+        if (frames_stopped(d)) {
             nc_pause_idle(true);                /* stopped until the guest acts */
-            if (!mcpx_apu_vp_off_pending()) {
-                pthread_cond_wait(&d->cond, &d->lock);
-            } else if (!apu_cond_timedwait_us(&d->cond, &d->lock, OFF_WAIT_US)) {
-                /* VOICE_OFFs waiting for frames that don't come: notified
-                 * after their 64 frames' time, their interrupt raised at the
-                 * top (the guest may wait for them before it acts) */
-                mcpx_apu_vp_off_notify_all(d);
-            }
+            /* timed: the guest's register writes signal without d->lock (its
+             * thread never takes it), so one can come between the check and
+             * the wait */
+            apu_cond_timedwait_us(&d->cond, &d->lock, EP_FRAME_US);
             nc_pause_idle(false);
+            /* VOICE_OFFs waiting for frames that don't come: notified after
+             * their 64 frames' time, their interrupt raised at the top (the
+             * guest may wait for them before it acts) */
+            const int64_t now_us = apu_host_us();
+            if (!mcpx_apu_vp_off_pending()) {
+                off_since_us = 0;
+            } else if (!off_since_us) {
+                off_since_us = now_us;
+            } else if (now_us - off_since_us >= OFF_WAIT_US) {
+                mcpx_apu_vp_off_notify_all(d);
+                off_since_us = 0;
+            }
+            stuck_check(d, now_us / 1000);
             continue;
         }
+        off_since_us = 0;
         throttle(d);
         if (nc_paused()) {
             continue;                           /* the throttle let go for the pause: no frame */
@@ -602,12 +671,15 @@ static void *mcpx_apu_frame_thread(void *arg)
 
 /* The app's audio settings: the defaults above; NC_APU_DSP=1 runs the GP and
  * EP frames to completion, NC_APU_HRTF=0 turns the 3D voices' filters off,
- * NC_APU_WORKERS=n sets the voice workers (0: by the CPU count). */
+ * NC_APU_WORKERS=n sets the voice workers (0: by the CPU count),
+ * NC_APU_TRAP_PARK=1 stops the frames while the FE is trapped, as they did
+ * before (an A/B switch). */
 static void config_init(void)
 {
     g_apu_config.use_dsp = getenv_int_clamped("NC_APU_DSP", 0, 1, g_apu_config.use_dsp);
     g_apu_config.hrtf = getenv_int_clamped("NC_APU_HRTF", 0, 1, g_apu_config.hrtf);
     g_apu_config.num_workers = getenv_int_clamped("NC_APU_WORKERS", 0, 64, g_apu_config.num_workers);
+    g_trap_park = getenv_int_clamped("NC_APU_TRAP_PARK", 0, 1, 0);
 }
 
 /* NC_TRACE_APU: every 2 s, the registers that decide whether the APU

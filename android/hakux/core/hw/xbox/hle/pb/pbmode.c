@@ -738,6 +738,7 @@ static int count_method(void *opaque, unsigned subch, uint32_t m, uint32_t v)
                     surf_get(SURF_WRITE));
         }
         hle_host_gpu_trace(HLE_GTR_TRAP, v);
+        hle_pbd_trap();                         /* before its handler, which may flip */
         hle_host_gpu_reg_set(NV_PGRAPH_TRAPPED_ADDR, subch << 16 | m);
         hle_host_gpu_reg_set(NV_PGRAPH_TRAPPED_DATA_LOW, v);
         hle_host_gpu_reg_set(NV_PGRAPH_NSOURCE, PGRAPH_NSOURCE_NOTIFICATION);

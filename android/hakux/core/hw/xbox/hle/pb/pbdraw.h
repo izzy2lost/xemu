@@ -53,9 +53,15 @@ uint64_t hle_pbd_writebacks(void);
 void hle_pbd_boundary(uint64_t value);
 /* Decode thread: the display's gamma ramp (R / G / B planes), at once. */
 void hle_pbd_gamma(const uint8_t rgb[3][256]);
-/* The host: D3D's vblank handler flipped (the flip read counter moved): the
- * oldest frame swapped and not yet shown goes on screen. Any thread. */
-void hle_pb_flipped(void);
+/* The host: D3D's vblank handler flipped (the flip read counter moved), the
+ * display starting at start (PCRTC_START): the oldest frame swapped and not
+ * yet shown goes on screen. At the target being drawn (hle_pbd_trap), the
+ * swap that comes is one flipped (hle_pbd_scanout). Any thread. */
+void hle_pb_flipped(uint32_t start);
+/* Decode thread, at a software trap (its handler may flip): the bound
+ * target, if drawn since the last swap, is a frame whose flip can come
+ * before its FLIP_INCREMENT_WRITE. */
+void hle_pbd_trap(void);
 /* Counters for the decoder's log line (swaps: FLIP_INCREMENT_WRITE's and
  * PCRTC_START's presents; rt_uploads: render targets the CPU wrote). */
 void hle_pbd_counts(uint64_t *clears, uint64_t *swaps, unsigned *objects,
@@ -86,7 +92,7 @@ bool hle_pbd_scan_due(void);
 /* Decode thread: the frame on screen, if the CPU wrote its memory or the
  * GPU drew into it since and the title doesn't flip, presented again (the
  * NV2A scans the memory out: a loading prompt or screen drawn into the front
- * buffer shows). */
+ * buffer shows); first, a swap its flip came before, if no flip followed. */
 void hle_pbd_scanout(void);
 /* Any thread: guest memory [pa, pa + len) is kept for the next title (a quick
  * reboot): the decode thread writes the images over it back into it when it

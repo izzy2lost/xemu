@@ -176,7 +176,7 @@ void nc_dpc_dispatch(NcKernel *k)
     ((uint8_t *)nc_vm_host(k->vm, dpc))[DPC_INSERTED] = 0;
 
     NcThread *t = k->dpc_thread;
-    const uint32_t esp = t->stack_base - 16 - 20;
+    const uint32_t esp = nc_ps_frame_top(t) - 16 - 20;
     nc_vm_wr32(k->vm, esp, k->dpc_return_va);
     nc_vm_wr32(k->vm, esp + 4, dpc);
     nc_vm_wr32(k->vm, esp + 8, nc_vm_rd32(k->vm, dpc + DPC_CONTEXT));

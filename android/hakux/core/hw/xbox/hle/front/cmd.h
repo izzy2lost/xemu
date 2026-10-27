@@ -286,7 +286,8 @@ typedef struct HleCmdDraw {
     /* vertex programs and declarations (P4, pulled forward) */
     uint64_t vsh;               /* program hash (HLE_OP_VSH); 0 = fixed function */
     uint32_t consts_off;        /* program draws: arena, 192 vec4 constants */
-    float zscale;               /* 1 / depth-buffer maximum (programs, W-buffering) */
+    float zscale;               /* 1 / depth-buffer maximum (programs, W-buffering);
+                                   2^-n for the integer formats (HLE_ZNORM_GLSL) */
     uint32_t guest_vb;          /* read in place from guest RAM (offset = PA): bindings
                                    (bit i), the FVF stream (HLE_DRAW_GUEST_FVF) */
     uint32_t nbind;             /* > 0: the layout below replaces fvf/vb_off/stride */

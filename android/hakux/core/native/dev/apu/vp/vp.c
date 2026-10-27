@@ -506,9 +506,6 @@ static bool voice_lock(MCPXAPUState *d, uint16_t v, bool lock, bool may_retry)
         d->vp.voice_locked[v / 64] &= ~mask;
     }
     apu_spin_unlock(&d->vp.voice_spinlocks[v]);
-    if (!lock) {
-        pthread_cond_signal(&d->cond);
-    }
     return true;
 }
 
@@ -561,10 +558,6 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
             break;
         }
 
-        bool locked = is_voice_locked(d, selected_handle);
-        if (!locked && !voice_lock(d, selected_handle, true, true)) {
-            break;      /* runs again: nothing changed yet */
-        }
         off_notify_now(d, selected_handle);    /* its last VOICE_OFF's, before it plays again */
 
         list = GET_MASK(d->regs[NV_PAPU_FEAV], NV_PAPU_FEAV_LST);
@@ -643,11 +636,6 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
         voice_reset_filters(d, selected_handle);
         voice_set_mask(d, selected_handle, NV_PAVS_VOICE_PAR_STATE,
                        NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE, 1);
-
-        if (!locked) {
-            voice_lock(d, selected_handle, false, false);
-        }
-
         break;
     }
     case NV1BA0_PIO_VOICE_RELEASE: {
@@ -658,11 +646,6 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
 
         // FIXME: What if already in release? Restart envelope?
         // FIXME: Should release count ascend or descend?
-
-        bool locked = is_voice_locked(d, selected_handle);
-        if (!locked && !voice_lock(d, selected_handle, true, true)) {
-            break;      /* runs again: nothing changed yet */
-        }
 
         uint16_t rr;
         rr = voice_get_mask(d, selected_handle, NV_PAVS_VOICE_TAR_LFO_ENV,
@@ -680,11 +663,6 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
         voice_set_mask(d, selected_handle, NV_PAVS_VOICE_PAR_STATE,
                        NV_PAVS_VOICE_PAR_STATE_EFCUR,
                        NV_PAVS_VOICE_PAR_STATE_EFCUR_RELEASE);
-
-        if (!locked) {
-            voice_lock(d, selected_handle, false, false);
-        }
-
         break;
     }
     case NV1BA0_PIO_VOICE_OFF:
@@ -967,6 +945,26 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
     }
 }
 
+/* The voice whose state a guest method changes that the VP's frame changes
+ * too (the envelope's state and counts, the play offset), 0xFFFF for none:
+ * the other methods set fields only the guest writes. */
+static uint16_t method_voice(MCPXAPUState *d, uint32_t method, uint32_t argument)
+{
+    switch (method) {
+    case NV1BA0_PIO_VOICE_ON:
+    case NV1BA0_PIO_VOICE_RELEASE:
+        return argument & NV1BA0_PIO_VOICE_ON_HANDLE;
+    case NV1BA0_PIO_VOICE_OFF:
+        return argument & NV1BA0_PIO_VOICE_OFF_HANDLE;
+    case NV1BA0_PIO_VOICE_PAUSE:
+        return argument & NV1BA0_PIO_VOICE_PAUSE_HANDLE;
+    case NV1BA0_PIO_SET_VOICE_BUF_CBO:
+        return (uint16_t)d->regs[NV_PAPU_FECV];
+    default:
+        return 0xFFFF;
+    }
+}
+
 uint64_t mcpx_apu_vp_read(void *opaque, uint32_t addr, unsigned int size)
 {
     DPRINTF("mcpx apu VP: read [0x%" PRIx64 "] (%s)\n", addr,
@@ -1049,7 +1047,28 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
             }
         }
         t_guest_write = true;
-        fe_method(d, addr, val);
+        /* A voice whose state the frame changes too is the guest's while the
+         * method runs, as its own VOICE_LOCK makes it: the frame leaves it
+         * for the next (voice_take), and a batch processing it is waited for
+         * first, the store run again if that takes long (voice_spin_lock).
+         * Unguarded, the guest's VOICE_OFF and a worker's envelope update
+         * read-modify-wrote the same word and one store was lost: a voice
+         * turned off played on, never reported idle, its release waited for
+         * for good. */
+        const uint16_t v = method_voice(d, addr, val);
+        const bool guard = v < MCPX_HW_MAX_VOICES && !is_voice_locked(d, v);
+        if (!guard || voice_lock(d, v, true, true)) {
+            if (guard) {
+                /* the voice held before the method's stores (VOICE_ON's list
+                 * insert) are seen: the unlock's release orders only the
+                 * stores before it */
+                __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            }
+            fe_method(d, addr, val);
+            if (guard) {
+                voice_lock(d, v, false, false);
+            }
+        }
         t_guest_write = false;
         apu_spin_unlock(&d->vp.fe_spin);
         break;
@@ -2179,21 +2198,96 @@ static void *voice_worker_thread(void *arg)
     return NULL;
 }
 
-static void voice_work_acquire_voice_lock_for_processing(MCPXAPUState *d, int v)
+/* A listed voice for the frame, by its state under its spinlock (the guest's
+ * methods change that state holding the voice: mcpx_apu_vp_write's guard).
+ * The frame never waits on the guest for long: a voice the guest holds (its
+ * VOICE_LOCK, or a method running) is waited for HELD_WAIT_US, holding none
+ * of its own (the guest's unlock takes it), the first frame it is held, then
+ * left for a later frame. Waiting for the unlock, the frame deadlocked with a
+ * guest that locks the voices of a group (a multichannel stream) one by one,
+ * its next lock waiting on one the frame's batch held already; and with one
+ * that waits on the APU holding a voice (a notification, the GP's mailbox:
+ * the frame that produces it never came). On the hardware the VP keeps its
+ * pace whatever the CPU holds. The wait lasts while the listener can't tell:
+ * up to HELD_WAIT_US, while more than a callback's worth is queued for the
+ * output (the frames then catch up before the next callback), slept for
+ * after HELD_SPIN_US. A title's holds end within a fraction of a millisecond
+ * (Forza's race: 0.22 ms at most in a minute); spun for throughout, the wait
+ * kept the holding thread off a core they shared: holds then lasted until
+ * the spin gave up, and about one a second was left out of its frames (a
+ * gap of 0.7-2.7 ms in the voice). */
+#define HELD_WAIT_US 8000
+#define HELD_SPIN_US 50                 /* then slept for, HELD_NAP_US at a time */
+#define HELD_NAP_US 100
+#define HELD_STUCK_FRAMES 1500          /* a second of GP frames */
+/* HAKUX_APU_STATS: frames a voice was left out; holds waited out, the
+ * longest of those (us); the longest run of frames a voice was left out */
+uint32_t g_vp_held_skips, g_vp_held_waits, g_vp_held_wait_max_us, g_vp_held_run_max;
+
+typedef enum VoiceTake {
+    VOICE_TAKEN,    /* active: its spinlock kept for the batch */
+    VOICE_IDLE,     /* off: for the idle report */
+    VOICE_HELD,     /* the guest's: a later frame's */
+} VoiceTake;
+
+static VoiceTake voice_take(MCPXAPUState *d, uint8_t *c, uint16_t v)
 {
-    apu_spin_lock(&d->vp.voice_spinlocks[v]);
-    while (is_voice_locked(d, v)) {
-        /* Stall until the guest unlocks the voice. Its unlock signals
-         * without d->lock (the guest thread never takes it), so the signal
-         * can come between this check and the wait: a wait is 200 us at
-         * most, then the lock is looked at again (a lost signal stalled the
-         * APU until some other broadcast, tens of ms). */
-        apu_spin_unlock(&d->vp.voice_spinlocks[v]);
-        apu_cond_timedwait_us(&d->cond, &d->lock, 200);
-        apu_spin_lock(&d->vp.voice_spinlocks[v]);
+    ApuSpin *s = &d->vp.voice_spinlocks[v];
+    apu_spin_lock(s);
+    if (is_voice_locked(d, v)) {
+        apu_spin_unlock(s);
+        uint16_t *held = &d->vp.held_frames[v];
+        bool got = false;
+        if (!*held) {
+            const int64_t t0 = apu_host_us();
+            int64_t us = 0;
+            while (us < HELD_WAIT_US && apu_out_queued() >= d->monitor.device_buffer_bytes) {
+                if (!is_voice_locked(d, v)) {
+                    apu_spin_lock(s);
+                    if ((got = !is_voice_locked(d, v))) {
+                        break;
+                    }
+                    apu_spin_unlock(s);
+                } else if (us < HELD_SPIN_US) {
+#if defined(__aarch64__)
+                    __asm__ __volatile__("yield" ::: "memory");
+#endif
+                } else {
+                    usleep(HELD_NAP_US);
+                }
+                us = apu_host_us() - t0;
+            }
+            if (got) {
+                apu_inc(&g_vp_held_waits);
+                if ((uint32_t)us > apu_ld(&g_vp_held_wait_max_us)) {
+                    apu_st(&g_vp_held_wait_max_us, (uint32_t)us);
+                }
+            }
+        }
+        if (!got) {
+            apu_inc(&g_vp_held_skips);
+            if (*held < UINT16_MAX && ++*held == HELD_STUCK_FRAMES) {
+                nc_log("hakuX-apu", "stuck: voice %u held by the guest (its VOICE_LOCK) for a second, "
+                                    "left out of the frames since; FECTL %08x ISTS %08x",
+                       v, apu_ld(&d->regs[NV_PAPU_FECTL]), apu_ld(&d->regs[NV_PAPU_ISTS]));
+            }
+            return VOICE_HELD;
+        }
     }
+    if (d->vp.held_frames[v]) {
+        if (d->vp.held_frames[v] > apu_ld(&g_vp_held_run_max)) {
+            apu_st(&g_vp_held_run_max, d->vp.held_frames[v]);
+        }
+        d->vp.held_frames[v] = 0;
+    }
+    if (!voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE, NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
+        apu_spin_unlock(s);
+        return VOICE_IDLE;
+    }
+    return VOICE_TAKEN;
 }
 
+/* an active voice for the batch, its spinlock taken (voice_take) */
 static void voice_work_enqueue(MCPXAPUState *d, int v, int list)
 {
     VoiceWorkDispatch *vwd = &d->vp.voice_work_dispatch;
@@ -2203,8 +2297,6 @@ static void voice_work_enqueue(MCPXAPUState *d, int v, int list)
         .voice = v,
         .list = list,
     };
-
-    voice_work_acquire_voice_lock_for_processing(d, v);
 }
 
 static void voice_work_release_voice_locks(MCPXAPUState *d)
@@ -2456,19 +2548,26 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
             d->regs[next] = voice_get_mask_nolock(d, c, v,
                                NV_PAVS_VOICE_TAR_PITCH_LINK,
                                NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE);
-            listed[v / 64] |= 1ull << (v % 64);
-            if (!voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_PAR_STATE,
-                                NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
+            const uint64_t bit = 1ull << (v % 64);
+            listed[v / 64] |= bit;
+            if (!APU_CHECK(!(queued[v / 64] & bit))) {
+                break;          /* its spinlock is the batch's already */
+            }
+            /* its state read under its spinlock: a voice the guest is
+             * turning on is on the list before it is active, and was
+             * reported idle */
+            switch (voice_take(d, c, (uint16_t)v)) {
+            case VOICE_TAKEN:
+                queued[v / 64] |= bit;
+                voice_work_enqueue(d, v, list);
+                break;
+            case VOICE_IDLE:
                 if (nidle < ARRAY_SIZE(idle)) {
                     idle[nidle++] = (uint16_t)v;    /* reported below (idle_report) */
                 }
-            } else {
-                const uint64_t bit = 1ull << (v % 64);
-                if (!APU_CHECK(!(queued[v / 64] & bit))) {
-                    break;
-                }
-                queued[v / 64] |= bit;
-                voice_work_enqueue(d, v, list);
+                break;
+            case VOICE_HELD:
+                break;          /* listed: its VOICE_OFF's notification waits */
             }
             d->regs[current] = d->regs[next];
         }
@@ -2535,6 +2634,7 @@ void mcpx_apu_vp_reset(MCPXAPUState *d)
     memset(d->vp.hrtf_submix, 0, sizeof(d->vp.hrtf_submix));
     memset(d->vp.submix_headroom, 0, sizeof(d->vp.submix_headroom));
     memset(d->vp.voice_locked, 0, sizeof(d->vp.voice_locked));
+    memset(d->vp.held_frames, 0, sizeof(d->vp.held_frames));
     memset(d->vp.voice_wrote, 0, sizeof(d->vp.voice_wrote));
     memset(g_off_pending, 0, sizeof(g_off_pending));
     g_idle_last = 0xFFFF;

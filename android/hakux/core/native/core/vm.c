@@ -358,11 +358,53 @@ void nc_vm_pin(NcVm *vm, uint32_t pa, bool known, int lock)
 }
 
 /* A used page that can move: mapped at exactly the one VA its reverse map
- * names, not pinned, not write-protected for dirty tracking. */
+ * names, not pinned, with guest access (without it, its RAM is older than
+ * what the HLE puts there at the next access: nc_vm_noaccess). Tracked
+ * pages move too (relocate). */
 static bool movable(const NcVm *vm, uint32_t p)
 {
     const uint32_t va = vm->rmap[p];
-    return va && !vm->pin[p] && !vm->wp[p] && vm->pte[va / NC_PAGE] == ((p * NC_PAGE) | NC_PTE_VALID);
+    return va && !vm->pin[p] && !(g_na && g_na[p]) && vm->pte[va / NC_PAGE] == ((p * NC_PAGE) | NC_PTE_VALID);
+}
+
+/* A free page a moved one can go to: one without guest access may still get
+ * what the HLE owes it. */
+static bool takes_move(const NcVm *vm, uint32_t p)
+{
+    return !vm->page_used[p] && !(g_na && g_na[p]);
+}
+
+/* Movable page q's contents, and the VA mapping it, to free page `to`.
+ * Write tracking follows physical pages, freed ones too, and the HLE knows
+ * them by physical address: GPU work may still read either page in place,
+ * and what the HLE saw in them is neither page's contents from here on (q
+ * goes to the new block, `to` holds the VA's page). A tracked one waits for
+ * that GPU work, and both are reported written: dirty, untracked. Copied
+ * unreported, a page took over the tracking of what `to` held, faulted as
+ * the guest wrote it and never moved again: Project Gotham Racing 2's
+ * image pages, moved out of earlier blocks' way onto freed textures,
+ * left no window for its attract replay's 20 MiB. */
+static bool relocate(NcVm *vm, uint32_t q, uint32_t to)
+{
+    const bool tracked = vm->wp[q] || vm->wp[to];
+    if (tracked && nc_vm_dma.fence) {
+        const uint64_t a = nc_vm_dma.fence(q * NC_PAGE, NC_PAGE), b = nc_vm_dma.fence(to * NC_PAGE, NC_PAGE);
+        nc_vm_dma.wait(a > b ? a : b);
+    }
+    const uint32_t va = vm->rmap[q];
+    memcpy(vm->ram + (size_t)to * NC_PAGE, vm->ram + (size_t)q * NC_PAGE, NC_PAGE);
+    vm->page_used[to] = 1;
+    if (!nc_vm_map(vm, va, to * NC_PAGE, NC_PAGE)) {
+        vm->page_used[to] = 0;
+        return false;
+    }
+    vm->rmap[q] = 0;
+    vm->page_used[q] = 0;
+    if (tracked && nc_vm_dma.wrote) {
+        nc_vm_dma.wrote(q * NC_PAGE, NC_PAGE);
+        nc_vm_dma.wrote(to * NC_PAGE, NC_PAGE);
+    }
+    return true;
 }
 
 uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align, uint32_t *moved)
@@ -406,21 +448,12 @@ uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t 
         if (!vm->page_used[p]) {
             continue;
         }
-        while (to < ram_pages && (vm->page_used[to] || (to >= best && to < best + pages))) {
+        while (to < ram_pages && (!takes_move(vm, to) || (to >= best && to < best + pages))) {
             to++;
         }
-        if (to >= ram_pages) {
+        if (to >= ram_pages || !relocate(vm, p, to)) {
             return UINT32_MAX;
         }
-        const uint32_t va = vm->rmap[p];
-        memcpy(vm->ram + (size_t)to * NC_PAGE, vm->ram + (size_t)p * NC_PAGE, NC_PAGE);
-        vm->page_used[to] = 1;
-        if (!nc_vm_map(vm, va, to * NC_PAGE, NC_PAGE)) {
-            vm->page_used[to] = 0;
-            return UINT32_MAX;
-        }
-        vm->rmap[p] = 0;
-        vm->page_used[p] = 0;
         (*moved)++;
     }
     memset(vm->page_used + best, 1, pages);
@@ -495,19 +528,13 @@ uint32_t nc_vm_alloc_phys_top(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, 
                 to = ram_pages;
                 continue;
             }
-            if (!vm->page_used[to] && (to < p || to >= p + pages)) {
+            if (takes_move(vm, (uint32_t)to) && (to < p || to >= p + pages)) {
                 break;
             }
         }
-        const uint32_t va = vm->rmap[q];
-        memcpy(vm->ram + (size_t)to * NC_PAGE, vm->ram + (size_t)q * NC_PAGE, NC_PAGE);
-        vm->page_used[to] = 1;
-        if (!nc_vm_map(vm, va, (uint32_t)to * NC_PAGE, NC_PAGE)) {
-            vm->page_used[to] = 0;
+        if (!relocate(vm, q, (uint32_t)to)) {
             return UINT32_MAX;
         }
-        vm->rmap[q] = 0;
-        vm->page_used[q] = 0;
         (*moved)++;
     }
     check_unmapped(vm, p, pages, __builtin_return_address(0));

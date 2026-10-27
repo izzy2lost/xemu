@@ -350,8 +350,10 @@ static void tail(Buf *bp, const HleVshKey *k, bool fogw)
      * pixel stage's), and without a depth test nothing. The program's z then
      * must not clip the primitive (Forza's sky dome past the far plane, its
      * minimap at z far below 0), so the clip z only keeps w >= 0. */
-    put(&b, "  gl_Position = vec4(ndc * w, %s, w);\n",
-        k->wbuf || k->zfree ? "0.0" : "oPos.z * pc.zscale * w");
+    if (!k->wbuf && !k->zfree) {
+        put(&b, HLE_ZNORM_GLSL("oPos.z", "zN"));
+    }
+    put(&b, "  gl_Position = vec4(ndc * w, %s, w);\n", k->wbuf || k->zfree ? "0.0" : "zN * w");
     put(&b, "%s}\n", k->wbuf ? "  vW = w;\n" : "");
     *bp = b;
 }

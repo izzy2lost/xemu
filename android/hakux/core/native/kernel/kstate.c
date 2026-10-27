@@ -78,6 +78,9 @@ bool nc_kern_state_load(NcRd *r, unsigned v)
     NcKernel *k = nc_state_kernel();
     const uint32_t base = k->xbe_base, size = k->xbe_size, kprocess = k->kprocess;
     nc_rec_get(r, &nc_rec_NcKernel, k, v);
+    if (v < 2) {
+        memset(k->handles_more, 0, sizeof(k->handles_more));    /* its table ended at NC_HANDLES_V1 */
+    }
     if (k->xbe_base != base || k->xbe_size != size || k->kprocess != kprocess) {
         nc_log("hakuX-native-state", "the state's image is at %08x+%x (process %08x), this boot's at %08x+%x (%08x)",
                k->xbe_base, k->xbe_size, k->kprocess, base, size, kprocess);
@@ -196,6 +199,7 @@ bool nc_thrd_state_load(NcRd *r, unsigned v)
 const NcCpuContext *nc_kstate_start_context(NcKernel *k)
 {
     nc_dpc_sync(k);                     /* a state from before the flag had none */
+    nc_ps_old_stacks(k);                /* every section loaded: the memory map is the state's */
     NcThread *t = k->current;
     if (g_point == NC_STATE_AT_IDLE || !t || t->state != NC_T_RUNNING) {
         /* Every thread was switched out: the guest CPU starts in the

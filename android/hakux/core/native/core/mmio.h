@@ -49,8 +49,9 @@ bool nc_mmio_take_retry(void);
 uint64_t nc_mmio_total(void);
 /* Host faults the core handled, by kind (core.c nc_core_fault; each costs a
  * signal): FEX's call-return stack, guest stores to pages write tracking
- * cleaned, device registers reached by a fault (not yet hooked sites). */
-extern uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio;
+ * cleaned, device registers reached by a fault (not yet hooked sites), atomics
+ * at an alignment the host can't do (emulated each time). */
+extern uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio, g_nc_faults_unaligned;
 /* debug: the guest EIPs of MMIO faults, sampled (1 in 64): " eip:n ..." of
  * the busiest since the last call, then cleared */
 void nc_mmio_fault_sites(char *buf, size_t len);

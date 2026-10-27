@@ -94,6 +94,15 @@ typedef struct MCPXAPUState {
     bool pace_gp;               /* pace the GP frames of this EP frame */
     int64_t gp_boost_until_us;  /* a CPU thread waits; GP frames run to completion */
 
+    /* the guest's ISTS writes (its acknowledges), and the frame thread's
+     * once-a-second look at states that last (apu.c stuck_check) */
+    uint32_t ists_writes;
+    struct {
+        int64_t at_ms;          /* the last look */
+        uint32_t ists_writes;   /* ists_writes then */
+        unsigned seen, logged;  /* STUCK_* seen at the last look, logged since they began */
+    } stuck;
+
     struct {
         McpxApuDebugMonitorPoint point;
         int16_t frame_buf[256][2]; // 1 EP frame (0x400 bytes), queued to the output

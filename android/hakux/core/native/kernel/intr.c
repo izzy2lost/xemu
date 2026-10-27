@@ -210,7 +210,7 @@ bool nc_intr_dispatch(NcKernel *k, bool cpu_enabled)
             }
         }
         NcThread *t = k->isr_thread;
-        const uint32_t esp = t->stack_base - 16 - 12;
+        const uint32_t esp = nc_ps_frame_top(t) - 16 - 12;
         nc_vm_wr32(k->vm, esp, k->isr_return_va);
         nc_vm_wr32(k->vm, esp + 4, obj);
         nc_vm_wr32(k->vm, esp + 8, nc_vm_rd32(k->vm, obj + KI_CONTEXT));

@@ -169,7 +169,8 @@ typedef struct HleFfPush {
                                          resolution scale; bits 16-23: the
                                          target's scale (point sizes), 24-31:
                                          the resolution scale (those texels) */
-    float zscale;                     /* vertex programs: 1 / depth maximum */
+    float zscale;                     /* vertex programs: 1 / depth maximum (2^-n for
+                                         the integer formats: HLE_ZNORM_GLSL) */
     uint32_t fog_color;               /* FOGCOLOR (D3DCOLOR) */
     float fog[4];                     /* FOGSTART, FOGEND, FOGDENSITY, 0 */
     uint32_t psc[20];                 /* pixel shaders: C0[8], C1[8], final C0, C1
@@ -199,10 +200,24 @@ typedef struct HleFfPush {
  * (psc[18], psc[19], float bits; zero when SOLIDOFFSETENABLE is off). The
  * pixel generators declare vW (location 9, from the program vertex shader). */
 #define HLE_WBUF_IN_GLSL "layout(location = 9) in float vW;\n"
+/* Screen-space depth z (0 .. the buffer's maximum, 2^n - 1) to [0, 1] as
+ * `out`: pc.zscale is 2^-n for the integer formats (pbdraw.c), and
+ * z 2^-n + z 2^-2n is z / (2^n - 1) to float precision, both products exact
+ * and summed once ("precise": not folded into one product, whose scale
+ * float32 can't hold). The float nearest 1 / (2^24 - 1) is above it: a
+ * vertex a step in front of the far plane (2^24 - 2) came out at 1.0, and
+ * Super Monkey Ball Deluxe's movies, drawn there over a depth buffer cleared
+ * to the far plane, failed their LESS test (black, the subtitles over it
+ * drawn). Any other scale (1.0, a float depth buffer) is the plain product. */
+#define HLE_ZNORM_GLSL(z, out) \
+    "  precise float " out " = " z " * pc.zscale + " z " * (pc.zscale == uintBitsToFloat(0x33800000u) ||\n" \
+    "      pc.zscale == uintBitsToFloat(0x37800000u) ? pc.zscale * pc.zscale : 0.0);\n"
 /* first in main (derivatives before any discard), stored last */
 #define HLE_WBUF_CALC_GLSL \
-    "  float wDepth = clamp((vW + uintBitsToFloat(pc.psc[18]) + uintBitsToFloat(pc.psc[19]) *\n" \
-    "      max(abs(dFdx(vW)), abs(dFdy(vW)))) * pc.zscale, 0.0, 1.0);\n"
+    "  float wRaw = vW + uintBitsToFloat(pc.psc[18]) + uintBitsToFloat(pc.psc[19]) *\n" \
+    "      max(abs(dFdx(vW)), abs(dFdy(vW)));\n" \
+    HLE_ZNORM_GLSL("wRaw", "wN") \
+    "  float wDepth = clamp(wN, 0.0, 1.0);\n"
 #define HLE_WBUF_STORE_GLSL "  gl_FragDepth = wDepth;\n"
 
 /* EQUAL depth passes that do not write (vk/draw.c eq_tol) test LESSEQUAL a

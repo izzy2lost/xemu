@@ -173,9 +173,18 @@ static struct {
     bool vis_open;                      /* a visibility test counts (ZPASS enabled) */
     bool vis_unsent;                    /* reports ended since the last submit boundary */
     uint64_t vis_tests, vis_kicks;
-    /* frames swapped, waiting for their flip: decode thread in, vblank out */
+    /* frames swapped, waiting for their flip: decode thread in, vblank out
+     * (pend_flipped: one whose flip came before it, hle_pb_flipped) */
     uint32_t pend[8];
+    bool pend_flipped[8];
     uint32_t pend_head, pend_tail;
+    /* D3D's immediate flip (its trap's handler, before the frame's
+     * FLIP_INCREMENT_WRITE): ahead_pa, the bound target's memory while it
+     * has a frame drawn since the last swap (set at each trap, atomic);
+     * flipped_pa, a flip there: the swap that comes is one flipped */
+    uint32_t ahead_pa, flipped_pa;
+    uint64_t swap_wseq;                 /* wseq at the last swap */
+    uint64_t flipped_presents;
     uint64_t shown;
     int64_t flipped_ns;                 /* the last flip (hle_now_ns) */
     /* the transform unit: program memory and constants, their load points */
@@ -1231,11 +1240,22 @@ static void swap(void)
     c->dump_off = HLE_SWAP_NO_DUMP;
     hle_hitch_pb_swap(c->swap_id);          /* before the back end stamps its stages */
     hle_fe_commit();
+    const uint32_t pa = g_pd.rt_obj ? g_pd.rt_obj->d.pa : 0;
+    const uint32_t flipped = __atomic_exchange_n(&g_pd.flipped_pa, 0, __ATOMIC_ACQ_REL);
     uint32_t head = g_pd.pend_head;
     if (head - __atomic_load_n(&g_pd.pend_tail, __ATOMIC_ACQUIRE) < ARRAY_SIZE(g_pd.pend)) {
         g_pd.pend[head % ARRAY_SIZE(g_pd.pend)] = c->swap_id;
+        g_pd.pend_flipped[head % ARRAY_SIZE(g_pd.pend)] = pa && flipped == pa;
         __atomic_store_n(&g_pd.pend_head, head + 1, __ATOMIC_RELEASE);
     }
+    g_pd.swap_wseq = g_pd.wseq;
+    __atomic_store_n(&g_pd.ahead_pa, 0, __ATOMIC_RELEASE);
+}
+
+void hle_pbd_trap(void)
+{
+    const PbObj *o = g_pd.on ? g_pd.rt_obj : NULL;
+    __atomic_store_n(&g_pd.ahead_pa, o && o->written > g_pd.swap_wseq ? o->d.pa : 0, __ATOMIC_RELEASE);
 }
 
 static uint32_t object_at(uint32_t pa);
@@ -1367,6 +1387,39 @@ void hle_pbd_display(uint32_t pa, bool flip)
     g_pd.pcrtc_presents++;
 }
 
+/* A swap whose flip came before it (hle_pb_flipped) and no flip since, the
+ * title idle: the frame the console shows, presented (the newest such; the
+ * ones before it go). Heroes draws its tutorial prompts once over the scene
+ * and waits on a button: no flip came to present them. */
+static bool present_flipped(void)
+{
+    const size_t n = ARRAY_SIZE(g_pd.pend);
+    uint32_t tail = __atomic_load_n(&g_pd.pend_tail, __ATOMIC_ACQUIRE), take, id;
+    do {
+        const uint32_t head = __atomic_load_n(&g_pd.pend_head, __ATOMIC_ACQUIRE);
+        take = head;
+        for (uint32_t i = tail; i != head; i++) {
+            if (g_pd.pend_flipped[i % n]) {
+                take = i;
+            }
+        }
+        if (take == head) {
+            return false;
+        }
+        id = g_pd.pend[take % n];
+    } while (!__atomic_compare_exchange_n(&g_pd.pend_tail, &tail, take + 1, false, __ATOMIC_ACQ_REL,
+                                          __ATOMIC_ACQUIRE));
+    __atomic_store_n(&g_pd.shown_ns, hle_now_ns(), __ATOMIC_RELAXED);
+    hle_hitch_frame(id, HLE_FR_FLIP);
+    hle_disp_present(id);
+    fps_log();
+    if (g_pd.flipped_presents++ < 4) {
+        hle_log("hakuX-hle-pb", "scanout: swap %u, flipped before it came, had no flip since: shown "
+                "(first 4 logged)", id);
+    }
+    return true;
+}
+
 bool hle_pbd_scan_due(void)
 {
     const int64_t t = __atomic_load_n(&g_pd.shown_ns, __ATOMIC_RELAXED);
@@ -1388,6 +1441,9 @@ void hle_pbd_scanout(void)
         }
     }
     if (!g_pd.on || !g_pd.shown_id || !hle_pbd_scan_due()) {
+        return;
+    }
+    if (present_flipped()) {
         return;
     }
     /* What the CPU wrote there (not a target the CPU uses from now on: its
@@ -1510,10 +1566,22 @@ void hle_pbd_overlay(bool show)
     }
 }
 
-void hle_pb_flipped(void)
+void hle_pb_flipped(uint32_t start)
 {
     if (!g_pd.on) {
         return;
+    }
+    /* The display at the target being drawn: D3D's immediate flip, done by
+     * its trap's handler before the frame's FLIP_INCREMENT_WRITE (Dungeons
+     * & Dragons Heroes, Project Gotham Racing 2, Blinx). It still presents
+     * the frame before, as below: the GPU here finishes a frame well after
+     * the guest flips it, and that frame's lead keeps the cadence (shown at
+     * their swaps, Blinx's 30 fps frames went on screen as each was written,
+     * 9-14 ms on, and juddered). The swap that comes is marked flipped, for
+     * when no flip follows it (hle_pbd_scanout). */
+    const uint32_t pa = start & 0x0FFFFFFFu;
+    if (pa && __atomic_load_n(&g_pd.ahead_pa, __ATOMIC_ACQUIRE) == pa) {
+        __atomic_store_n(&g_pd.flipped_pa, pa, __ATOMIC_RELEASE);
     }
     /* the oldest swap waiting; hle_pbd_scanout may drop them meanwhile */
     uint32_t tail = __atomic_load_n(&g_pd.pend_tail, __ATOMIC_ACQUIRE), id;
@@ -1763,30 +1831,46 @@ static uint32_t object_at(uint32_t pa)
     return best ? best->id : 0;
 }
 
-/* A cube texture over the memory of six face targets (pa + face * stride,
- * w x w, swizzled): an image of its own whose faces those targets become,
- * views into it (as D3D mode's cube render targets), so what the faces
- * render is what the cube samples. Made once; 0 when not all six faces are
- * targets. Forza renders its cars' reflection cube this way; sampled as
- * face 0's 2D image, the cars' glass and roofs came out white. */
-static uint32_t cube_of_targets(uint32_t pa, uint32_t w, uint32_t stride)
+/* A colour target whose memory is exactly face f of a cube (w x w texels
+ * of bytes each at pa + f * stride): swizzled, or linear rows of w. */
+static bool face_target(const PbObj *o, uint32_t pa, uint32_t w, uint32_t bytes)
+{
+    const HleFmtInfo *oi = !o->cube && !o->d.parent && o->d.pa == pa && o->d.w == w && o->d.h == w ?
+                           hle_fmt_info(o->d.xfmt) : NULL;
+    return oi && !(oi->flags & (HLE_FI_DEPTH | HLE_FI_DXT)) && oi->bpp / 8 == bytes &&
+           (!o->d.pitch || o->d.pitch == w * bytes);
+}
+
+/* A cube texture (format code, w x w) over the memory of six face targets
+ * (pa + face * stride): an image of its own whose faces those targets
+ * become, views into it (as D3D mode's cube render targets), so what the
+ * faces render is what the cube samples. Every target over a face's memory
+ * becomes its view, whatever its layout, as a 2D texture over a target's
+ * memory samples its image (texture). Made once; 0 when a face has no
+ * target. Forza renders its cars' reflection cube this way; sampled as
+ * face 0's 2D image, the cars' glass and roofs came out white. Sega GT
+ * 2002's sun cube for its cars' highlights is cleared black each frame
+ * through linear targets (five faces) and its sun drawn into the sixth
+ * swizzled: with swizzled faces only, no cube, and the cars were white. */
+static uint32_t cube_of_targets(uint32_t pa, uint32_t code, uint32_t w, uint32_t stride)
 {
     for (unsigned i = 0; i < g_pd.nobjs; i++) {
         if (g_pd.objs[i].cube && g_pd.objs[i].d.pa == pa && g_pd.objs[i].d.w == w) {
             return g_pd.objs[i].id;
         }
     }
-    PbObj *face[6];
+    const HleFmtInfo *fi = hle_fmt_info(code);
+    const uint32_t bytes = fi ? fi->bpp / 8 : 0;
+    uint32_t xfmt = 0;  /* a target's: one the GPU renders (the texture's may not be, A4R4G4B4) */
     for (unsigned f = 0; f < 6; f++) {
-        face[f] = NULL;
-        for (unsigned i = 0; i < g_pd.nobjs && !face[f]; i++) {
-            PbObj *o = &g_pd.objs[i];
-            if (!o->cube && o->d.pa == pa + f * stride && o->d.pitch == 0 && o->d.w == w &&
-                o->d.h == w && !o->d.parent) {
-                face[f] = o;
+        bool found = false;
+        for (unsigned i = 0; i < g_pd.nobjs && !found; i++) {
+            found = face_target(&g_pd.objs[i], pa + f * stride, w, bytes);
+            if (found && !f) {
+                xfmt = g_pd.objs[i].d.xfmt;
             }
         }
-        if (!face[f] || g_pd.nobjs >= MAX_OBJS) {
+        if (!found || g_pd.nobjs >= MAX_OBJS) {
             return 0;
         }
     }
@@ -1794,30 +1878,35 @@ static uint32_t cube_of_targets(uint32_t pa, uint32_t w, uint32_t stride)
     memset(c, 0, sizeof(*c));
     c->id = g_pd.next_id++;
     c->cube = true;
-    c->d = (HleSurfDesc){ .id = c->id, .xfmt = face[0]->d.xfmt, .w = w, .h = w, .pa = pa,
-                          .levels = 1, .faces = 6 };
+    c->d = (HleSurfDesc){ .id = c->id, .xfmt = xfmt, .w = w, .h = w, .pa = pa, .levels = 1, .faces = 6 };
     HleCmdObj *oc = begin(HLE_OP_OBJ_CREATE, sizeof(*oc));
     oc->s = c->d;
     hle_fe_commit();
     for (unsigned f = 0; f < 6; f++) {
-        /* the face's own image goes; the target is a view from now on */
-        HleCmdObjDestroy *x = begin(HLE_OP_OBJ_DESTROY, sizeof(*x));
-        x->after = 0;
-        x->id = face[f]->id;
-        hle_fe_commit();
-        if (g_pd.rt == face[f]->id) {
-            g_pd.rt = 0;                    /* bound again at the next draw */
-            g_pd.rt_dirty = true;
+        for (unsigned i = 0; i < g_pd.nobjs; i++) {
+            PbObj *o = &g_pd.objs[i];
+            if (!face_target(o, pa + f * stride, w, bytes)) {
+                continue;
+            }
+            /* the face's own image goes; the target is a view from now on */
+            HleCmdObjDestroy *x = begin(HLE_OP_OBJ_DESTROY, sizeof(*x));
+            x->after = 0;
+            x->id = o->id;
+            hle_fe_commit();
+            if (g_pd.rt == o->id) {
+                g_pd.rt = 0;                /* bound again at the next draw */
+                g_pd.rt_dirty = true;
+            }
+            o->id = g_pd.next_id++;
+            o->d.id = o->id;
+            o->d.parent = c->id;
+            o->d.face = (uint16_t)f;
+            o->d.levels = 1;
+            o->d.faces = 1;
+            HleCmdObj *v = begin(HLE_OP_OBJ_CREATE, sizeof(*v));
+            v->s = o->d;
+            hle_fe_commit();
         }
-        face[f]->id = g_pd.next_id++;
-        face[f]->d.id = face[f]->id;
-        face[f]->d.parent = c->id;
-        face[f]->d.face = (uint16_t)f;
-        face[f]->d.levels = 1;
-        face[f]->d.faces = 1;
-        HleCmdObj *v = begin(HLE_OP_OBJ_CREATE, sizeof(*v));
-        v->s = face[f]->d;
-        hle_fe_commit();
     }
     hle_log("hakuX-hle-pb", "cube %u: %ux%u at %08x (face stride %x) from its face targets", c->id,
             w, w, pa, stride);
@@ -2274,7 +2363,7 @@ static uint32_t texture(unsigned s, bool *unset, bool *lin)
             stride += lw * lw * (fi->bpp / 8);
         }
         stride = (stride + 127) & ~127u;    /* faces 128-byte aligned (XGSetCubeTextureHeader) */
-        const uint32_t cube = cube_of_targets(pa, cw, stride);
+        const uint32_t cube = cube_of_targets(pa, code, cw, stride);
         if (cube) {
             return cube;
         }
@@ -2810,8 +2899,9 @@ static void emit(HleCmdDraw *d)
     uint32_t zf = (R(NV097_SET_SURFACE_FORMAT) >> 4) & 0xF;
     d->vsh = ff ? ff_program() : program();
     d->consts_off = c_off;
-    d->zscale = (R(NV097_SET_CONTROL0) & 0x1000u) ? 1.0f : zf == 1 ? 1.0f / 65535.0f
-                                                                : 1.0f / 16777215.0f;
+    /* the integer formats' 2^-n, the shaders adding the rest (HLE_ZNORM_GLSL) */
+    d->zscale = (R(NV097_SET_CONTROL0) & 0x1000u) ? 1.0f : zf == 1 ? 1.0f / 65536.0f
+                                                                : 1.0f / 16777216.0f;
     d->ff_ubo = HLE_DRAW_NO_UBO;
     drawlog(d, ff);
     HleCmdDraw *c = begin(HLE_OP_DRAW, sizeof(*c));

@@ -10,7 +10,7 @@
  * Guest layouts (nxdk xboxkrnl.h, CC0; 32-bit):
  *   KTHREAD (0x110): Header 0x00 (Type, Size 0x02, SignalState 0x04, WaitListHead 0x08),
  *     MutantListHead 0x10, StackBase 0x1C, StackLimit 0x20, KernelStack 0x24, TlsData 0x28,
- *     State 0x2C, Priority 0x32, ApcState.ApcListHead[2] 0x34, ApcState.Process 0x44,
+ *     State 0x2C, NpxState 0x30, Priority 0x32, ApcState.ApcListHead[2] 0x34, ApcState.Process 0x44,
  *     Quantum 0x6C, BasePriority 0x70, ThreadListEntry 0x104
  *   KPROCESS (0x1C): ReadyListHead 0x00, ThreadListHead 0x08, StackCount 0x10,
  *     ThreadQuantum 0x14 (XSetProcessQuantumLength: ms * 3), BasePriority 0x18
@@ -34,6 +34,7 @@
 #define KT_KERNEL_STACK  0x24
 #define KT_TLS_DATA      0x28
 #define KT_STATE         0x2C
+#define KT_NPX_STATE     0x30
 #define KT_PRIORITY      0x32
 #define KT_APC_LISTS     0x34
 #define KT_APC_PROCESS   0x44
@@ -56,6 +57,14 @@
 #define PCR_STACK_BASE     0x04
 #define PCR_STACK_LIMIT    0x08
 #define PCR_CURRENT_THREAD 0x28
+
+/* FX_SAVE_AREA (nboxkrnl ki.hpp): FLOATING_SAVE_AREA (an FXSAVE image, 512
+ * bytes, then Cr0NpxState) and 12 bytes of alignment */
+#define FX_SAVE_AREA          0x210
+#define FX_CONTROL_WORD       0x00
+#define FX_MXCSR              0x18
+#define FX_CR0_NPX_STATE      0x200
+#define NPX_STATE_NOT_LOADED  0x0A      /* CR0_TS | CR0_MP */
 
 #define STACK_REGION   0xD0000000u
 #define STACK_GUARD    0x10000u
@@ -141,10 +150,17 @@ static NcThread *thread_create(NcKernel *k, uint32_t stack_size, uint32_t tls_si
     if (!et) {
         return NULL;
     }
-    /* TLS sits right under StackBase, unaligned: XAPI sizes it as
-     * align16(template) + 4 and indexes it from StackBase (fs:[4]) with a
-     * negative TLS index, so its first dword (pointing at the 16-byte
-     * aligned block after it) is at exactly StackBase - TlsDataSize. */
+    /* The stack's top as the Xbox kernel lays it out (KiInitializeContextThread;
+     * nboxkrnl, after Cxbx-Reloaded): the FX save area right under StackBase,
+     * the TLS under it, the thread's frames under that. The TIB's StackBase
+     * (fs:[4]) is the save area's bottom: XAPI sizes the TLS as
+     * align16(template) + 4 and indexes it from there with a negative TLS
+     * index, so its first dword (pointing at the 16-byte aligned block after
+     * it) is at exactly fs:[4] - TlsDataSize. Without the save area a title's
+     * frames sat 0x210 bytes nearer the top than on the console: Silent
+     * Hill 2 reads 0x170 bytes over its stack pointer near the bottom of its
+     * calls, into the save area there, past the stack here (a fault the
+     * title doesn't handle: the game gone, loading a room). */
     const uint32_t tls = nc_align_up(tls_size, 4);
     /* As the real PsCreateSystemThreadEx, no thread gets less than 12 KiB:
      * Splinter Cell starts one asking for under a page and uses ~5 KiB. */
@@ -153,27 +169,34 @@ static NcThread *thread_create(NcKernel *k, uint32_t stack_size, uint32_t tls_si
     } else if (stack_size < MIN_STACK) {
         stack_size = MIN_STACK;
     }
-    const uint32_t size = nc_align_up(stack_size + tls + 16, NC_PAGE);
+    const uint32_t size = nc_align_up(stack_size + FX_SAVE_AREA + tls + 16, NC_PAGE);
     uint32_t base;
     if (!nc_ps_stack_alloc(k, size, &base)) {
         return NULL;
     }
     const uint32_t top = base + size;
+    const uint32_t tib = top - FX_SAVE_AREA;
 
     NcVm *vm = k->vm;
+    uint8_t *fx = nc_vm_host(vm, tib);         /* the top page's: a slot may come back used */
+    memset(fx, 0, FX_SAVE_AREA);
+    *(uint16_t *)(fx + FX_CONTROL_WORD) = 0x27F;
+    nc_vm_wr32(vm, tib + FX_MXCSR, 0x1F80);
+    nc_vm_wr32(vm, tib + FX_CR0_NPX_STATE, NPX_STATE_NOT_LOADED);
     uint8_t *kt = nc_vm_host(vm, et);
     kt[KT_TYPE] = THREAD_OBJECT;
     kt[KT_SIZE] = KTHREAD_SIZE / 4;
+    kt[KT_NPX_STATE] = NPX_STATE_NOT_LOADED;
     list_init(vm, et + KT_WAIT_LIST);
     list_init(vm, et + KT_MUTANT_LIST);
     list_init(vm, et + KT_APC_LISTS);
     list_init(vm, et + KT_APC_LISTS + 8);
     nc_vm_wr32(vm, et + KT_STACK_BASE, top);
     nc_vm_wr32(vm, et + KT_STACK_LIMIT, base);
-    nc_vm_wr32(vm, et + KT_KERNEL_STACK, (top - tls) & ~15u);
-    nc_vm_wr32(vm, et + KT_TLS_DATA, tls ? top - tls : 0);
+    nc_vm_wr32(vm, et + KT_KERNEL_STACK, (tib - tls) & ~15u);
+    nc_vm_wr32(vm, et + KT_TLS_DATA, tls ? tib - tls : 0);
     if (tls >= 4) {
-        nc_vm_wr32(vm, top - tls, top - tls + 4);
+        nc_vm_wr32(vm, tib - tls, tib - tls + 4);
     }
     kt[KT_PRIORITY] = DEFAULT_PRIORITY;
     kt[KT_BASE_PRIORITY] = DEFAULT_PRIORITY;
@@ -198,16 +221,44 @@ static NcThread *thread_create(NcKernel *k, uint32_t stack_size, uint32_t tls_si
     t->priority = DEFAULT_PRIORITY;
     t->stack_base = top;
     t->stack_limit = base;
+    t->tib_base = tib;
+    t->frame_top = (tib - tls) & ~15u;
     t->exception_list = 0xFFFFFFFFu;
     nc_vm_wr32(vm, et + ET_UNIQUE_THREAD, t->id);
     return t;
+}
+
+/* After a state saved before the FX save area (THRD v1): its threads' frames
+ * sit where they were, 0x210 bytes nearer their stacks' tops than the
+ * console has them. A page over each such stack, zeroed, gives a title's
+ * reads past the top what the save area gives them there (Silent Hill 2's
+ * main thread reads 12 bytes over its top loading a room); it goes with the
+ * stack (the scheduler's free of a terminated thread). Nothing else is ever
+ * there: the region's slots begin with their guards. */
+void nc_ps_old_stacks(NcKernel *k)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < NC_MAX_THREADS; i++) {
+        const NcThread *t = &k->threads[i];
+        if (t->state == NC_T_FREE || t->tib_base || t->stack_base >= NC_GPU_WINDOW ||
+            nc_vm_phys(k->vm, t->stack_base) != UINT32_MAX) {
+            continue;
+        }
+        if (nc_vm_alloc_at(k->vm, t->stack_base, NC_PAGE, NULL)) {
+            memset(nc_vm_host(k->vm, t->stack_base), 0, NC_PAGE);
+            n++;
+        }
+    }
+    if (n) {
+        nc_log("hakuX-native", "ps: %u threads from a state without the FX save area: a page over each stack", n);
+    }
 }
 
 /* KPCR fields that follow the running thread. */
 static void pcr_enter(NcKernel *k, NcThread *t)
 {
     nc_vm_wr32(k->vm, k->kpcr_va + PCR_EXCEPTION_LIST, t->exception_list);
-    nc_vm_wr32(k->vm, k->kpcr_va + PCR_STACK_BASE, t->stack_base);
+    nc_vm_wr32(k->vm, k->kpcr_va + PCR_STACK_BASE, t->tib_base ? t->tib_base : t->stack_base);
     nc_vm_wr32(k->vm, k->kpcr_va + PCR_STACK_LIMIT, t->stack_limit);
     nc_vm_wr32(k->vm, k->kpcr_va + PCR_CURRENT_THREAD, t->ethread);
 }
@@ -220,7 +271,7 @@ NcThread *nc_kernel_boot_thread(NcKernel *k, NcCpu *cpu, uint32_t entry, uint32_
         return NULL;
     }
     nc_vm_wr32(k->vm, t->ethread + ET_START_ADDRESS, entry);
-    uint32_t esp = t->stack_base - 16 - 4;
+    uint32_t esp = t->frame_top - 16 - 4;
     nc_vm_wr32(k->vm, esp, k->thread_return_va);
     nc_context_init(cpu, &t->ctx, entry, esp);
     t->state = NC_T_RUNNING;
@@ -404,7 +455,8 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
         /* Off its stack for good: the pages go back (titles start threads per
          * movie and load), the slot can hold a new thread. Its ETHREAD stays,
          * signaled, for whoever still holds a handle. */
-        for (uint32_t p = cur->stack_limit; p < cur->stack_base; p += NC_PAGE) {
+        const uint32_t end = cur->stack_base + (cur->tib_base ? 0 : NC_PAGE);  /* nc_ps_old_stacks's page */
+        for (uint32_t p = cur->stack_limit; p < end; p += NC_PAGE) {
             const uint32_t pa = nc_vm_phys(k->vm, p);
             if (pa != UINT32_MAX) {
                 nc_vm_unmap(k->vm, p, NC_PAGE); /* unmapped before it can be handed out again */
@@ -454,7 +506,7 @@ static uint64_t PsCreateSystemThreadEx(NcKernel *k, NcFrame *f, const uint32_t *
         return NC_STATUS_INSUFFICIENT_RESOURCES;
     }
     nc_vm_wr32(k->vm, t->ethread + ET_START_ADDRESS, a[5]);
-    uint32_t esp = nc_vm_rd32(k->vm, t->ethread + KT_KERNEL_STACK) - 16;
+    uint32_t esp = t->frame_top - 16;
     uint32_t eip;
     if (a[9]) {
         esp -= 12;

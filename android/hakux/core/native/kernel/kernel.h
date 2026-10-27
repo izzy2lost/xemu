@@ -74,7 +74,12 @@ enum NcObType { NC_OB_THREAD, NC_OB_EVENT, NC_OB_SEMAPHORE, NC_OB_MUTANT, NC_OB_
                 NC_OB_DEVICE, NC_OB_SYMLINK, NC_OB_DIRECTORY, NC_OB_TYPES };
 
 #define NC_MAX_THREADS 128
-#define NC_MAX_HANDLES 4096
+/* The Xbox kernel's handle table grows as it fills. Super Monkey Ball
+ * Deluxe opens its disc's ~4100 files as it boots, most of them twice, and
+ * keeps them open: at 4096 the rest failed, and a thread it created
+ * suspended got no handle to be resumed by (its title movie never played). */
+#define NC_MAX_HANDLES 16384
+#define NC_HANDLES_V1 4096              /* the table a KERN v1 state holds */
 #define NC_POOL_RANGES 8192
 
 enum NcThreadState { NC_T_FREE, NC_T_READY, NC_T_RUNNING, NC_T_WAITING, NC_T_SUSPENDED,
@@ -127,6 +132,10 @@ typedef struct NcThread {
     uint32_t id;
     int priority;
     uint32_t stack_base, stack_limit;
+    /* Under the FX save area at the stack's top (ps.c thread_create): the
+     * TIB's StackBase (fs:[4], the TLS's top), and where the thread's frames
+     * begin. 0 in a state saved before the save area: the stack's top. */
+    uint32_t tib_base, frame_top;
     uint32_t exception_list; /* NT_TIB.ExceptionList while not running */
     NcWait wait;             /* while NC_T_WAITING */
     unsigned suspend;        /* suspend count: runnable only at 0 */
@@ -205,7 +214,15 @@ struct NcKernel {
     uint32_t pool_ex, pool_ob, pool_lost;   /* live ExAllocatePool bytes, object bytes,
                                                bytes a full free list dropped */
 
-    NcHandle handles[NC_MAX_HANDLES];
+    /* the handle table, stored as its first NC_HANDLES_V1 slots (handles)
+     * and, since KERN v2, the rest */
+    union {
+        NcHandle handle_table[NC_MAX_HANDLES];
+        struct {
+            NcHandle handles[NC_HANDLES_V1];
+            NcHandle handles_more[NC_MAX_HANDLES - NC_HANDLES_V1];
+        };
+    };
 
     NcThread threads[NC_MAX_THREADS];
     unsigned threads_hi;     /* slots in use are all below this */
@@ -320,6 +337,17 @@ bool nc_ps_stack_alloc(NcKernel *k, uint32_t size, uint32_t *base);
 void nc_ps_stack_free(NcKernel *k, uint32_t base, uint32_t size);
 /* A kernel-owned thread, suspended, with no start context yet. */
 NcThread *nc_ps_kernel_thread(NcKernel *k, uint32_t stack_size, int priority);
+
+/* After a state's load: a page over the stacks of threads from a state saved
+ * before the FX save area (their frames sit nearer the top). */
+void nc_ps_old_stacks(NcKernel *k);
+
+/* Where a thread's frames begin: under its FX save area and TLS (its stack's
+ * top in a state saved before the save area). */
+static inline uint32_t nc_ps_frame_top(const NcThread *t)
+{
+    return t->frame_top ? t->frame_top : t->stack_base;
+}
 
 /* mm.c, ex.c, rtl.c */
 void nc_mm_register(NcKernel *k);

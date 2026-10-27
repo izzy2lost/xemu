@@ -80,8 +80,8 @@ uint32_t nc_ob_create(NcKernel *k, enum NcObType type, uint32_t body_size)
 uint32_t nc_ob_handle(NcKernel *k, uint32_t object, enum NcObType type)
 {
     for (unsigned i = 1; i < NC_MAX_HANDLES; i++) {
-        if (!k->handles[i].object) {
-            k->handles[i] = (NcHandle){object, type};
+        if (!k->handle_table[i].object) {
+            k->handle_table[i] = (NcHandle){object, type};
             uint32_t hdr = object - OB_HEADER;
             nc_vm_wr32(k->vm, hdr + 0x4, nc_vm_rd32(k->vm, hdr + 0x4) + 1); /* HandleCount */
             return i * 4;
@@ -94,28 +94,28 @@ uint32_t nc_ob_handle(NcKernel *k, uint32_t object, enum NcObType type)
 uint32_t nc_ob_lookup(NcKernel *k, uint32_t handle, enum NcObType *type)
 {
     uint32_t i = handle / 4;
-    if (handle & 3 || !i || i >= NC_MAX_HANDLES || !k->handles[i].object) {
+    if (handle & 3 || !i || i >= NC_MAX_HANDLES || !k->handle_table[i].object) {
         return 0;
     }
     if (type) {
-        *type = k->handles[i].type;
+        *type = k->handle_table[i].type;
     }
-    return k->handles[i].object;
+    return k->handle_table[i].object;
 }
 
 /* Closes a handle; a file's host state goes with its last handle. */
 bool nc_ob_close(NcKernel *k, uint32_t handle)
 {
     uint32_t i = handle / 4;
-    if (handle & 3 || !i || i >= NC_MAX_HANDLES || !k->handles[i].object) {
+    if (handle & 3 || !i || i >= NC_MAX_HANDLES || !k->handle_table[i].object) {
         return false;
     }
-    const uint32_t object = k->handles[i].object;
-    const enum NcObType type = k->handles[i].type;
+    const uint32_t object = k->handle_table[i].object;
+    const enum NcObType type = k->handle_table[i].type;
     const uint32_t hdr = object - OB_HEADER;
     const uint32_t count = nc_vm_rd32(k->vm, hdr + 0x4) - 1;
     nc_vm_wr32(k->vm, hdr + 0x4, count);
-    k->handles[i].object = 0;
+    k->handle_table[i].object = 0;
     if (!count && (type == NC_OB_FILE || type == NC_OB_SYMLINK)) {
         nc_io_close(k, object);
     }

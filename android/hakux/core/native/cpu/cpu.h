@@ -185,6 +185,12 @@ void nc_cpu_fault_resume(NcCpu *cpu, void *ucontext);
 /* The faulting access was a write (a data abort's WnR). */
 bool nc_cpu_fault_is_write(const void *ucontext);
 
+/* A SIGBUS (si_code code) in translated guest code: an atomic access the host
+ * can't make at that alignment (a locked x86 instruction at an address its
+ * size doesn't divide), done by FEX's unaligned-access handler, which moves
+ * the faulting context's PC past it. True if handled. */
+bool nc_cpu_unaligned_fault(NcCpu *cpu, int code, void *ucontext);
+
 /* A fault in the call-ret shadow stack's guard pages (unbalanced guest
  * CALL/RET, e.g. across guest thread switches): resets its pointer in the
  * faulting context (a ucontext_t *) as FEX's front ends do. True if handled. */

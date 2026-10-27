@@ -29,3 +29,13 @@ One entry per section version (tools/native/statelock.py).
 
 - Contig.protect: a contiguous block's ProtectionType, MmQueryAddressProtect's answer (v1 states: read-write)
 - upgraded: v1..v1 states load
+
+## THRD v2 (2026-10-26, after ?)
+
+- NcThread.tib_base, frame_top: a thread's stack keeps the Xbox kernel's FX save area (0x210 bytes) under its top; the TIB's StackBase (fs:[4]) and the thread's frames sit under it (v1 states: 0, the stack's old layout, kept)
+- upgraded: v1..v1 states load
+
+## KERN v2 (2026-10-26, after ?)
+
+- NcKernel.handles_more: the handle table grows from 4096 slots to 16384 (Super Monkey Ball Deluxe keeps ~6100 files open); its slots past 4096 (v1 states: none, all free)
+- upgraded: v1..v1 states load

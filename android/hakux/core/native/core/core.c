@@ -301,7 +301,7 @@ static bool fault_report(NcCore *c, uintptr_t pc, uint64_t va, const char *what)
 }
 
 /* bumped from the fault handlers of any thread (atomically), read by the stats */
-uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio;
+uint64_t g_nc_faults_callret, g_nc_faults_dirty, g_nc_faults_mmio, g_nc_faults_unaligned;
 
 static struct {
     uint32_t eip, n;
@@ -369,6 +369,15 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
         return false;
     }
     const uintptr_t pc = ((ucontext_t *)ucontext)->uc_mcontext.pc;
+    if (sig == SIGBUS && nc_cpu_unaligned_fault(c->cpu, info->si_code, ucontext)) {
+        /* Doom 3 keeps a critical section at 0x00BFD88E: RtlEnterCriticalSection's
+         * lock inc of its LockCount (0x00BFD89E) took the core down */
+        if (__atomic_fetch_add(&g_nc_faults_unaligned, 1, __ATOMIC_RELAXED) < 4) {
+            nc_log("hakuX-native", "unaligned atomic at guest %08llx, eip %08x",
+                   (unsigned long long)nc_vm_guest_of(&c->vm, info->si_addr), nc_cpu_guest_eip_at(c->cpu, pc));
+        }
+        return true;
+    }
     if (nc_cpu_callret_fault(c->cpu, (uintptr_t)info->si_addr, ucontext)) {
         __atomic_fetch_add(&g_nc_faults_callret, 1, __ATOMIC_RELAXED);
         return true;

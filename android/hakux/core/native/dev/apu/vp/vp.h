@@ -108,6 +108,9 @@ typedef struct {
     uint8_t submix_headroom[NUM_MIXBINS];
     float sample_buf[NUM_SAMPLES_PER_FRAME][2];
     uint64_t voice_locked[4];
+    /* the frames in a row each voice was left out, the guest holding it
+     * (vp.c voice_take); not saved */
+    uint16_t held_frames[MCPX_HW_MAX_VOICES];
     ApuSpin voice_spinlocks[MCPX_HW_MAX_VOICES];
     ApuSpin fe_spin;   /* fe_method: the guest's methods against the VP's traps */
 
