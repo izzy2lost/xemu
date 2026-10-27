@@ -235,6 +235,8 @@ static struct {
 
 #define R(m) (g_pd.r[(m) >> 2])
 
+static void dc_swap(void);   /* draw capture (debug.hakux.drawcap) */
+
 /* debug.hakux.pbdraws: draws still to log (drawlog), clears with them */
 static int g_dlog_left;
 
@@ -1234,6 +1236,7 @@ static void swap(void)
     shown_part(g_pd.rt_obj, g_pd.aa_x, g_pd.aa_y, &c->src_w, &c->src_h);
     g_pd.swaps++;
     g_pd.epoch++;
+    dc_swap();
     g_pd.kick_ns = hle_now_ns();
     g_pd.vis_unsent = false;                /* a swap submits */
     c->surf = g_pd.rt;
@@ -1813,6 +1816,179 @@ static uint32_t attr_bytes(uint32_t fmt)
     case 6: return 4 * size;                /* CMP: three in a word */
     default: return 4 * size;
     }
+}
+
+/* ---- draw capture (debug) ----
+ *
+ * debug.hakux.drawcap=<frames> (a new value, while the game runs): the next
+ * frames' draws go to <base>/drawcap.bin as the guest left them, before any
+ * of the HLE's own work: each draw's vertices decoded to floats (position,
+ * diffuse, texture 0), its indices, the fixed-function transform (composite
+ * matrix, viewport offset and scale) and texture stage 0. tools/drawcap.py
+ * renders a capture again on the host, so a wrong frame shows whether the
+ * guest's data or the HLE's drawing of it is wrong. Record (little endian):
+ *   "DRW3", frame, draw, path (1 inline, 2 arrays), prim, nverts, nidx,
+ *   execution mode, the 16 array format registers, composite[16],
+ *   viewport offset[4], scale[4], texture 0 offset, format, rect, alpha
+ *   test enable, function, reference, blend enable, source and destination
+ *   factors, the guest address of the first vertex of each captured attribute, then
+ *   nverts float4s for each of position, diffuse, texture 0, then nidx u32
+ *   indices (0 = the first vertex), then texture 0's first level as the
+ *   guest holds it (swizzled or compressed): its byte count, the bytes. */
+#define DC_ATTRS 3
+static const unsigned k_dc_attr[DC_ATTRS] = { 0, 3, 9 };
+static FILE *g_dc;
+static unsigned g_dc_left;
+static uint64_t g_dc_frame, g_dc_draws;
+
+/* A new debug.hakux.drawcap, at a swap: capture opens or continues. */
+static void dc_swap(void)
+{
+#ifdef __ANDROID__
+    static HleProp prop;
+    char v[PROP_VALUE_MAX];
+    if (!g_dc && hle_prop_new(&prop, "debug.hakux.drawcap", v) && atoi(v) > 0) {
+        g_autofree char *path = g_strdup_printf("%sdrawcap.bin", hle_host_base_path());
+        g_dc = fopen(path, "wb");
+        g_dc_left = (unsigned)atoi(v);
+        g_dc_frame = g_dc_draws = 0;
+        hle_log("hakuX-hle-pb", "drawcap: %u frames to %s%s", g_dc_left, path, g_dc ? "" : " (can't open)");
+        return;
+    }
+#endif
+    if (g_dc) {
+        g_dc_frame++;
+        if (!--g_dc_left) {
+            fclose(g_dc);
+            g_dc = NULL;
+            hle_log("hakuX-hle-pb", "drawcap: done, %llu draws in %llu frames",
+                    (unsigned long long)g_dc_draws, (unsigned long long)g_dc_frame);
+        }
+    }
+}
+
+/* One element of array format fmt at p as the NV2A reads it: missing
+ * components 0, w 1. */
+static void dc_decode(uint32_t fmt, const uint8_t *p, float out[4])
+{
+    const unsigned n = (fmt >> 4) & 0xF;
+    out[0] = out[1] = out[2] = 0.0f;
+    out[3] = 1.0f;
+    for (unsigned c = 0; c < n && c < 4; c++) {
+        switch (fmt & 0xF) {
+        case 0:                         /* UB_D3D: B G R A */
+            out[c] = p[n == 4 && c < 3 ? 2 - c : c] / 255.0f;
+            break;
+        case 4:
+            out[c] = p[c] / 255.0f;
+            break;
+        case 1:
+            out[c] = MAX(-1.0f, ((const int16_t *)p)[c] / 32767.0f);
+            break;
+        case 5:
+            out[c] = ((const int16_t *)p)[c];
+            break;
+        case 6: {
+            const uint32_t w = (uint32_t)p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
+            out[0] = (float)((int32_t)(w << 21) >> 21) / 1023.0f;
+            out[1] = (float)((int32_t)(w << 10) >> 21) / 1023.0f;
+            out[2] = (float)((int32_t)w >> 22) / 511.0f;
+            c = n;
+            break;
+        }
+        default:
+            memcpy(&out[c], p + 4 * c, 4);
+            break;
+        }
+    }
+}
+
+/* The draw about to go out: vertex v of attribute a is at vtx(a, v) (NULL:
+ * the attribute has no array). */
+static void dc_draw(unsigned path, uint32_t nverts, const uint32_t *idx, uint32_t nidx, uint32_t base,
+                    const uint8_t *(*vtx)(unsigned a, uint32_t v, void *ctx), void *ctx)
+{
+    if (!g_dc || !nverts) {
+        return;
+    }
+    uint32_t h[8] = { 0x33575244u /* DRW3 */, (uint32_t)g_dc_frame, (uint32_t)g_dc_draws++, path, g_pd.prim,
+                      nverts, nidx, R(NV097_SET_TRANSFORM_EXECUTION_MODE) };
+    uint32_t fmts[ATTRS];
+    float m[16 + 8];
+    uint32_t tex[3] = { R(NV097_SET_TEXTURE_OFFSET), R(NV097_SET_TEXTURE_FORMAT), R(NV097_SET_TEXTURE_IMAGE_RECT) };
+    for (unsigned a = 0; a < ATTRS; a++) {
+        fmts[a] = R(NV097_SET_VERTEX_DATA_ARRAY_FORMAT + 4 * a);
+    }
+    regs_f(m, 0x0680, 16);
+    regs_f(m + 16, NV097_SET_VIEWPORT_OFFSET, 4);
+    regs_f(m + 20, NV097_SET_VIEWPORT_SCALE, 4);
+    fwrite(h, 4, 8, g_dc);
+    fwrite(fmts, 4, ATTRS, g_dc);
+    fwrite(m, 4, 24, g_dc);
+    fwrite(tex, 4, 3, g_dc);
+    const uint32_t st[6] = { R(0x0300), R(0x033C), R(0x0340), R(0x0304), R(0x0344), R(0x0348) };
+    fwrite(st, 4, 6, g_dc);
+    for (unsigned i = 0; i < DC_ATTRS; i++) {
+        const uint32_t a = k_dc_attr[i], fmt = fmts[a];
+        const uint32_t pa = path == 2 && (fmt >> 4) & 0xF
+                                ? (R(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 4 * a) & 0x7FFFFFFFu) + base * (fmt >> 8)
+                                : 0;
+        fwrite(&pa, 4, 1, g_dc);
+    }
+    for (unsigned i = 0; i < DC_ATTRS; i++) {
+        const unsigned a = k_dc_attr[i];
+        for (uint32_t v = 0; v < nverts; v++) {
+            const uint8_t *p = vtx(a, v, ctx);
+            float x[4];
+            if (p) {
+                dc_decode(fmts[a], p, x);
+            } else {
+                memcpy(x, g_pd.cur[a], 16);
+            }
+            fwrite(x, 4, 4, g_dc);
+        }
+    }
+    for (uint32_t i = 0; i < nidx; i++) {
+        const uint32_t r = idx[i] - base;
+        fwrite(&r, 4, 1, g_dc);
+    }
+    /* texture 0's first level: 2D, its size from the format's log2 sizes */
+    const uint32_t tf = tex[1], cf = (tf >> 8) & 0xFF, w = 1u << ((tf >> 20) & 0xF), hgt = 1u << ((tf >> 24) & 0xF);
+    const HleFmtInfo *fi = hle_fmt_info(cf);
+    uint32_t len = 0;
+    if (fi && (R(NV097_SET_TEXTURE_CONTROL0) & 0x40000000u) && w <= 2048 && hgt <= 2048) {
+        len = fi->flags & HLE_FI_DXT ? (w + 3) / 4 * ((hgt + 3) / 4) * fi->bpp * 2 : w * hgt * fi->bpp / 8;
+    }
+    const uint8_t *tp = len ? hle_pa_ptr(hle_res_data_pa(tex[0]), len) : NULL;
+    len = tp ? len : 0;
+    fwrite(&len, 4, 1, g_dc);
+    if (len) {
+        fwrite(tp, 1, len, g_dc);
+    }
+}
+
+typedef struct DcInline {
+    const uint8_t *data;
+    uint32_t vsize;
+    const HleCmdDraw *d;
+} DcInline;
+
+static const uint8_t *dc_inline_vtx(unsigned a, uint32_t v, void *ctx)
+{
+    const DcInline *c = ctx;
+    return (R(NV097_SET_VERTEX_DATA_ARRAY_FORMAT + 4 * a) >> 4) & 0xF ? c->data + v * c->vsize + (c->d->attr[a] >> 16)
+                                                                       : NULL;
+}
+
+static const uint8_t *dc_array_vtx(unsigned a, uint32_t v, void *ctx)
+{
+    const uint32_t fmt = R(NV097_SET_VERTEX_DATA_ARRAY_FORMAT + 4 * a);
+    if (!((fmt >> 4) & 0xF)) {
+        return NULL;
+    }
+    const uint32_t pa = (R(NV097_SET_VERTEX_DATA_ARRAY_OFFSET + 4 * a) & 0x7FFFFFFFu) +
+                        (*(const uint32_t *)ctx + v) * (fmt >> 8);
+    return hle_pa_ptr(pa, attr_bytes(fmt));
 }
 
 /* ---- 2D blits ---- */
@@ -2986,6 +3162,10 @@ static void draw_inline(void)
         skip(SK_DRAW_INLINE_ARENA);
         return;
     }
+    if (g_dc) {
+        DcInline c = { (const uint8_t *)g_pd.inl, vsize, &d };
+        dc_draw(1, n, NULL, 0, 0, dc_inline_vtx, &c);
+    }
     memcpy(dst, g_pd.inl, n * vsize);
     d.nbind = 1;
     d.bind_off[0] = off;
@@ -3107,6 +3287,9 @@ static void draw_arrays(void)
     if (hi - lo >= 0xFFFF) {
         skip(SK_DRAW_ARRAYS_SPAN);
         return;
+    }
+    if (g_dc) {
+        dc_draw(2, hi - lo + 1, g_pd.idx, n, lo, dc_array_vtx, &lo);
     }
     HleCmdDraw d;
     memset(&d, 0, sizeof(d));

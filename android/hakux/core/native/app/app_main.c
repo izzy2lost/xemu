@@ -605,15 +605,20 @@ EXPORT int SDL_main(int argc, char *argv[])
         setenv("HAKUX_NATIVE_BASE", base, 1);
     }
     {   /* debug: debug.hakux.env="NAME=value;NAME=value" sets the runner's
-         * environment switches (NC_TRACE_*, HAKUX_HLE_*) for the next game */
-        char env[PROP_VALUE_MAX] = "";
-        if (__system_property_get("debug.hakux.env", env) > 0) {
+         * environment switches (NC_TRACE_*, HAKUX_HLE_*) for the next game;
+         * debug.hakux.env2 more of them (a property holds 91 characters) */
+        static const char *const k_props[] = {"debug.hakux.env", "debug.hakux.env2"};
+        for (unsigned p = 0; p < 2; p++) {
+            char env[PROP_VALUE_MAX] = "";
+            if (__system_property_get(k_props[p], env) <= 0) {
+                continue;
+            }
             for (char *save = NULL, *t = strtok_r(env, ";", &save); t; t = strtok_r(NULL, ";", &save)) {
                 char *eq = strchr(t, '=');
                 if (eq && eq != t) {
                     *eq = 0;
                     setenv(t, eq + 1, 1);
-                    nc_log("hakuX-app", "debug.hakux.env: %s=%s", t, eq + 1);
+                    nc_log("hakuX-app", "%s: %s=%s", k_props[p], t, eq + 1);
                 }
             }
         }

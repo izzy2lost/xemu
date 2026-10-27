@@ -1,0 +1,10 @@
+FEX checks of title instruction idioms, for fexrun (hakuX tests/native/fexrun).
+
+  nasm -f bin -o g2skin.bin g2skin.asm
+  qemu-aarch64 -cpu max,sve=off fexrun --verbose --base 7e0000000000 . manifest.txt
+
+g2skin: Jedi Academy's Ghoul2 skinning loop (default.xbe 0x6f0a0..0x6f3a8):
+movss+movhps dot products, shr-by-cl bone and weight unpacking, cvtsi2ss.
+Expected values are IEEE single results computed on the host. Passes with
+identity and membase (2026-10-27). Data lives at 0xf0000000; cfg register
+indices: 1 RAX 2 RBX 3 RCX 4 RDX 5 RSI 6 RDI 7 RBP, 17+n XMMn.

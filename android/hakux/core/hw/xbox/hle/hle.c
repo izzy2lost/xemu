@@ -63,6 +63,9 @@ static void pch_tick(void *opaque)
 {
     if (hle_host_cpu()) {
         uint32_t pc = hle_host_cpu()->eip;
+        if (g_hle_pc_sampler && !g_hle_pc_sampler(&pc)) {   /* the vCPU's real pc where a sampler runs */
+            pc = 0;
+        }
         g_pch_samples++;
         static int64_t s_reg_pc = -2;       /* HAKUX_HLE_PCREG=<hex pc>: its EAX */
         static unsigned s_reg_n;
