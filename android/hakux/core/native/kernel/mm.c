@@ -563,6 +563,8 @@ static void log_phys_map(NcKernel *k)
     nc_log("hakuX-native", "%s", line);
 }
 
+static bool g_contig_ok; /* the last contiguous allocation succeeded */
+
 static uint32_t contig_alloc(NcKernel *k, uint32_t size, uint32_t lo, uint32_t hi, uint32_t align,
                              uint32_t ra, uint32_t protect)
 {
@@ -590,10 +592,13 @@ static uint32_t contig_alloc(NcKernel *k, uint32_t size, uint32_t lo, uint32_t h
          * by asking for less and less (The Warriors: 46.5 MiB down to 38.5
          * in 4 KiB steps after its 18.5 MiB block, 2033 failures), and each
          * report scanned RAM twice and logged three lines: 35 s of its boot.
-         * The first 4 failures, then every power of two, are reported. */
+         * The first 4 failures, then every power of two, are reported, and
+         * any after a success: not a probe, the one the title dies of
+         * (Amped 2: 1.4 MiB at a level load, failure #2063). */
         static unsigned s_failed;
         const unsigned n = ++s_failed;
-        if (n <= 4 || !(n & (n - 1))) {
+        if (n <= 4 || !(n & (n - 1)) || g_contig_ok) {
+            g_contig_ok = false;
             char runs[400];
             nc_vm_free_runs(k->vm, runs, sizeof(runs));
             nc_log("hakuX-native", "mm: contiguous allocation of %u KiB failed (#%u; free %u KiB:%s)", size >> 10, n,
@@ -604,6 +609,7 @@ static uint32_t contig_alloc(NcKernel *k, uint32_t size, uint32_t lo, uint32_t h
         }
         return 0;
     }
+    g_contig_ok = true;
     memset(k->vm->ram + pa, 0, size);
     /* An aligned block below another leaves the pages its alignment skipped
      * free between them, and virtual memory takes the highest free pages:

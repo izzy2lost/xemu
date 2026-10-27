@@ -21,6 +21,7 @@ object DebugLog {
   private const val NATIVE_LOG_FILE_NAME = "xemu-debug.log"
   private const val UI_LOGCAT_FILE_NAME = "ui-logcat.log"
   private const val XEMU_LOGCAT_FILE_NAME = "xemu-logcat.log"
+  private const val HAKUX_LOGCAT_FILE_NAME = "hakux-logcat.log"
   private const val CRASH_TAIL_FILE_NAME = "crash-tail.log"
   private const val MAX_LOG_BYTES = 16L * 1024L * 1024L
 
@@ -77,6 +78,7 @@ object DebugLog {
       nativeLogFile(context).isFile ||
       uiLogcatFile(context).isFile ||
       xemuLogcatFile(context).isFile ||
+      hakuxLogcatFile(context).isFile ||
       crashTailFile(context).isFile
   }
 
@@ -167,6 +169,17 @@ object DebugLog {
           lines.forEach(writer::appendLine)
         }
       }
+
+      // The hakuX core runs in its own process; its fault report (guest EIP,
+      // recent kernel calls, threads) only reaches logcat.
+      val hakuxLogcat = hakuxLogcatFile(context)
+      if (hakuxLogcat.isFile) {
+        writer.appendLine()
+        writer.appendLine("=== hakuX Logcat Capture ===")
+        hakuxLogcat.bufferedReader().useLines { lines ->
+          lines.forEach(writer::appendLine)
+        }
+      }
     }
   }
 
@@ -177,6 +190,7 @@ object DebugLog {
     nativeLogFile(context).delete()
     uiLogcatFile(context).delete()
     xemuLogcatFile(context).delete()
+    hakuxLogcatFile(context).delete()
     crashTailFile(context).delete()
     // Allow the next initialize()/setEnabled() to re-drain the crash buffer;
     // otherwise clearing logs would permanently suppress the crash section for
@@ -281,6 +295,10 @@ object DebugLog {
     return File(logDir(context), XEMU_LOGCAT_FILE_NAME)
   }
 
+  private fun hakuxLogcatFile(context: Context): File {
+    return File(logDir(context), HAKUX_LOGCAT_FILE_NAME)
+  }
+
   private fun crashTailFile(context: Context): File {
     return File(logDir(context), CRASH_TAIL_FILE_NAME)
   }
@@ -339,10 +357,10 @@ object DebugLog {
     val processName = runCatching {
       File("/proc/self/cmdline").readText().trim('\u0000', ' ', '\n')
     }.getOrDefault("")
-    return if (processName.endsWith(":xemu")) {
-      xemuLogcatFile(context)
-    } else {
-      uiLogcatFile(context)
+    return when {
+      processName.endsWith(":xemu") -> xemuLogcatFile(context)
+      processName.endsWith(":hakux") -> hakuxLogcatFile(context)
+      else -> uiLogcatFile(context)
     }
   }
 

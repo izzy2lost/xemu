@@ -41,6 +41,7 @@ import android.widget.TextView
 import android.widget.Toast
 import android.window.OnBackInvokedDispatcher
 import com.izzy2lost.x1box.ControllerSettings
+import com.izzy2lost.x1box.DebugLog
 import com.izzy2lost.x1box.GameLibraryActivity
 import com.izzy2lost.x1box.GpuDriverHelper
 import com.izzy2lost.x1box.HakuxLaunch
@@ -218,6 +219,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   override fun onCreate(savedInstanceState: Bundle?) {
     discArg = openDisc()
     super.onCreate(savedInstanceState)
+    DebugLog.initialize(this)
     OrientationLocker(this, landscapeOnly = true).enable()
     setupOnScreenController()
     setupOverlayText()

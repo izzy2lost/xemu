@@ -39,12 +39,14 @@ static const NcKExport *k_by_ordinal[NC_KORDINAL_MAX];
 #define K_FAST     0x12000u /* exports run as guest code (install_fast_paths) */
 #define K_FAST_END 0x13000u
 
-/* Kernel pool: starts with 512 KiB of high physical RAM below the top
+/* Kernel pool: starts with 64 KiB of high physical RAM below the top
  * reserve (D3D claims GPU instance memory at the top; low RAM is the
  * title's), reached through the contiguous window, and grows as needed
  * (pool.c), as the Xbox kernel's does: a fixed 4 MiB left titles that size
- * their caches by free memory (Forza) 3 MiB short. */
-#define POOL_SIZE  0x00080000u
+ * their caches by free memory (Forza) 3 MiB short, and a 512 KiB start
+ * (32 KiB of it used) left Amped 2 200 KiB short of a 1.4 MiB block it
+ * doesn't check for at its first level load. */
+#define POOL_SIZE  0x00010000u
 
 const NcKExport *nc_kernel_export(unsigned ordinal)
 {
