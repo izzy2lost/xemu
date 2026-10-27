@@ -215,8 +215,12 @@ if(XEMU_ENABLE_VULKAN)
   FetchContent_Declare(
     adrenotools
     GIT_REPOSITORY "https://github.com/bylaws/libadrenotools"
-    GIT_TAG "master"
-    GIT_SHALLOW TRUE
+    GIT_TAG "8fae8ce254dfc1344527e05301e43f37dea2df80"
+    GIT_SHALLOW FALSE
+    # the hakuX core's kgsl draw context priority hook (android/hakux/patches):
+    # the hook libraries built here are the ones the app ships for both cores
+    PATCH_COMMAND git reset -q --hard && git apply
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../../../hakux/patches/adrenotools-kgsl-context-priority.patch"
   )
   FetchContent_MakeAvailable(adrenotools)
 

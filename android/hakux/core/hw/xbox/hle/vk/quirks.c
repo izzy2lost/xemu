@@ -33,6 +33,11 @@ static bool mesa_turnip(const HleDriver *d)
     return d->drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
 }
 
+static bool not_turnip(const HleDriver *d)
+{
+    return !mesa_turnip(d);
+}
+
 /* Seen on (driver, version, what showed it). */
 static const HleQuirk k_quirks[] = {
     /* Adreno 840 stock driver 0x8034a02c: Forza's menu text picks its glyph
@@ -54,6 +59,11 @@ static const HleQuirk k_quirks[] = {
      * dropped out on the frames whose post pass shared a command buffer with
      * its depth-only shadow pass, and the scene flickered (2026-10-23). */
     { HLE_QUIRK_BLEND_CONST_RESET, "blend_const_reset", mesa_turnip },
+    /* Qualcomm's driver: a present waiting on the pass's semaphore waited
+     * 3-6 ms a refresh in the driver, the queue's lock held (Halo 2).
+     * Turnip's makes a sync file and returns (Mesa vk_android.c); the other
+     * drivers are untested, so they keep the wait. */
+    { HLE_QUIRK_PRESENT_CPU_WAIT, "present_cpu_wait", not_turnip },
 };
 
 static uint32_t g_defaults;

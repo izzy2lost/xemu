@@ -44,7 +44,7 @@ target_link_libraries(hakuxcore PRIVATE hakux_native hakux_hle SDL3::SDL3-shared
 if(TARGET adrenotools)
   target_link_libraries(hakuxcore PRIVATE adrenotools)
   target_compile_definitions(hakuxcore PRIVATE NC_ADRENOTOOLS=1)
-  add_dependencies(hakuxcore main_hook file_redirect_hook gsl_alloc_hook hook_impl)
+  add_dependencies(hakuxcore main_hook file_redirect_hook gsl_alloc_hook kgsl_context_hook hook_impl)
 endif()
 target_link_options(hakuxcore PRIVATE -Wl,--exclude-libs,ALL -Wl,--gc-sections)
 set_target_properties(hakuxcore PROPERTIES C_VISIBILITY_PRESET hidden)

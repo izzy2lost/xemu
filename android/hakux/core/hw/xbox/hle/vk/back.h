@@ -24,6 +24,12 @@ void hle_tl_wait(uint64_t value);
 /* The device lost (hle_vk_lose): every value counts as reached, so no
  * thread waits on the GPU any more. */
 void hle_tl_lose(void);
+/* How long the GPU has been on our work without running out of it (0: it's
+ * out now), and a moment of idle GPU asked for: the app's window, on a GPU
+ * queue below ours, holds a frame the compositor shows the game's behind
+ * (NativeCoreActivity's OverlayPacer). Any thread. */
+int64_t hle_tl_busy_ns(void);
+void hle_tl_gap(void);
 /* len bytes the GPU copies into the arena at arena_off go to guest memory at
  * pa once it reaches value, before any thread sees the value (a readback
  * without zero-copy guest RAM). False if too many wait (nothing queued). */

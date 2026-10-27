@@ -63,6 +63,10 @@ import org.libsdl.app.SDLActivity
  */
 class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private val handler = Handler(Looper.getMainLooper())
+  /** The overlays' redraws and the game's GPU work (the controls and the FPS line; Turnip only). */
+  private val overlayPacer = OverlayPacer({ nativeGpuBusyMs() }, { nativeGpuGap() })
+  /** The FPS line's update waiting on overlayPacer since (uptime ms), 0: none. */
+  private var fpsWantedSince = 0L
   private val prefs by lazy { getSharedPreferences("x1box_prefs", Context.MODE_PRIVATE) }
 
   private var discUri: Uri? = null
@@ -317,9 +321,14 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private val poll = object : Runnable {
     override fun run() {
       if (fpsView?.visibility == View.VISIBLE) {
-        val s = nativeGetFrameStats()
-        if (s != null && s.size >= 3) {
-          fpsView?.text = "hakuX  FPS: %.0f  |  %.1fms avg  /  %.1fms last".format(s[0], s[1], s[2])
+        if (fpsWantedSince == 0L) fpsWantedSince = SystemClock.uptimeMillis()
+        /* held back while the GPU is busy (OverlayPacer): the next poll tries again */
+        if (overlayPacer.mayDraw(fpsWantedSince)) {
+          fpsWantedSince = 0L
+          val s = nativeGetFrameStats()
+          if (s != null && s.size >= 3) {
+            fpsView?.text = "hakuX  FPS: %.0f  |  %.1fms avg  /  %.1fms last".format(s[0], s[1], s[2])
+          }
         }
       }
       val why = nativeGetFatal()
@@ -474,7 +483,9 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     }
     overlay.setControllerListener(OverlayBridge())
     overlay.onMenuButtonTapped = { showMenu() }
+    overlay.drawGate = overlayPacer::mayDraw
     mLayout?.addView(overlay)
+    overlayPacer.attach(overlay)
     onScreenController = overlay
     router = HakuxPadRouter(
       ControllerRemap.load(this),
@@ -1343,6 +1354,10 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
 
     /** fps, average frame time (ms), last frame time (ms), 1 if push-buffer decoding renders. */
     @JvmStatic external fun nativeGetFrameStats(): FloatArray?
+    /** How long the GPU has been on the game's work without running out of it, in ms (0: out now, or not Turnip). */
+    @JvmStatic external fun nativeGpuBusyMs(): Int
+    /** A moment of idle GPU for a window frame waiting behind the game's work (OverlayPacer). */
+    @JvmStatic external fun nativeGpuGap()
     /** Why the game can't run here (the GPU driver, or the game), or null. */
     @JvmStatic external fun nativeGetFatal(): String?
     @JvmStatic external fun nativeGetFatalKind(): Int

@@ -46,7 +46,10 @@
 #include <jni.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/system_properties.h>
 #include <sys/syscall.h>
@@ -379,6 +382,79 @@ EXPORT JNIEXPORT jstring JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivit
     return (*env)->NewStringUTF(env, buf);
 }
 
+static int g_kgsl_prio;                 /* the custom driver's kgsl draw context priority; 0: none set */
+
+#ifdef NC_ADRENOTOOLS
+/* The driver package's meta.json names its vendor: Turnip's is "Mesa". */
+static bool driver_is_mesa(const char *dir)
+{
+    char path[1200];
+    snprintf(path, sizeof(path), "%s%smeta.json", dir, dir[0] && dir[strlen(dir) - 1] == '/' ? "" : "/");
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return false;
+    }
+    char json[4096];
+    size_t n = fread(json, 1, sizeof(json) - 1, f);
+    fclose(f);
+    json[n] = 0;
+    const char *v = strstr(json, "\"vendor\"");
+    v = v ? strchr(v + 8, ':') : NULL;
+    v = v ? strchr(v, '"') : NULL;
+    return v && !strncasecmp(v + 1, "mesa\"", 5);
+}
+
+/* Turnip leaves its kgsl draw contexts at the kernel's default priority (8:
+ * the third of four ringbuffers, priority / 4), below SurfaceFlinger's GPU
+ * composition: while the screen is composited on the GPU its work preempts
+ * ours some 100 times a second, and a Turnip sysmem pass on Adreno 6xx
+ * preempted with its draws in flight hangs the GPU (hakuX: PGR2's race on an
+ * Adreno 650, 4-9 hangs in 6 minutes, VK_ERROR_DEVICE_LOST; none at 7, the
+ * compositor's ringbuffer, where the dispatcher still runs its work first).
+ * debug.hakux.kgslprio: another priority (1..15), 0 for the driver's own. */
+static int kgsl_priority(const char *dir)
+{
+    if (!driver_is_mesa(dir)) {
+        return -1;
+    }
+    char v[PROP_VALUE_MAX] = "";
+    __system_property_get("debug.hakux.kgslprio", v);
+    int prio = v[0] ? atoi(v) : 7;
+    return prio >= 1 && prio <= 15 ? prio : -1;
+}
+#endif
+
+/* The window's overlays and the game's GPU work (HakuxCoreActivity's
+ * OverlayPacer): how long the GPU has been on the game's work without
+ * running out of it, in ms (0: it's out now), and a moment of idle GPU for a
+ * frame of the window waiting on the GPU queue below the game's. Only where
+ * the game's queue is above the window's (Turnip's raised kgsl priority);
+ * elsewhere the window's frames take turns with the game's, never busy,
+ * never a gap. */
+int64_t hle_tl_busy_ns(void);
+void hle_tl_gap(void);
+
+static bool above_window(void)
+{
+    return g_kgsl_prio > 0 && g_kgsl_prio < 8;
+}
+
+EXPORT JNIEXPORT jint JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeGpuBusyMs(JNIEnv *env, jclass cls)
+{
+    if (!above_window()) {
+        return 0;
+    }
+    const int64_t ms = hle_tl_busy_ns() / 1000000;
+    return (jint)(ms > INT32_MAX ? INT32_MAX : ms);
+}
+
+EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeGpuGap(JNIEnv *env, jclass cls)
+{
+    if (above_window()) {
+        hle_tl_gap();
+    }
+}
+
 /* The start screen's "Building shaders n / N" line: the pipeline prebuild's
  * progress, {built, to build} ({0, 0} when none runs). */
 EXPORT JNIEXPORT jintArray JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeGetShaderBuild(JNIEnv *env,
@@ -640,14 +716,22 @@ EXPORT int SDL_main(int argc, char *argv[])
             if (lib && hooks) {
                 *lib++ = 0;
                 *hooks++ = 0;
-                void *h = adrenotools_open_libvulkan(RTLD_NOW, ADRENOTOOLS_DRIVER_CUSTOM, NULL, hooks, spec, lib, NULL,
-                                                     NULL);
+                const int prio = kgsl_priority(spec);
+                adrenotools_set_kgsl_context_priority(prio);
+                void *h = adrenotools_open_libvulkan(RTLD_NOW, ADRENOTOOLS_DRIVER_CUSTOM |
+                                                     (prio > 0 ? ADRENOTOOLS_DRIVER_KGSL_CONTEXT_PRIORITY : 0),
+                                                     NULL, hooks, spec, lib, NULL, NULL);
                 void *gipa = h ? dlsym(h, "vkGetInstanceProcAddr") : NULL;
                 if (gipa) {
                     nc_hle_set_vk_loader(nc_vk_layers(gipa));
                 }
                 nc_log("hakuX-app", "Vulkan driver %s from %s: %s", lib, spec,
                        gipa ? "loaded" : "failed, the system driver it is");
+                if (gipa && prio > 0) {
+                    g_kgsl_prio = prio;
+                    nc_log("hakuX-app", "its kgsl draw contexts at priority %d (ringbuffer %d of 0-3)", prio,
+                           prio / 4);
+                }
             }
 #else
             nc_log("hakuX-app", "Vulkan driver requested, but this build has no adrenotools");

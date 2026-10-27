@@ -44,6 +44,13 @@ fetch spirv_reflect https://github.com/KhronosGroup/SPIRV-Reflect.git vulkan-sdk
 fetch vma https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git v3.3.0
 fetch SDL3 https://github.com/libsdl-org/SDL.git release-3.4.14
 fetch adrenotools https://github.com/bylaws/libadrenotools.git 8fae8ce
+# hakuX's kgsl draw context priority hook (Turnip above the compositor's
+# GPU composition); libxemu's copy gets the same patch, and its hook
+# libraries are the ones the app ships
+kgsl_patch=$here/patches/adrenotools-kgsl-context-priority.patch
+if ! git -C "$deps/adrenotools" apply --reverse --check "$kgsl_patch" 2>/dev/null; then
+  git -C "$deps/adrenotools" apply "$kgsl_patch"
+fi
 fetch root/subprojects/nv2a_vsh_cpu https://github.com/xemu-project/nv2a_vsh_cpu.git 1115255708c10c4841b65dcd2223262e7a316598
 
 # FEX: our fork with the system-mode API (branch x1box-haku), pinned. Fetched

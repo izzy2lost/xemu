@@ -13,6 +13,9 @@
 int hle_tl_init(void (*on_complete)(uint64_t completed));
 VkSemaphore hle_tl_sem(void);
 void hle_tl_signaled(uint64_t value);
+/* Before each submit: the GPU left idle a moment when the app asked
+ * (hle_tl_gap, back.h). */
+void hle_tl_gap_serve(void);
 
 /* Resolution scale (the surface_scale setting, 1-6, read at DEVICE_CREATE):
  * every render target and depth surface is rendered at d.w * scale by

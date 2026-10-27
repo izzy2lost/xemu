@@ -10,6 +10,11 @@
 #include "hw/xbox/hle/vk/back_int.h"
 #include "hw/xbox/hle/vk/guest_ram.h"
 
+#ifdef __ANDROID__
+#include "hw/xbox/hle/prop.h"
+#endif
+#include <time.h>
+
 #define T (g_hvk.t)
 
 static struct {
@@ -18,6 +23,11 @@ static struct {
     HleThread thread;
     HleEvent ev;
     void (*on_complete)(uint64_t);
+    int64_t busy_since;                 /* the first submit after the GPU ran out of our work */
+    uint32_t gap;                       /* a gap asked for (hle_tl_gap) */
+    int64_t gap_hold_ns;                /* how long a gap leaves the GPU idle */
+    uint32_t gaps;                      /* served since gaps_log */
+    int64_t gaps_log;
 } g_tl;
 
 /* Readbacks waiting to land in guest memory (hle_tl_land): each lands once
@@ -166,6 +176,13 @@ int hle_tl_init(void (*on_complete)(uint64_t))
         return -1;
     }
     g_tl.on_complete = on_complete;
+    g_tl.gap_hold_ns = 4000000;
+#ifdef __ANDROID__
+    char v[PROP_VALUE_MAX] = "";
+    if (__system_property_get("debug.hakux.gaphold", v) > 0 && atoi(v) >= 0) {
+        g_tl.gap_hold_ns = (int64_t)atoi(v) * 1000;  /* microseconds (the A/B) */
+    }
+#endif
     hle_mutex_init(&g_land.lock);
     hle_event_init(&g_tl.ev, false);
     hle_thread_create(&g_tl.thread, "hle.timeline", watch_thread, NULL,
@@ -180,8 +197,56 @@ VkSemaphore hle_tl_sem(void)
 
 void hle_tl_signaled(uint64_t value)
 {
+    if (hle_atomic_read(&g_tl.completed) >= hle_atomic_read(&g_tl.submitted)) {
+        hle_atomic_set(&g_tl.busy_since, hle_now_ns());     /* idle up to here: a new busy span */
+    }
     hle_atomic_set(&g_tl.submitted, value);
     hle_event_set(&g_tl.ev);
+}
+
+/* How long the GPU has been on our work without running out of it (0: it's
+ * out now). A GPU queue below ours (the app's window: our kgsl contexts are
+ * at priority 7, native/app/vkdriver.c) only runs when it does. */
+int64_t hle_tl_busy_ns(void)
+{
+    if (!g_tl.sem || hle_atomic_read(&g_tl.completed) >= hle_atomic_read(&g_tl.submitted)) {
+        return 0;
+    }
+    return hle_now_ns() - hle_atomic_read(&g_tl.busy_since);
+}
+
+/* A moment of idle GPU asked for: the app's window has a frame waiting on the
+ * GPU queue below ours, and the compositor shows the game's frames behind it
+ * (a process's frames in order), so the picture would hold until our work ran
+ * out (NativeCoreActivity's OverlayPacer). Served before the next submit. */
+void hle_tl_gap(void)
+{
+    hle_atomic_set(&g_tl.gap, 1);
+}
+
+/* The render thread, before a submit: a gap asked for is everything
+ * submitted finished, then the GPU left idle gap_hold_ns
+ * (debug.hakux.gaphold, microseconds; 4000 by default: with 1000 a window
+ * frame still waited, the picture held 0.7 s, PGR2 at 3x on an Adreno 650). */
+void hle_tl_gap_serve(void)
+{
+    if (likely(!hle_atomic_read(&g_tl.gap))) {
+        return;
+    }
+    hle_atomic_set(&g_tl.gap, 0);
+    hle_tl_wait(hle_atomic_read(&g_tl.submitted));
+    if (g_tl.gap_hold_ns > 0) {
+        struct timespec ts = { g_tl.gap_hold_ns / 1000000000, g_tl.gap_hold_ns % 1000000000 };
+        nanosleep(&ts, NULL);
+    }
+    g_tl.gaps++;
+    const int64_t now = hle_now_ns();
+    if (now - g_tl.gaps_log >= 10000000000ll) {
+        hle_log("hakuX-hle-back", "gpu gaps for the app's window: %u since the last (%lld us each)",
+                g_tl.gaps, (long long)(g_tl.gap_hold_ns / 1000));
+        g_tl.gaps = 0;
+        g_tl.gaps_log = now;
+    }
 }
 
 uint64_t hle_tl_completed(void)

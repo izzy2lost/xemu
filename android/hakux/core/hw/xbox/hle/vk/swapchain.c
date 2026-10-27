@@ -33,6 +33,7 @@
 #include "hw/xbox/hle/vk/back_int.h"
 #include "hw/xbox/hle/vk/compat.h"
 #include "hw/xbox/hle/vk/display.h"
+#include "hw/xbox/hle/vk/quirks.h"
 #include "hw/xbox/hle/vk/swapchain.h"
 
 #include <android/native_window.h>
@@ -81,6 +82,7 @@ static struct {
     uint32_t nimg, idx;
     VkImage img[PS_IMAGES];
     VkImageView view[PS_IMAGES];
+    VkSemaphore drawn[PS_IMAGES];   /* its pass done: what its present waits for */
     bool stale;                 /* out of date: made again at the next begin */
     bool follows;               /* its transform is the panel's: SUBOPTIMAL means it turned */
     /* the frame shown */
@@ -481,6 +483,7 @@ static void drop_images(void)
 {
     for (uint32_t i = 0; i < g_ps.nimg; i++) {
         T.vkDestroyImageView(g_hvk.dev, g_ps.view[i], NULL);
+        T.vkDestroySemaphore(g_hvk.dev, g_ps.drawn[i], NULL);
     }
     g_ps.nimg = 0;
 }
@@ -595,6 +598,8 @@ static bool make_swapchain(uint32_t w, uint32_t h)
             .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt.format,
             .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
         T.vkCreateImageView(g_hvk.dev, &vci, NULL, &g_ps.view[i]);
+        const VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+        T.vkCreateSemaphore(g_hvk.dev, &sci, NULL, &g_ps.drawn[i]);
     }
     g_ps.nimg = ni;
     g_ps.ext = (VkExtent2D){ w, h };
@@ -627,7 +632,8 @@ static bool wait_value(uint64_t v)
     return r == VK_SUCCESS;
 }
 
-static int64_t g_submit_ns, g_present_ns;  /* the presenter's calls (statistics) */
+/* the presenter's calls and waits (statistics) */
+static int64_t g_submit_ns, g_present_ns, g_wait_ns, g_acquire_ns;
 
 static void lose_window(void)
 {
@@ -688,11 +694,15 @@ bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
         return false;
     }
     PsFrame *f = &g_ps.fr[g_ps.cur];
+    const int64_t tw0 = hle_now_ns();
     if (!wait_value(f->value)) {
         return false;
     }
+    const int64_t ta0 = hle_now_ns();
+    g_wait_ns += ta0 - tw0;
     VkResult r = T.vkAcquireNextImageKHR(g_hvk.dev, g_ps.sc, 100000000ull, f->acquired, VK_NULL_HANDLE,
                                          &g_ps.idx);
+    g_acquire_ns += hle_now_ns() - ta0;
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         g_ps.stale = true;
         return false;
@@ -942,23 +952,34 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
             VK_PIPELINE_STAGE_2_NONE, 0);
     T.vkEndCommandBuffer(cb);
 
-    /* The image is presented once it's drawn, with nothing left to wait
-     * for. Presenting with a semaphore to wait on made Android's present ask
-     * Qualcomm's driver for a fence over it, which waited (3-6 ms a refresh:
-     * our pass behind the game's frames on the one queue) with the queue's
-     * lock held, the render thread's submits waiting on it; Halo 2 lost 2%
-     * of its frames to GL's presenter. The wait is ours now, unlocked. */
+    /* The present waits for the pass on the GPU: Turnip's hands the
+     * compositor a fence over it (Mesa's vk_android.c: a submit and a sync
+     * file), and the window's thread goes on to the next refresh. Waiting
+     * for the pass here, behind the game's frames on the one queue, held
+     * the thread past refreshes whenever the GPU was busy, and the next
+     * front frame was replaced before it was picked up ("UI missed").
+     * HLE_QUIRK_PRESENT_CPU_WAIT: the image is presented once it's drawn,
+     * with nothing left to wait for. Presenting with a semaphore to wait on
+     * made Android's present ask Qualcomm's driver for a fence over it,
+     * which waited (3-6 ms a refresh) with the queue's lock held, the render
+     * thread's submits waiting on it; Halo 2 lost 2% of its frames to GL's
+     * presenter. The wait is ours there, unlocked. */
+    const bool cpu_wait = hle_quirk(HLE_QUIRK_PRESENT_CPU_WAIT);
     const uint64_t value = g_ps.submitted + 1;
     VkSemaphoreSubmitInfo wait = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = f->acquired,
                                    .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT };
-    VkSemaphoreSubmitInfo sig = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_ps.tl,
-                                  .value = value, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT };
+    VkSemaphoreSubmitInfo sig[2] = {
+        { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_ps.tl, .value = value,
+          .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT },
+        { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_ps.drawn[g_ps.idx],
+          .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT } };
     VkCommandBufferSubmitInfo cbi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb };
     VkSubmitInfo2 si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = 1,
                          .pWaitSemaphoreInfos = &wait, .commandBufferInfoCount = 1,
-                         .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = 1,
-                         .pSignalSemaphoreInfos = &sig };
-    VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .swapchainCount = 1,
+                         .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = cpu_wait ? 1 : 2,
+                         .pSignalSemaphoreInfos = sig };
+    VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = cpu_wait ? 0 : 1,
+                            .pWaitSemaphores = &g_ps.drawn[g_ps.idx], .swapchainCount = 1,
                             .pSwapchains = &g_ps.sc, .pImageIndices = &g_ps.idx };
     hle_vk_queue_lock();
     const int64_t ts0 = hle_now_ns();
@@ -977,7 +998,11 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
     }
     VkResult pr = r;
     if (r == VK_SUCCESS) {
-        wait_value(value);              /* (timed out: presented all the same, or the image stays ours) */
+        if (cpu_wait) {
+            const int64_t tw0 = hle_now_ns();
+            wait_value(value);          /* (timed out: presented all the same, or the image stays ours) */
+            g_wait_ns += hle_now_ns() - tw0;
+        }
         hle_vk_queue_lock();
         const int64_t tp0 = hle_now_ns();
         pr = T.vkQueuePresentKHR(g_hvk.queue, &pi);
@@ -1003,9 +1028,12 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
     } else if (now - s_t0 >= 10000000000ll) {
         const double s = (now - s_t0) / 1e9;
         hle_log("hakuX-hle-back", "present: the queue's lock waited for %.1f ms/s; the presenter's submits "
-                "held it %.1f ms/s, its presents %.1f", hle_vk_queue_wait_ns() / 1e6 / s, g_submit_ns / 1e6 / s,
-                g_present_ns / 1e6 / s);
-        g_submit_ns = g_present_ns = 0;
+                "held it %.1f ms/s, its presents %.1f; it waited %.1f ms/s for its passes (%s), %.1f for images",
+                hle_vk_queue_wait_ns() / 1e6 / s, g_submit_ns / 1e6 / s, g_present_ns / 1e6 / s,
+                g_wait_ns / 1e6 / s,
+                hle_quirk(HLE_QUIRK_PRESENT_CPU_WAIT) ? "each before its present" : "the present waits on the GPU",
+                g_acquire_ns / 1e6 / s);
+        g_submit_ns = g_present_ns = g_wait_ns = g_acquire_ns = 0;
         s_t0 = now;
     }
 }

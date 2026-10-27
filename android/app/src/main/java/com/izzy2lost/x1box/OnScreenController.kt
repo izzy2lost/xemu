@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.PointF
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -161,6 +162,13 @@ class OnScreenController @JvmOverloads constructor(
   private val layoutOverrides = mutableMapOf<Element, ElementLayout>()
 
   /** While true, touches move controls instead of driving the pad. */
+  /**
+   * Playing: whether the controls may redraw now, wanted since the given
+   * uptime (ms); else they look as they did a while longer, the input already
+   * sent (the hakuX core's OverlayPacer). Null: at once.
+   */
+  var drawGate: ((Long) -> Boolean)? = null
+
   var editMode: Boolean = false
     set(value) {
       if (field == value) return
@@ -687,7 +695,7 @@ class OnScreenController @JvmOverloads constructor(
       return handleEditTouch(event)
     }
     if (swipeUpGestureRecognizer.onTouchEvent(event)) {
-      invalidate()
+      redrawWanted()
       return true
     }
 
@@ -723,8 +731,34 @@ class OnScreenController @JvmOverloads constructor(
       }
     }
 
-    invalidate()
+    redrawWanted()
     return true
+  }
+
+  /* Playing: a look changed, drawn once the gate lets it (drawGate), tried
+   * again each display frame till then. */
+  private var wantedSince = 0L
+
+  private fun redrawWanted() {
+    if (wantedSince == 0L) {
+      wantedSince = SystemClock.uptimeMillis()
+    }
+    tryRedraw()
+  }
+
+  private val retryRedraw = Runnable { tryRedraw() }
+
+  private fun tryRedraw() {
+    if (wantedSince == 0L) {
+      return
+    }
+    removeCallbacks(retryRedraw)
+    if (drawGate?.invoke(wantedSince) == false) {
+      postOnAnimation(retryRedraw)
+      return
+    }
+    wantedSince = 0L
+    invalidate()
   }
 
   /** Pointer currently aiming, -1 when none. */
@@ -889,6 +923,8 @@ class OnScreenController @JvmOverloads constructor(
   }
 
   override fun onDetachedFromWindow() {
+    removeCallbacks(retryRedraw)
+    wantedSince = 0L
     resetAllInputs()
     super.onDetachedFromWindow()
   }

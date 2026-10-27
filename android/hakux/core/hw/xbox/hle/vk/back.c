@@ -763,6 +763,7 @@ static void submit(uint64_t value)
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
         .commandBufferInfoCount = has_cb ? 1 : 0, .pCommandBufferInfos = &cbi,
         .signalSemaphoreInfoCount = 1, .pSignalSemaphoreInfos = &sig };
+    hle_tl_gap_serve();
     int64_t ts = hle_prof_begin();
     uint32_t pa = hle_hitch_enter(HLE_ACT_SUBMIT);
     hle_vk_queue_lock();
