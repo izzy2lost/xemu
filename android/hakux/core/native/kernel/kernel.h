@@ -392,6 +392,10 @@ void nc_kernel_relaunch_file(char *out, size_t n);
 /* The launch page's XBE as a path on the disc ("\morrowind.xbe"), false when it
  * names no disc file. */
 bool nc_kernel_launch_xbe(const uint8_t page[NC_LAUNCH_PAGE], char *out, size_t n);
+/* A launch page naming an XBE on the hard disk ("\Device\Harddisk0\PartitionN\dir;f.xbe"):
+ * its partition, its folder ("XODash", "" at the root) and file name. */
+bool nc_kernel_launch_hdd(const uint8_t page[NC_LAUNCH_PAGE], int *part, char *dir, size_t dn, char *file,
+                          size_t fn);
 /* After title_loaded on a relaunch: a contiguous page with page's contents
  * becomes LaunchDataPage. */
 void nc_kernel_launch_page_restore(NcKernel *k, const uint8_t page[NC_LAUNCH_PAGE]);
@@ -514,6 +518,9 @@ void nc_xc_register(NcKernel *k);
 /* Where the hard disk's partitions live on the host (PartitionN under it). */
 void nc_io_set_hdd_root(const char *path);
 const char *nc_io_hdd_root(void);
+/* The host path of a path in a partition, names matched case-insensitively:
+ * 1 it exists, 0 only its last part is missing, -1 a folder on its way is. */
+int nc_io_host_path(int part, const char *rel, char *out, size_t cap);
 /* A file object's handle closed (ob.c). */
 void nc_io_close(NcKernel *k, uint32_t object);
 /* Completes the overlapped disc reads the reader thread finished (cheap when

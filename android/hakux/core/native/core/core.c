@@ -9,10 +9,12 @@
 #include "native/core/mods.h"
 #include "native/state/save.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define MAIN_STACK_SIZE (256u * 1024u)
@@ -38,6 +40,36 @@ static bool boot_failed(const char *why)
 {
     nc_hle_set_fatal(NC_FATAL_BOOT, why);
     return false;
+}
+
+/* A hard-disk folder's files over the disc at prefix (the folder an XBE
+ * launched from the hard disk sees as D:); their count. */
+static unsigned overlay_folder(NcDisc *disc, const char *host, const char *prefix)
+{
+    DIR *d = opendir(host);
+    unsigned n = 0;
+    struct dirent *de;
+    while (d && (de = readdir(d))) {
+        if (de->d_name[0] == '.') {
+            continue;
+        }
+        char h[512], p[512];
+        snprintf(h, sizeof(h), "%s/%s", host, de->d_name);
+        snprintf(p, sizeof(p), "%s\\%s", prefix, de->d_name);
+        struct stat st;
+        if (stat(h, &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            n += overlay_folder(disc, h, p);
+        } else if (nc_disc_overlay_file(disc, p, h)) {
+            n++;
+        }
+    }
+    if (d) {
+        closedir(d);
+    }
+    return n;
 }
 
 /* The game's file is the problem, not the core (NC_FATAL_DISC). */
@@ -74,12 +106,45 @@ bool nc_core_boot(NcCore *c, int disc_fd)
         close(disc_fd);
         return disc_failed("The game's file isn't an Xbox disc image.");
     }
-    nc_mods_install(&c->disc);          /* the mods' files and XBE patches, the cheats */
     /* A relaunch (XLaunchNewImage, NativeCoreActivity starts the core again):
      * the XBE the saved launch data page names, and the page for the title. */
     static uint8_t page[NC_LAUNCH_PAGE];
-    bool have_page = false;
+    bool have_page = false, hdd = false;
     char xbe_path[NC_LAUNCH_PAGE] = "\\default.xbe";
+    if (g_relaunch && !g_loadstate[0]) {
+        char file[512];
+        nc_kernel_relaunch_file(file, sizeof(file));
+        FILE *fp = fopen(file, "rb");
+        if (fp) {
+            have_page = fread(page, 1, NC_LAUNCH_PAGE, fp) == NC_LAUNCH_PAGE;
+            fclose(fp);
+            unlink(file);
+        }
+        /* An XBE on the hard disk (the dashboard's xonlinedash.xbe): its D: is
+         * its folder, so the folder's files go over the disc's root. */
+        int part;
+        char dir[NC_LAUNCH_PAGE], name[NC_LAUNCH_PAGE];
+        if (have_page && nc_kernel_launch_hdd(page, &part, dir, sizeof(dir), name, sizeof(name))) {
+            hdd = true;
+            char host[512];
+            if (nc_io_host_path(part, *dir ? dir : ".", host, sizeof(host)) == 1 || !*dir) {
+                if (!*dir) {
+                    snprintf(host, sizeof(host), "%s/Partition%d", nc_io_hdd_root(), part);
+                }
+                const unsigned n = overlay_folder(&c->disc, host, "");
+                snprintf(xbe_path, sizeof(xbe_path), "\\%s", name);
+                snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "\\Device\\Harddisk0\\Partition%d%s%s\\%s",
+                         part, *dir ? "\\" : "", dir, name);
+                nc_log("hakuX-native-frontier", "relaunch: %s from the hard disk (%u files of %s as D:)",
+                       c->kernel.image_path, n, host);
+            } else {
+                nc_log("hakuX-native-frontier", "relaunch: Partition%d\\%s isn't on the hard disk", part, dir);
+                have_page = false;
+            }
+        }
+    }
+    nc_mods_install(&c->disc);          /* the mods' files and XBE patches, the cheats */
+    nc_disc_overlay_seal(&c->disc);     /* sealed by the mods, or for the hard disk's files */
     if (g_loadstate[0]) {
         /* a savestate: the XBE it was running (a relaunched title's own) */
         NcStateInfo info;
@@ -93,15 +158,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
             snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "%s", info.xbe_path);
         }
         nc_log("hakuX-native-frontier", "savestate: booting %s for %s", xbe_path, g_loadstate);
-    } else if (g_relaunch) {
-        char file[512];
-        nc_kernel_relaunch_file(file, sizeof(file));
-        FILE *fp = fopen(file, "rb");
-        if (fp) {
-            have_page = fread(page, 1, NC_LAUNCH_PAGE, fp) == NC_LAUNCH_PAGE;
-            fclose(fp);
-            unlink(file);
-        }
+    } else if (g_relaunch && !hdd) {
         if (have_page && nc_kernel_launch_xbe(page, xbe_path, sizeof(xbe_path))) {
             snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "\\Device\\CdRom0%s", xbe_path);
             nc_log("hakuX-native-frontier", "relaunch: %s (launch type %u)", c->kernel.image_path,

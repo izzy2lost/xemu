@@ -693,6 +693,39 @@ bool nc_kernel_launch_xbe(const uint8_t page[NC_LAUNCH_PAGE], char *out, size_t 
     return m > 1;
 }
 
+bool nc_kernel_launch_hdd(const uint8_t page[NC_LAUNCH_PAGE], int *part, char *dir, size_t dn, char *file,
+                          size_t fn)
+{
+    char p[LAUNCH_PATH_LEN + 1];
+    memcpy(p, page + LAUNCH_PATH_OFF, LAUNCH_PATH_LEN);
+    p[LAUNCH_PATH_LEN] = 0;
+    static const char hd[] = "\\Device\\Harddisk0\\Partition";
+    if (strncasecmp(p, hd, sizeof(hd) - 1) != 0 || p[sizeof(hd) - 1] < '1' || p[sizeof(hd) - 1] > '9') {
+        return false;
+    }
+    *part = p[sizeof(hd) - 1] - '0';
+    const char *rest = p + sizeof(hd);
+    /* "dir;file" (XLaunchNewImage's, the dashboard's), or a whole path (Halo 2's
+     * title update, "...\\TDATA\\4d530064\\$u\\default.xbe") */
+    const char *semi = strchr(rest, ';');
+    if (!semi) {
+        semi = strrchr(rest, '\\');
+    }
+    if (!semi || !semi[1]) {
+        return false;
+    }
+    while (*rest == '\\') {
+        rest++;
+    }
+    size_t dl = (size_t)(semi - rest);
+    while (dl && rest[dl - 1] == '\\') {
+        dl--;
+    }
+    snprintf(dir, dn, "%.*s", (int)dl, rest);
+    snprintf(file, fn, "%s", semi + 1);
+    return true;
+}
+
 void nc_kernel_launch_page_restore(NcKernel *k, const uint8_t page[NC_LAUNCH_PAGE])
 {
     const uint32_t slot = data_va(k, "LaunchDataPage");
@@ -713,8 +746,12 @@ static uint64_t HalReturnToFirmware(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     const uint32_t slot = data_va(k, "LaunchDataPage");
     const uint32_t page = slot ? nc_vm_rd32(k->vm, slot) : 0;
-    char xbe[LAUNCH_PATH_LEN] = "";
-    if (a[0] == 2 && page && nc_kernel_launch_xbe(nc_vm_host(k->vm, page), xbe, sizeof(xbe))) {
+    char xbe[LAUNCH_PATH_LEN] = "", dir[LAUNCH_PATH_LEN], file[LAUNCH_PATH_LEN];
+    int part;
+    if (a[0] == 2 && page &&
+        (nc_kernel_launch_xbe(nc_vm_host(k->vm, page), xbe, sizeof(xbe)) ||
+         (nc_kernel_launch_hdd(nc_vm_host(k->vm, page), &part, dir, sizeof(dir), file, sizeof(file)) &&
+          snprintf(xbe, sizeof(xbe), "Partition%d\\%s%s%s", part, dir, *dir ? "\\" : "", file) > 0))) {
         char path[512];
         nc_kernel_relaunch_file(path, sizeof(path));
         FILE *fp = fopen(path, "wb");
@@ -739,6 +776,37 @@ static uint64_t HalReturnToFirmware(NcKernel *k, NcFrame *f, const uint32_t *a)
     nc_kernel_request_stop(k, f, "title returned to the firmware (routine %u%s%s)", a[0],
                            page ? ", launch path " : "", launch);
     return 0;
+}
+
+/* ExReadWriteRefurbInfo(RefurbInfo, ValueLength, DoWrite): the hard disk's
+ * refurb record (power cycles, first set time). Read: none kept (zeros, as
+ * a new console's); a write is taken and dropped. Only the dashboard asks. */
+static uint64_t ExReadWriteRefurbInfo(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    if (!a[2] && a[0] && a[1] && a[1] <= 0x1000) {
+        memset(nc_vm_host(k->vm, a[0]), 0, a[1]);
+    }
+    return NC_STATUS_SUCCESS;
+}
+
+/* HalEnableSecureTrayEject(): the eject button; no tray here. */
+static uint64_t HalEnableSecureTrayEject(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    return 0;
+}
+
+/* HalReadSMCTrayState(TrayState, TrayStateChangeCount): closed, no disc.
+ * Only the dashboard asks; with a disc it would boot it (the dashboard's own
+ * image when it runs from one). */
+static uint64_t HalReadSMCTrayState(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    if (a[0]) {
+        nc_vm_wr32(k->vm, a[0], 0x40);      /* SMC_TRAY_STATE_CLOSED, no media */
+    }
+    if (a[1]) {
+        nc_vm_wr32(k->vm, a[1], 0);
+    }
+    return NC_STATUS_SUCCESS;
 }
 
 static uint64_t HalInitiateShutdown(NcKernel *k, NcFrame *f, const uint32_t *a)
@@ -877,6 +945,9 @@ void nc_ex_register(NcKernel *k)
     nc_kernel_impl(k, "HalRegisterShutdownNotification", HalNothing);
     nc_kernel_impl(k, "HalIsResetOrShutdownPending", HalNothing);
     nc_kernel_impl(k, "HalReturnToFirmware", HalReturnToFirmware);
+    nc_kernel_impl(k, "HalReadSMCTrayState", HalReadSMCTrayState);
+    nc_kernel_impl(k, "ExReadWriteRefurbInfo", ExReadWriteRefurbInfo);
+    nc_kernel_impl(k, "HalEnableSecureTrayEject", HalEnableSecureTrayEject);
     nc_kernel_impl(k, "HalInitiateShutdown", HalInitiateShutdown);
     nc_kernel_impl(k, "HalReadSMBusValue", HalReadSMBusValue);
     nc_kernel_impl(k, "HalWriteSMBusValue", HalNothing);

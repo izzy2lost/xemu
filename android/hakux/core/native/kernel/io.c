@@ -367,6 +367,11 @@ static int host_path(int part, const char *rel, char *out, size_t cap)
     return 1;
 }
 
+int nc_io_host_path(int part, const char *rel, char *out, size_t cap)
+{
+    return host_path(part, rel, out, cap);
+}
+
 /* --------------------------------------------------------- file objects */
 
 static NcFile *file_new(void)
@@ -2215,6 +2220,16 @@ static uint64_t IoDeleteSymbolicLink(NcKernel *k, NcFrame *f, const uint32_t *a)
     return NC_STATUS_SUCCESS;
 }
 
+/* IoDismountVolumeByName(DeviceName): the dashboard's, before it formats or
+ * checks a partition. The host folders hold no mounted state: nothing to do. */
+static uint64_t IoDismountVolumeByName(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    char name[128];
+    ansi(k, a[0], name, sizeof(name));
+    nc_log("hakuX-native-io", "dismount %s", name);
+    return NC_STATUS_SUCCESS;
+}
+
 /* NtOpenSymbolicLinkObject(LinkHandle, ObjectAttributes) */
 static uint64_t NtOpenSymbolicLinkObject(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
@@ -2407,6 +2422,7 @@ void nc_io_register(NcKernel *k)
     nc_kernel_impl(k, "IoSynchronousDeviceIoControlRequest", IoSynchronousDeviceIoControlRequest);
     nc_kernel_impl(k, "IoCreateSymbolicLink", IoCreateSymbolicLink);
     nc_kernel_impl(k, "IoDeleteSymbolicLink", IoDeleteSymbolicLink);
+    nc_kernel_impl(k, "IoDismountVolumeByName", IoDismountVolumeByName);
     nc_kernel_impl(k, "NtOpenSymbolicLinkObject", NtOpenSymbolicLinkObject);
     nc_kernel_impl(k, "NtQuerySymbolicLinkObject", NtQuerySymbolicLinkObject);
     nc_kernel_impl(k, "ObReferenceObjectByName", ObReferenceObjectByName);

@@ -365,20 +365,6 @@ static bool dns_local(const uint8_t *f, int len)
     *(uint16_t *)(rudp + 4) = htons(ulen);
     *(uint16_t *)(rudp + 6) = 0;            /* no checksum (IPv4) */
     trace("to it:", r, 14 + tlen);
-    static unsigned s_dumped;
-    if (s_dumped++ < 2) {
-        char hex[3 * FRAME_MAX / 8];
-        int n = 0;
-        for (int i = 0; i < 14 + tlen && n < (int)sizeof(hex) - 3; i++) {
-            n += snprintf(hex + n, sizeof(hex) - (size_t)n, "%02x", r[i]);
-        }
-        LOGI("DNS answer frame: %s", hex);
-        n = 0;
-        for (int i = 0; i < len && n < (int)sizeof(hex) - 3; i++) {
-            n += snprintf(hex + n, sizeof(hex) - (size_t)n, "%02x", f[i]);
-        }
-        LOGI("DNS query frame: %s", hex);
-    }
     sendto(g_nat.sock, r, (size_t)(14 + tlen), MSG_DONTWAIT, (const struct sockaddr *)&g_nat.core,
            sizeof(g_nat.core));
     g_nat.to_guest++;
