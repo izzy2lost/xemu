@@ -196,8 +196,21 @@ static uint32_t find_free(uint32_t size, bool top_down)
     return 0;
 }
 
+/* All or nothing, as the kernel's: it checks the available pages first. A
+ * commit that ran out partway kept what it had mapped, and a title retrying
+ * one it can't have lost that much RAM each time (Jedi Academy's heap retries
+ * a 516 KiB commit the console refuses too: it drained the last free pages,
+ * and the level's movie and loader thread found none). Any free page backs a
+ * page of the run, so enough free pages means it can't fail. */
 static bool commit(NcKernel *k, uint32_t va, uint32_t size, bool zero)
 {
+    uint32_t need = 0;
+    for (uint32_t p = va; p < va + size; p += NC_PAGE) {
+        need += nc_vm_phys(k->vm, p) == UINT32_MAX ? NC_PAGE : 0;
+    }
+    if (need > nc_vm_free_bytes(k->vm)) {
+        return false;
+    }
     for (uint32_t p = va; p < va + size;) {
         if (nc_vm_phys(k->vm, p) != UINT32_MAX) {
             p += NC_PAGE;
