@@ -659,6 +659,14 @@ EXPORT int SDL_main(int argc, char *argv[])
         if (!strncmp(argv[i], "pads=", 5)) {
             setenv("NC_PAD_MASK", argv[i] + 5, 1);     /* read by the USB at boot (ohci.c) */
         }
+        if (!strncmp(argv[i], "chihiro=", 8)) {
+            /* a Chihiro game: the baseboard, its EEPROM dumps' folder (dev/chihiro.c) */
+            setenv("NC_CHIHIRO", "1", 1);
+            setenv("NC_CHIHIRO_ROMS", argv[i] + 8, 1);
+        }
+        if (!strncmp(argv[i], "chihirosave=", 12)) {
+            setenv("NC_CHIHIRO_SAVE", argv[i] + 12, 1); /* the baseboard's backup file */
+        }
         if (!strcmp(argv[i], "padinput=sdl")) {
             g_sdl_pads = true;
         }

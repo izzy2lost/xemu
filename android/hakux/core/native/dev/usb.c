@@ -43,6 +43,9 @@ static int standard(NcUsbDev *d, const uint8_t *s, int wlen)
     if ((type & 0x60) != 0) {
         return -3; /* class or vendor */
     }
+    if (d->raw_ep0 && req != REQ_SET_ADDRESS) {
+        return -3; /* the device's firmware answers */
+    }
     switch (req) {
     case REQ_GET_DESCRIPTOR:
         if (type != 0x80) {

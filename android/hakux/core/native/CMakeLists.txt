@@ -47,6 +47,7 @@ add_library(hakux_native STATIC
   dev/ohci.c
   dev/aci.c
   dev/nvnet.c
+  dev/chihiro.c
   kernel/kernel.c
   kernel/pool.c
   kernel/ob.c
@@ -74,6 +75,23 @@ add_library(hakux_native STATIC
   "${NC_REPO}/hw/xbox/hle/core/xbe.c"
 )
 target_include_directories(hakux_native PUBLIC "${NC_REPO}")
+
+# The Chihiro baseboard (dev/chihiro.c): xemu's 8051, AN2131, JVS and drive
+# board models, next to the core in the x1box tree (hw/xbox/chihiro), built
+# unchanged against native/chihiro/shim.
+set(NC_CHIHIRO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../hw/xbox/chihiro" CACHE PATH "xemu's hw/xbox/chihiro")
+add_library(hakux_chihiro STATIC
+  "${NC_CHIHIRO_DIR}/chihiro-8051.c"
+  "${NC_CHIHIRO_DIR}/chihiro-an2131.c"
+  "${NC_CHIHIRO_DIR}/chihiro-jvs.c"
+  "${NC_CHIHIRO_DIR}/chihiro-driveboard-sega838.c"
+  "${NC_CHIHIRO_DIR}/chihiro-driveboard-v257.c"
+)
+target_include_directories(hakux_chihiro PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/chihiro/shim" "${NC_CHIHIRO_DIR}")
+target_compile_options(hakux_chihiro PRIVATE -w)
+target_link_libraries(hakux_native PRIVATE hakux_chihiro)
+target_link_libraries(hakux_chihiro PRIVATE hakux_native)
 # xxhash (single header, FEX's copy): the savestates' blob store (state/cache.c)
 target_include_directories(hakux_native PRIVATE "${HAKUX_FEX_DIR}/External/xxhash")
 # The HLE layer's pure modules build without QEMU in this mode.

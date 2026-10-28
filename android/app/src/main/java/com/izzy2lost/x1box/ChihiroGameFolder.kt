@@ -82,6 +82,10 @@ object ChihiroGameFolder {
     return input.read(magic) == 4 && String(magic, Charsets.US_ASCII) == "FATX"
   }
 
+  /** Where the hakuX core's copy of an unpacked game lives: its E: drive (Partition1). */
+  fun hakuxGameDir(context: Context, name: String): File =
+    File(context.filesDir, "hakux/hdd/Partition1/chihiro/" + sanitize(name))
+
   /** Where an unpacked or copied game lives. Stable per source name. */
   fun gameDir(context: Context, name: String): File {
     val base = context.getExternalFilesDir(null) ?: context.filesDir
@@ -399,6 +403,23 @@ object ChihiroGameFolder {
     if (String(data, BOOTID_MAGIC_OFFSET, 4, Charsets.US_ASCII) != "BTID") return null
     if (String(data, BOOTID_XBAM_OFFSET, 4, Charsets.US_ASCII) != "XBAM") return null
     return data
+  }
+
+  /**
+   * The XBE an unpacked game in [dir] boots: the one its boot.id names, else
+   * its first .xbe.
+   */
+  fun bootExecutable(dir: File): String? {
+    val data = runCatching { File(dir, "boot.id").readBytes() }.getOrNull()
+      ?.takeIf {
+        it.size >= BOOTID_XBAM_OFFSET + 4 &&
+          String(it, BOOTID_MAGIC_OFFSET, 4, Charsets.US_ASCII) == "BTID" &&
+          String(it, BOOTID_XBAM_OFFSET, 4, Charsets.US_ASCII) == "XBAM"
+      }
+    val named = bootIdExecutable(data)
+    val files = dir.listFiles().orEmpty().filter { it.isFile }
+    return files.firstOrNull { named != null && it.name.equals(named, ignoreCase = true) }?.name
+      ?: files.firstOrNull { it.name.endsWith(".xbe", ignoreCase = true) }?.name
   }
 
   /** The game's own name, as boot.id spells it. */

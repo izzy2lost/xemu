@@ -241,8 +241,18 @@ void nc_intr_return(NcKernel *k)
         k->isr_thread->state = NC_T_SUSPENDED;
     }
     /* Code interrupted at DISPATCH_LEVEL or above continues before anything else. */
-    if (k->isr_saved_irql >= 2 && k->isr_interrupted && k->isr_interrupted->state == NC_T_READY) {
-        k->resume_first = k->isr_interrupted;
+    NcThread *t = k->isr_interrupted;
+    if (k->isr_saved_irql >= 2 && t && t->state == NC_T_READY) {
+        k->resume_first = t;
+    } else if (k->isr_saved_irql > 0 && t && t->state != NC_T_READY) {
+        /* It went to wait (or suspended itself) as the interrupt came: the
+         * IRQL is its own, back when it runs again (ps.c nc_ps_schedule);
+         * the CPU meanwhile at PASSIVE_LEVEL, for the DPCs that end its wait. */
+        if (t->state != NC_T_TERMINATED && !t->has_wait_irql) {
+            t->wait_irql = k->isr_saved_irql;
+            t->has_wait_irql = true;
+        }
+        *irql(k) = 0;
     }
     k->isr_interrupted = NULL;
     k->resched = true;

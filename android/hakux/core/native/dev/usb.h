@@ -27,6 +27,9 @@ struct NcUsbDev {
     uint8_t addr;           /* 0 until SET_ADDRESS */
     uint8_t config;         /* SET_CONFIGURATION value */
     bool low_speed;
+    /* Every request on endpoint 0 but SET_ADDRESS goes to control, the
+     * standard ones too (a device with firmware of its own). */
+    bool raw_ep0;
 
     const uint8_t *dev_desc;
     unsigned dev_desc_len;
@@ -46,6 +49,8 @@ struct NcUsbDev {
     NcUsbDev *(*find)(NcUsbDev *d, uint8_t addr);
     /* A bus reset reached the device. */
     void (*reset)(NcUsbDev *d);
+    /* Devices on a root port: each 1 ms frame the controller runs. */
+    void (*frame)(NcUsbDev *d);
     void *opaque;
 
     /* Endpoint 0's transfer in progress. */
@@ -98,8 +103,23 @@ typedef struct NcPadState {
 #define NC_PAD_LTHUMB     0x0040
 #define NC_PAD_RTHUMB     0x0080
 void nc_pad_set(unsigned player, const NcPadState *s);
+void nc_pad_get(unsigned player, NcPadState *s);
 /* The last rumble strengths the title sent. */
 void nc_pad_rumble(unsigned player, uint16_t *left, uint16_t *right);
+
+/* chihiro.c: the Chihiro baseboard (NC_CHIHIRO=1), its QC and SC AN2131s
+ * for root ports 1 and 2. */
+bool nc_chihiro_enabled(void);
+void nc_chihiro_init(NcUsbDev **qc, NcUsbDev **sc);
+/* The game's XBE (its name picks the cabinet: the input layout, the drive
+ * board). */
+void nc_chihiro_set_game(const char *xbe);
+struct NcKernel;
+void nc_chihiro_set_kernel(struct NcKernel *k); /* debug: NC_CHIHIRO_PCS's thread dump */
+/* The light gun from the touch screen: x, y 0..1 across the picture. */
+void nc_chihiro_gun(float x, float y, bool on_screen, bool down);
+/* The game's backup to its file now, if it changed. */
+void nc_chihiro_flush(void);
 
 /* ohci.c: the Xbox's first USB controller (0xFED00000, IRQ 1), with gamepads
  * for the players in NC_PAD_MASK (or NC_PADS from player 1; default 1). */

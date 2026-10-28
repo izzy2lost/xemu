@@ -101,6 +101,9 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     } else {
       intent.getStringExtra(EXTRA_BOOT_XBE)?.let { args += "boot=$it" }
     }
+    /* A Chihiro game: the baseboard's EEPROM folder, and its backup's file. */
+    intent.getStringExtra(EXTRA_CHIHIRO_ROMS)?.let { args += "chihiro=$it" }
+    intent.getStringExtra(EXTRA_CHIHIRO_SAVE)?.let { args += "chihirosave=$it" }
     runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()?.let {
       args += "version=$it"
     }
@@ -1248,6 +1251,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
         .putExtra(EXTRA_DVD_URI, discUri?.toString() ?: intent.getStringExtra(EXTRA_DVD_URI))
         .apply { if (state != null) putExtra(EXTRA_LOADSTATE, state) }
         .putExtra(HakuxRelaunchActivity.EXTRA_RESTART, restart)
+        .apply { HakuxRelaunchActivity.keepBoot(intent, this) }
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
       HakuxRelaunchActivity.noTransition(this).toBundle(),
     )
@@ -1327,6 +1331,8 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     const val EXTRA_LOADSTATE = "loadstate"
     /** An XBE on the hard disk to boot instead of the disc's (HakuxLaunch.launchDashboard). */
     const val EXTRA_BOOT_XBE = "bootXbe"
+    const val EXTRA_CHIHIRO_ROMS = "chihiroRoms"
+    const val EXTRA_CHIHIRO_SAVE = "chihiroSave"
 
     /* hakux/core/native/dev/usb.h NC_PAD_* */
     private const val PAD_UP = 0x01

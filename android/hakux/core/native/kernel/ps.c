@@ -369,6 +369,12 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
      * ran out goes to the back with a new one; one that waits gets a new one
      * and its place when it is ready again. */
     const uint64_t now = nc_ke_now_ns();
+    /* At DISPATCH_LEVEL a thread isn't preempted (its quantum, a readied
+     * thread): it runs on until it lowers the IRQL or waits. Only an ISR
+     * comes in between. A switch here hands its IRQL to the next thread. */
+    uint8_t *irql = nc_vm_host(k->vm, k->kpcr_va + 0x24);
+    const bool pinned = cur && cur->state == NC_T_RUNNING && !cur->suspend && cur != k->isr_thread &&
+                        cur != k->dpc_thread && !k->in_isr && !k->in_dpc && *irql >= 2;
     if (cur && cur->state == NC_T_RUNNING) {
         if (cur->slice_expired) {
             cur->ready_seq = ++k->ready_clock;
@@ -392,6 +398,22 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
 
     k->force_switch = false;
 
+    /* A thread that waits raised (the Chihiro's Sega USB driver waits for its
+     * transfer at DISPATCH_LEVEL), or suspends itself so, keeps its IRQL; the
+     * CPU drops to PASSIVE_LEVEL while it is off, as the kernel's idle loop drains the DPCs
+     * whatever IRQL the waiter had, or the DPC that ends the wait never runs. */
+    if (cur && !pinned && cur->state != NC_T_TERMINATED && cur != k->isr_thread && cur != k->dpc_thread &&
+        !k->in_isr && !k->in_dpc && *irql > 0) {
+        static unsigned s_logged;
+        if (s_logged++ < 8) {
+            nc_log("hakuX-native", "ps: thread t%u leaves the CPU (state %d%s) at IRQL %u: lowered meanwhile", cur->id,
+                   cur->state, cur->suspend ? ", suspended" : "", *irql);
+        }
+        cur->wait_irql = *irql;
+        cur->has_wait_irql = true;
+        *irql = 0;
+    }
+
     /* Code an ISR interrupted above DISPATCH_LEVEL continues first. Then the
      * highest priority ready thread, round-robin after the current one. When
      * every thread waits, the guest CPU idles until the next timeout, timer
@@ -411,6 +433,8 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
         }
         if (k->resume_first && k->resume_first->state == NC_T_READY && !k->in_isr) {
             next = k->resume_first;
+        } else if (pinned && !(k->isr_thread && k->isr_thread->state == NC_T_READY)) {
+            next = cur;
         } else {
             for (unsigned n = 0; n < NC_MAX_THREADS; n++) {
                 NcThread *t = &k->threads[(start + n) % NC_MAX_THREADS];
@@ -445,6 +469,7 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
         nc_irq_idle_wait(deadline ? nc_ke_host_ns(deadline) : 0, 1000000000u);    /* on the host's clock */
         nc_ke_update_time(k);
     }
+    const bool was_resume_first = next == k->resume_first;
     if (next == k->resume_first) {
         k->resume_first = NULL;
     }
@@ -465,6 +490,18 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
         }
         nc_ps_stack_free(k, cur->stack_limit, cur->stack_base - cur->stack_limit);
         cur->state = NC_T_FREE;
+    }
+    if (next->has_wait_irql) {
+        *irql = next->wait_irql;        /* its wait done, back at the IRQL it waited at */
+        next->has_wait_irql = false;
+    } else if (next != cur && *irql > 0 && !was_resume_first && next != k->isr_thread && next != k->dpc_thread &&
+               !k->in_isr && !k->in_dpc) {
+        /* (an interrupted thread back from its ISR has its own IRQL) */
+        static unsigned s_logged;
+        if (s_logged++ < 12) {
+            nc_log("hakuX-native", "ps: t%u starts at IRQL %u it didn't raise (from t%u, state %d%s)", next->id,
+                   *irql, cur ? cur->id : 0, cur ? (int)cur->state : -1, pinned ? ", pinned" : "");
+        }
     }
     nc_frame_load(f, &next->ctx);
     next->fresh = false;

@@ -155,6 +155,11 @@ typedef struct NcThread {
     unsigned nseh;
     bool fresh;              /* ctx was just set up (an ISR or DPC entry): the
                                 running frame must not be saved over it */
+    /* The IRQL it waits at (ps.c nc_ps_schedule): a thread that blocks
+     * raised gets it back when it runs again, the CPU meanwhile at
+     * PASSIVE_LEVEL so the DPCs that end its wait run. Not in savestates. */
+    bool has_wait_irql;
+    uint8_t wait_irql;
     /* Scheduling (ps.c): threads of one priority run in the order they
      * became ready (ready_seq, 0: not yet ordered), each for its quantum,
      * which preemption pauses rather than restarts (slice_used_ns). */

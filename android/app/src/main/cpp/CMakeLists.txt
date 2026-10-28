@@ -219,7 +219,7 @@ if(XEMU_ENABLE_VULKAN)
     GIT_SHALLOW FALSE
     # the hakuX core's kgsl draw context priority hook (android/hakux/patches):
     # the hook libraries built here are the ones the app ships for both cores
-    PATCH_COMMAND git reset -q --hard && git apply
+    PATCH_COMMAND git reset -q --hard && git clean -fdq && git apply
       "${CMAKE_CURRENT_SOURCE_DIR}/../../../../hakux/patches/adrenotools-kgsl-context-priority.patch"
   )
   FetchContent_MakeAvailable(adrenotools)

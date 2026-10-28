@@ -285,6 +285,16 @@ void nc_pad_set(unsigned player, const NcPadState *s)
     }
 }
 
+void nc_pad_get(unsigned player, NcPadState *s)
+{
+    memset(s, 0, sizeof(*s));
+    if (player < XID_PLAYERS) {
+        pthread_mutex_lock(&g_lock);
+        *s = g_pad[player];
+        pthread_mutex_unlock(&g_lock);
+    }
+}
+
 void nc_pad_rumble(unsigned player, uint16_t *left, uint16_t *right)
 {
     if (player < XID_PLAYERS) {

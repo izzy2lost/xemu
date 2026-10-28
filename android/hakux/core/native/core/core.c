@@ -91,7 +91,8 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     c->disc.fd = -1;
     /* NC_RAM_MB=128 (debug kit size): a dev switch for memory investigations. */
     const char *mb = getenv("NC_RAM_MB");
-    const uint32_t ram = mb && atoi(mb) == 128 ? 128u << 20 : NC_RAM_RETAIL;
+    /* A Chihiro has 128 MiB too. */
+    const uint32_t ram = (mb && atoi(mb) == 128) || nc_chihiro_enabled() ? 128u << 20 : NC_RAM_RETAIL;
     if (!nc_vm_init(&c->vm, ram) || !nc_kernel_init(&c->kernel, &c->vm)) {
         return boot_failed("The emulated console couldn't be set up.");
     }
@@ -192,6 +193,10 @@ bool nc_core_boot(NcCore *c, int disc_fd)
             have_page = false;
             snprintf(xbe_path, sizeof(xbe_path), "%s", "\\default.xbe");
         }
+    }
+    if (nc_chihiro_enabled()) {
+        nc_chihiro_set_game(xbe_path);  /* the cabinet it was made for */
+        nc_chihiro_set_kernel(&c->kernel);
     }
     if (!nc_xbe_load(&c->vm, &c->disc, xbe_path, &c->kernel, &c->xbe)) {
         char why[256];

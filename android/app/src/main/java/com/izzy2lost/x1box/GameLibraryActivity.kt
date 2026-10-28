@@ -2038,15 +2038,17 @@ class GameLibraryActivity : AppCompatActivity() {
     // Chihiro wants a directory of loose game files rather than a disc image:
     // the emulator scans it to build the mbfs FATX and to read boot.id. A
     // prebuilt mbfs .bin is unpacked into that shape first, once, and reused.
-    if (prefs.getBoolean("setting_chihiro", false) && isFatxImageGame(game)) {
-      prepareChihiroGameFolder(game)
+    // The hakuX core boots one from its own hard disk instead (HakuxLaunch.launchChihiro).
+    val hakux = HakuxLaunch.coreFor(this, game.relativePath) == HakuxLaunch.CORE_HAKUX
+    if ((hakux || prefs.getBoolean("setting_chihiro", false)) && isFatxImageGame(game)) {
+      prepareChihiroGameFolder(game, hakux)
       return
     }
 
     startGame(game, dvdUri = game.uri.toString(), dvdPath = null)
   }
 
-  private fun startGame(game: GameEntry, dvdUri: String?, dvdPath: String?) {
+  private fun startGame(game: GameEntry, dvdUri: String?, dvdPath: String?, chihiroDir: File? = null) {
     // MainActivity runs in :xemu, so the disc selection must be flushed before
     // the other process reads SharedPreferences during startup.
     val launchEditor = prefs.edit()
@@ -2076,7 +2078,11 @@ class GameLibraryActivity : AppCompatActivity() {
           if (!ok) {
             Toast.makeText(this, R.string.hakux_sync_failed, Toast.LENGTH_LONG).show()
           }
-          HakuxLaunch.launch(this, hakuxDisc)
+          if (chihiroDir == null) {
+            HakuxLaunch.launch(this, hakuxDisc)
+          } else if (!HakuxLaunch.launchChihiro(this, chihiroDir)) {
+            Toast.makeText(this, getString(R.string.chihiro_unpack_failed, "no .xbe"), Toast.LENGTH_LONG).show()
+          }
         }
       }
       return
@@ -2119,11 +2125,14 @@ class GameLibraryActivity : AppCompatActivity() {
     }.getOrNull() == true
   }
 
-  private fun prepareChihiroGameFolder(game: GameEntry) {
-    val dest = ChihiroGameFolder.gameDir(this, gameFileName(game))
+  private fun prepareChihiroGameFolder(game: GameEntry, hakux: Boolean) {
+    val dest = if (hakux) ChihiroGameFolder.hakuxGameDir(this, gameFileName(game))
+               else ChihiroGameFolder.gameDir(this, gameFileName(game))
     val marker = File(dest, ".unpacked")
+    // The hakuX core is told the folder; its disc slot only has to name something.
+    fun start() = startGame(game, dvdUri = null, dvdPath = dest.absolutePath, chihiroDir = dest.takeIf { hakux })
     if (marker.isFile && dest.isDirectory) {
-      startGame(game, dvdUri = null, dvdPath = dest.absolutePath)
+      start()
       return
     }
 
@@ -2157,7 +2166,7 @@ class GameLibraryActivity : AppCompatActivity() {
         result.onSuccess { n ->
           Toast.makeText(this, getString(R.string.chihiro_unpacked, n),
                          Toast.LENGTH_SHORT).show()
-          startGame(game, dvdUri = null, dvdPath = dest.absolutePath)
+          start()
         }.onFailure { e ->
           dest.deleteRecursively()
           Toast.makeText(this, getString(R.string.chihiro_unpack_failed,

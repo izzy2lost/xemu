@@ -359,6 +359,14 @@ static bool service_td(Ohci *o, uint32_t ed_pa, uint32_t ed[4])
         r = d->data ? d->data(d, pid == PID_IN, ep, buf, (int)len) : NC_USB_STALL;
     }
     if (r == NC_USB_NAK) {
+        if (g_trace) {
+            static unsigned s_naks;
+            if (s_naks < 40) {
+                s_naks++;
+                nc_log("hakuX-native-usb", "td %08x addr %u ep %d %s len %u NAK", td_pa, (unsigned)ED_FA(ed[0]), ep,
+                       pid == PID_IN ? "IN" : pid == PID_OUT ? "OUT" : "SETUP", len);
+            }
+        }
         return false;
     }
     o->tds++;
@@ -508,6 +516,11 @@ static void frame(Ohci *o)
     }
     o->intr_status |= INT_SF;
     update_irq(o);
+    for (unsigned i = 0; i < ROOT_PORTS; i++) {
+        if (o->dev[i] && o->dev[i]->frame) {
+            o->dev[i]->frame(o->dev[i]);
+        }
+    }
 }
 
 static void *frame_thread(void *arg)
@@ -665,7 +678,7 @@ static bool g_front_hub;
 void nc_dev_ohci_set_pads(unsigned mask)
 {
     Ohci *o = &g_ohci;
-    if (g_front_hub || !g_pad_hub[0]) {
+    if (g_front_hub || !g_pad_hub[0] || nc_chihiro_enabled()) {
         return;                             /* the front panel hub's ports stay as booted */
     }
     pthread_mutex_lock(&o->lock);
@@ -729,7 +742,12 @@ void nc_dev_ohci_init(struct NcVm *vm)
         g_pad_hub[p] = nc_usb_hub_new(3);
         nc_usb_hub_attach(g_pad_hub[p], 1, nc_xid_gamepad_new(p));
     }
-    if (players) {
+    if (nc_chihiro_enabled()) {
+        /* A Chihiro: the baseboard's AN2131s on ports 1 and 2, no controllers. */
+        nc_chihiro_init(&o->dev[0], &o->dev[1]);
+        players = 0;
+        mask = 0;
+    } else if (players) {
         NcUsbDev *front = front_hub ? nc_usb_hub_new(4) : NULL;
         for (unsigned p = 0; p < 4; p++) {
             if (!((mask >> p) & 1)) {
@@ -777,6 +795,10 @@ void nc_dev_ohci_init(struct NcVm *vm)
 bool nc_usb_state_save(NcBuf *b)
 {
     Ohci *o = &g_ohci;
+    if (nc_chihiro_enabled()) {
+        nc_log("hakuX-native-state", "usb: a Chihiro's baseboard isn't in savestates yet");
+        return false;
+    }
     pthread_mutex_lock(&o->lock);
     nc_rec_put(b, &nc_rec_Ohci, o);
     for (unsigned i = 0; i < ROOT_PORTS; i++) {
@@ -804,6 +826,9 @@ bool nc_usb_state_save(NcBuf *b)
 bool nc_usb_state_load(NcRd *r, unsigned v)
 {
     Ohci *o = &g_ohci;
+    if (nc_chihiro_enabled()) {
+        return false;
+    }
     pthread_mutex_lock(&o->lock);
     uint32_t fresh_port[ROOT_PORTS];
     memcpy(fresh_port, o->port, sizeof(fresh_port));

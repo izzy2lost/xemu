@@ -62,6 +62,7 @@ class HakuxRelaunchActivity : Activity() {
         val state = intent.getStringExtra(HakuxCoreActivity.EXTRA_LOADSTATE)
         if (state != null) putExtra(HakuxCoreActivity.EXTRA_LOADSTATE, state)
         else if (!intent.getBooleanExtra(EXTRA_RESTART, false)) putExtra(HakuxCoreActivity.EXTRA_RELAUNCH, true)
+        keepBoot(intent, this)
       }
       .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
     startActivity(core, noTransition(this).toBundle())
@@ -88,6 +89,15 @@ class HakuxRelaunchActivity : Activity() {
     private const val WAIT_MS = 3000L
     /** The game from its start (its mods changed): neither a savestate nor the title's own reboot. */
     const val EXTRA_RESTART = "restart"
+
+    /** What the game booted from beside its disc (a hard disk XBE, a Chihiro's baseboard), from one start to the next. */
+    fun keepBoot(from: Intent, to: Intent) {
+      for (key in arrayOf(
+        HakuxCoreActivity.EXTRA_BOOT_XBE, HakuxCoreActivity.EXTRA_CHIHIRO_ROMS, HakuxCoreActivity.EXTRA_CHIHIRO_SAVE,
+      )) {
+        from.getStringExtra(key)?.let { to.putExtra(key, it) }
+      }
+    }
 
     /** The frame on screen when the title rebooted, held across the core's restart. */
     fun heldFrame(context: Context) = File(context.cacheDir, "hakux_relaunch_frame.jpg")

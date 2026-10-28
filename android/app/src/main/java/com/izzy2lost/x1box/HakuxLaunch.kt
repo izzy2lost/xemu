@@ -21,6 +21,12 @@ object HakuxLaunch {
   /** The library path (per-game settings key) of the game last launched, beside its dvdUri/dvdPath. */
   const val PREF_LAST_GAME = "last_game_relative_path"
 
+  /** The core a library game will run on, its own override first (before startGame applies it). */
+  fun coreFor(context: Context, relativePath: String): String {
+    val prefs = context.getSharedPreferences("x1box_prefs", Context.MODE_PRIVATE)
+    return PerGameSettingsManager.loadOverrides(context, relativePath)[PREF_CORE] ?: globalCore(prefs)
+  }
+
   /** The global core choice, before any game's override. */
   fun globalCore(prefs: SharedPreferences): String =
     prefs.getString(PREF_CORE, CORE_HAKUX) ?: CORE_HAKUX
@@ -100,6 +106,36 @@ object HakuxLaunch {
     file.parentFile?.mkdirs()
     file.writeBytes(image)
     return file
+  }
+
+  /**
+   * Starts an unpacked Chihiro game (ChihiroGameFolder.hakuxGameDir) in the hakuX core: its
+   * XBE from the hard disk with an empty disc in the tray, and the Sega baseboard on the USB.
+   * The baseboard's EEPROM dumps (ic10, ic11, pc20) are those beside the flash ROM set for
+   * xemu, else files/chihiro-roms; the core has House of the Dead 3's built in otherwise.
+   * Returns false when the folder holds no XBE.
+   */
+  fun launchChihiro(activity: Activity, dir: File): Boolean {
+    val xbe = ChihiroGameFolder.bootExecutable(dir) ?: return false
+    val partition1 = File(activity.filesDir, "hakux/hdd/Partition1")
+    val rel = dir.relativeTo(partition1).path.replace('/', '\\')
+    val intent = Intent(activity, HakuxCoreActivity::class.java)
+      .putExtra(HakuxCoreActivity.EXTRA_DVD_URI, Uri.fromFile(emptyDisc(activity)).toString())
+      .putExtra(HakuxCoreActivity.EXTRA_BOOT_XBE, "\\Device\\Harddisk0\\Partition1\\$rel\\$xbe")
+      .putExtra(HakuxCoreActivity.EXTRA_CHIHIRO_ROMS, chihiroRoms(activity)?.absolutePath ?: "")
+      .putExtra(
+        HakuxCoreActivity.EXTRA_CHIHIRO_SAVE,
+        File(activity.filesDir, "hakux/chihiro-saves/${dir.name}.sav").apply { parentFile?.mkdirs() }.absolutePath,
+      )
+    EmulationProcessHandoff.launch(activity, intent)
+    return true
+  }
+
+  private fun chihiroRoms(context: Context): File? {
+    val prefs = context.getSharedPreferences("x1box_prefs", Context.MODE_PRIVATE)
+    val beside = prefs.getString("flashPath", null)?.let { File(it).parentFile }
+    return listOfNotNull(beside, File(context.filesDir, "chihiro-roms"))
+      .firstOrNull { File(it, "ic10_g24lc64.bin").isFile }
   }
 
   fun launch(activity: Activity, dvdUri: String, loadState: String? = null) {
