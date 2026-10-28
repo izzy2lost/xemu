@@ -14,6 +14,7 @@
 #include "native/kernel/kernel.h"
 #include "native/core/irq.h"
 #include "native/core/xdvdfs.h"
+#include "native/dev/usb.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -65,6 +66,9 @@
 #define DISC_TIME 0x01C0739BEB8F8000ull /* 2001-01-01 */
 
 enum FileKind { F_DISC, F_HOST, F_VOLUME, F_LINK };
+/* A Chihiro's \??\mbcom:, the media board DIMM's system area and mailbox
+ * (dev/mediaboard.c), as an F_VOLUME. */
+#define MBCOM_VOLUME 100
 struct DirEntry;
 
 typedef struct NcFile {
@@ -78,7 +82,7 @@ typedef struct NcFile {
     uint64_t pos;
     unsigned dir_next;   /* directory enumeration */
     char mask[128];
-    int partition;       /* F_VOLUME: -1 disc, else partition number */
+    int partition;       /* F_VOLUME: -1 disc, MBCOM_VOLUME, else partition number */
     /* Opened with an overwrite disposition: the old contents moved to a side
      * file outside the partitions, and the file itself is empty on the host
      * from the start, so the disk always holds what the guest sees. FATX
@@ -932,10 +936,20 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
         return STATUS_OBJECT_PATH_NOT_FOUND;
     }
     const char *rel;
-    const int dev = device_of(path, &rel);
+    int dev = device_of(path, &rel);
     *info = 5; /* FILE_DOES_NOT_EXIST */
     NcFile *nf = NULL;
 
+    if (dev == -2 && nc_chihiro_enabled() && !strcasecmp(path, "\\??\\mbcom:")) {
+        nf = file_new();
+        if (!nf) {
+            return NC_STATUS_INSUFFICIENT_RESOURCES;
+        }
+        nf->kind = F_VOLUME;
+        nf->partition = MBCOM_VOLUME;
+        *info = 1; /* FILE_OPENED */
+        dev = -3;
+    }
     if (dev == -2) {
         /* As NT: a name straight in an object directory that isn't there
          * ("\??\simpletree_leavesc256.dds", a bare file name GTA III's loader
@@ -951,7 +965,9 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
         nc_log("hakuX-native-io", "open %s: unknown device%s", path, lone ? " (no such name)" : "");
         return lone ? STATUS_OBJECT_NAME_NOT_FOUND : STATUS_OBJECT_PATH_NOT_FOUND;
     }
-    if (dev == -1) {
+    if (dev == -3) {
+        /* \??\mbcom:, opened above */
+    } else if (dev == -1) {
         if (disposition != FILE_OPEN && disposition != FILE_OPEN_IF) {
             return STATUS_MEDIA_WRITE_PROTECTED;
         }
@@ -1228,6 +1244,16 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
     if (!nf) {
         return NC_STATUS_INVALID_HANDLE;
     }
+    if (nf->kind == F_VOLUME && nf->partition == MBCOM_VOLUME) {
+        if (!nc_kernel_resident(k, a[5], a[6], true)) {
+            return 0;
+        }
+        const uint64_t off = io_offset(k, nf, a[7]);
+        nc_vm_will_write(a[5], a[6]);
+        nc_mediaboard_mbcom(k->vm, off, nc_vm_host(k->vm, a[5]), a[6], false);
+        nf->pos = off + a[6];
+        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true);
+    }
     const int raw = nf->kind == F_VOLUME && nf->partition == 0 ? 0
                   : nf->kind == F_HOST && nf->is_dir ? partition_root(nf) : -1;
     if (raw == 0 || raw >= 3) {
@@ -1237,7 +1263,9 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         }
         const uint64_t off = io_offset(k, nf, a[7]);
         nc_vm_will_write(a[5], a[6]);
-        raw_io(raw, off, nc_vm_host(k->vm, a[5]), a[6], false);
+        if (raw || !nc_mediaboard_raw(k->vm, off, nc_vm_host(k->vm, a[5]), a[6], false)) {
+            raw_io(raw, off, nc_vm_host(k->vm, a[5]), a[6], false);
+        }
         nf->pos = off + a[6];
         if (g_trace_io) {
             nc_log("hakuX-native-io", "read %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
@@ -1370,9 +1398,15 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         return 0;
     }
     if (nf->kind == F_VOLUME) {
-        if (nf->partition == 0) {
+        if (nf->partition == MBCOM_VOLUME) {
             const uint64_t off = io_offset(k, nf, a[7]);
-            raw_io(0, off, nc_vm_host(k->vm, a[5]), a[6], true);
+            nc_mediaboard_mbcom(k->vm, off, nc_vm_host(k->vm, a[5]), a[6], true);
+            nf->pos = off + a[6];
+        } else if (nf->partition == 0) {
+            const uint64_t off = io_offset(k, nf, a[7]);
+            if (!nc_mediaboard_raw(k->vm, off, nc_vm_host(k->vm, a[5]), a[6], true)) {
+                raw_io(0, off, nc_vm_host(k->vm, a[5]), a[6], true);
+            }
             nf->pos = off + a[6];
             if (g_trace_io) {
                 nc_log("hakuX-native-io", "write %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);

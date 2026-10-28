@@ -9,6 +9,7 @@
  *           vblank (the other bits as an unclaimed port's)
  */
 #include "native/dev/dev.h"
+#include "native/dev/usb.h"
 
 #include <time.h>
 
@@ -67,6 +68,9 @@ uint32_t nc_port_in(uint16_t port, unsigned bytes)
         return v | ((nc_dev_nv2a_vblanks() & 1) ? FIELD_BIT : 0);
     default:
         v = bytes == 4 ? 0xFFFFFFFFu : (1u << (8 * bytes)) - 1;
+        if (nc_mediaboard_port_in(port, &v)) {
+            v &= bytes == 4 ? 0xFFFFFFFFu : (1u << (8 * bytes)) - 1;
+        }
         break;
     }
     note(port, false, bytes, v);
@@ -76,4 +80,5 @@ uint32_t nc_port_in(uint16_t port, unsigned bytes)
 void nc_port_out(uint16_t port, unsigned bytes, uint32_t value)
 {
     note(port, true, bytes, value);
+    nc_mediaboard_port_out(port, value);
 }

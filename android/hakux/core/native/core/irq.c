@@ -233,6 +233,27 @@ void nc_irq_set(unsigned line, bool level)
     wake_idle();
 }
 
+static uint32_t g_edge;
+
+void nc_irq_set_edge(unsigned line, bool edge)
+{
+    if (line >= NC_IRQ_LINES) {
+        return;
+    }
+    if (edge) {
+        __atomic_fetch_or(&g_edge, 1u << line, __ATOMIC_RELEASE);
+    } else {
+        __atomic_fetch_and(&g_edge, ~(1u << line), __ATOMIC_RELEASE);
+    }
+}
+
+void nc_irq_delivered(unsigned line)
+{
+    if (line < NC_IRQ_LINES && (__atomic_load_n(&g_edge, __ATOMIC_ACQUIRE) & (1u << line))) {
+        nc_irq_set(line, false);
+    }
+}
+
 uint32_t nc_irq_lines(void)
 {
     return __atomic_load_n(&g_lines, __ATOMIC_ACQUIRE) & __atomic_load_n(&g_enabled, __ATOMIC_ACQUIRE);

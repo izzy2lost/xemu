@@ -120,6 +120,15 @@ void nc_chihiro_set_kernel(struct NcKernel *k); /* debug: NC_CHIHIRO_PCS's threa
 void nc_chihiro_gun(float x, float y, bool on_screen, bool down);
 /* The game's backup to its file now, if it changed. */
 void nc_chihiro_flush(void);
+/* dev/mediaboard.c, the Chihiro's Type-1 media board: its LPC ports
+ * (0x40xx; false: not its port, or not a Chihiro), and the mailbox sectors of
+ * the raw disk (false: not one of them). */
+struct NcVm;
+bool nc_mediaboard_port_in(uint16_t port, uint32_t *v);
+bool nc_mediaboard_port_out(uint16_t port, uint32_t value);
+bool nc_mediaboard_raw(struct NcVm *vm, uint64_t off, uint8_t *buf, uint32_t len, bool write);
+/* The DIMM's system area, \??\mbcom:, at off (false: not a Chihiro). */
+bool nc_mediaboard_mbcom(struct NcVm *vm, uint64_t off, uint8_t *buf, uint32_t len, bool write);
 
 /* ohci.c: the Xbox's first USB controller (0xFED00000, IRQ 1), with gamepads
  * for the players in NC_PAD_MASK (or NC_PADS from player 1; default 1). */

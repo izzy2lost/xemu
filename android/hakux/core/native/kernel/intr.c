@@ -202,6 +202,7 @@ bool nc_intr_dispatch(NcKernel *k, bool cpu_enabled)
             continue;
         }
         hold_report(level);
+        nc_irq_delivered(level);
         g_isr_line = (uint8_t)level;
         if (!k->isr_thread) {
             k->isr_thread = nc_ps_kernel_thread(k, ISR_STACK, ISR_PRIORITY);

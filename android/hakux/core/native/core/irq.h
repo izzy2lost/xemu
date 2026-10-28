@@ -40,6 +40,12 @@ uint64_t nc_irq_cpu_ns(void);
  * slept or blocked. */
 uint64_t nc_irq_rise_delay_ns(unsigned line);
 uint64_t nc_irq_delay_ns(void);
+/* An edge-triggered line (the PIC's, not a PCI device's): it interrupts once
+ * per rise, taken down when the kernel delivers it (nc_irq_delivered). A
+ * Chihiro's media board raises IRQ 10 so; level-triggered, its ISR, which
+ * leaves the line to its DPC, ran again and again and the DPC never did. */
+void nc_irq_set_edge(unsigned line, bool edge);
+void nc_irq_delivered(unsigned line);
 /* Unmasks (on) or masks a line: KeConnectInterrupt / KeDisconnectInterrupt. */
 void nc_irq_enable(unsigned line, bool on);
 /* Blocks until a line is asserted, work is posted, or the host monotonic

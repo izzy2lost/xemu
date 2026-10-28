@@ -48,6 +48,7 @@ add_library(hakux_native STATIC
   dev/aci.c
   dev/nvnet.c
   dev/chihiro.c
+  dev/mediaboard.c
   kernel/kernel.c
   kernel/pool.c
   kernel/ob.c
