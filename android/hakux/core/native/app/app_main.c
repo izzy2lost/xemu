@@ -127,6 +127,20 @@ EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_n
     pthread_mutex_unlock(&g_overlay_lock);
 }
 
+/* A touch on no on-screen control, as a Chihiro's light gun: aimed where it
+ * is, the trigger held while it's down; off the picture is off the screen
+ * (the gun games' reload). x and y are the window's, 0..1. */
+EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeSetGun(
+    JNIEnv *env, jclass cls, jfloat x, jfloat y, jboolean down)
+{
+    if (!nc_chihiro_enabled()) {
+        return;
+    }
+    float fx = x, fy = y;
+    const bool on = nc_present_to_frame(&fx, &fy);
+    nc_chihiro_gun(fx, fy, on, down);
+}
+
 EXPORT JNIEXPORT void JNICALL Java_com_izzy2lost_x1box_hakux_HakuxCoreActivity_nativeSetPad(
     JNIEnv *env, jclass cls, jint player, jint buttons, jlong analog, jint lx, jint ly, jint rx, jint ry)
 {
@@ -752,7 +766,12 @@ EXPORT int SDL_main(int argc, char *argv[])
         }
     }
     /* The console's video settings: what the title may show (widescreen,
-     * 480p/720p/1080i) and the cable it finds (HD modes need component). */
+     * 480p/720p/1080i) and the cable it finds (HD modes need component).
+     * A Chihiro's is VGA: Virtual Cop 3's mode is none of component's, and
+     * its device creation failed. */
+    if (nc_chihiro_enabled()) {
+        av_pack = NC_AV_PACK_VGA;
+    }
     nc_kernel_set_video(video, av_pack);
     nc_present_set_widescreen(video >= 0 && (video & NC_VIDEO_WIDESCREEN));
     if (video >= 0) {

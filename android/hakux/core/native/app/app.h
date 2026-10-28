@@ -24,6 +24,9 @@ void nc_present_set_aspect(int mode);
 /* The console is set to widescreen: auto shows a 4:3-sized frame as 16:9
  * (a widescreen title renders anamorphic into it). */
 void nc_present_set_widescreen(bool on);
+/* A point of the window (0..1 each way) as one of the last frame shown
+ * (0..1 inside it); false when it's on the letterbox's bars. */
+bool nc_present_to_frame(float *x, float *y);
 /* FXAA over each frame before it's scaled to the window. */
 void nc_present_set_fxaa(bool on);
 /* A frame smaller than its place in the window: scaled up bilinearly, or by

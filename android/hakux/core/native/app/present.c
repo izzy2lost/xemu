@@ -153,6 +153,32 @@ static void place(uint32_t fw, uint32_t fh, uint32_t ww, uint32_t wh, float *sx,
     }
 }
 
+/* The last frame's half size in the window (place), for nc_present_to_frame. */
+static uint64_t g_placed;
+
+static uint32_t fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+static float bitsf(uint32_t u)
+{
+    float f;
+    memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
+bool nc_present_to_frame(float *x, float *y)
+{
+    const uint64_t p = __atomic_load_n(&g_placed, __ATOMIC_RELAXED);
+    const float sx = p ? bitsf((uint32_t)p) : 1.0f, sy = p ? bitsf((uint32_t)(p >> 32)) : 1.0f;
+    *x = (*x - 0.5f) / sx + 0.5f;
+    *y = (*y - 0.5f) / sy + 0.5f;
+    return *x >= 0.0f && *x <= 1.0f && *y >= 0.0f && *y <= 1.0f;
+}
+
 /* With nothing new to show, the refresh goes by: the panel keeps the image,
  * and the loop waits for the next vsync, as acquiring an image paced it. */
 static void wait_next_vsync(void)
@@ -186,6 +212,7 @@ bool nc_present_frame(struct ANativeWindow *win)
     if (hle_present_frame(&fw, &fh)) {
         place(fw, fh, ww, wh, &sx, &sy);
         __atomic_store_n(&g_shown, true, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_placed, (uint64_t)fbits(sx) | (uint64_t)fbits(sy) << 32, __ATOMIC_RELAXED);
     }
     hle_present_end(sx, sy, fxaa, upscale, g_dbg.average, key);
     return true;

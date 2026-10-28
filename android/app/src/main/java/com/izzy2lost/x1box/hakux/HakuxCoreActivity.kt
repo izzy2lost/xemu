@@ -1287,6 +1287,9 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     override fun onStickReleased(stick: OnScreenController.Stick) =
       bit(if (stick == OnScreenController.Stick.LEFT) PAD_LTHUMB else PAD_RTHUMB, false)
 
+    /* a Chihiro's light gun: the core ignores it for anything else */
+    override fun onPointerMoved(x: Float, y: Float, down: Boolean) = nativeSetGun(x, y, down)
+
     private fun set(button: OnScreenController.Button, down: Boolean) {
       when (button) {
         OnScreenController.Button.A -> analogBit(0, down)
@@ -1379,6 +1382,8 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       buttons: Int, analog: Int, lx: Float, ly: Float, rx: Float, ry: Float, lt: Float, rt: Float,
     )
     /** A player's Duke from its physical controllers (HakuxPadRouter): NC_PAD_* buttons, analog bytes, sticks. */
+    /** A touch on no control, as a Chihiro's light gun (window 0..1; down: the trigger). */
+    @JvmStatic external fun nativeSetGun(x: Float, y: Float, down: Boolean)
     @JvmStatic external fun nativeSetPad(player: Int, buttons: Int, analog: Long, lx: Int, ly: Int, rx: Int, ry: Int)
     /** The rumble the title last sent to a player: left << 16 | right. */
     @JvmStatic external fun nativeGetRumble(player: Int): Int
