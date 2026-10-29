@@ -215,6 +215,7 @@ static void v257_update_wheel(V257DriveBoard *db)
 
     if (db->state == V257_POWERED && db->force_a) {
         db->rest = db->position;
+        db->rest_held = true;
     }
     rest = db->rest;
     if (d >= 0) {
@@ -262,6 +263,16 @@ void v257_receive_byte(V257DriveBoard *db, uint8_t byte)
     raw = (uint16_t)(db->cmd[2] | (db->cmd[3] << 8));
     CHIHIRO_LOGF(FFB, "V257 drive board: pos %04X force %02X/%02X torque %02X\n",
                  raw, db->cmd[4], db->cmd[6], db->cmd[8]);
+
+    /* Until a spring has held the wheel, a released stick rests at the
+     * centre the game asks for, which every frame carries, force or not.
+     * Maximum Tune opens its menus after a boot with the motor off: the
+     * wheel sat at 0x200, 0x18 right of its centre (0x1E8), and every menu
+     * ran to its right end. */
+    if (!db->rest_held && raw > 0 && raw < 0x3FF && raw != db->rest) {
+        db->rest = raw;
+        v257_update_wheel(db);
+    }
 
     if (db->state == V257_OFF) {
         /* Answered, but whatever it asked is gone at the next tick. */

@@ -119,6 +119,7 @@ typedef struct V257DriveBoard {
     int      torque_ticks;  /* service ticks left in the push */
     int16_t  steer;      /* the player's stick, -32768..32767, 0 let go */
     uint16_t rest;       /* where the wheel sits when let go, 0-0x3FF */
+    bool     rest_held;  /* rest is where a spring last held the wheel */
 } V257DriveBoard;
 
 /* What the board drives the wheel with, for the host's force feedback: the
