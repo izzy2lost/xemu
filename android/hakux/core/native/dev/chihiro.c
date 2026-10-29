@@ -616,10 +616,28 @@ void nc_chihiro_flush(void)
 static pthread_mutex_t g_gun_lock = PTHREAD_MUTEX_INITIALIZER;
 static float g_gun_x, g_gun_y;
 static bool g_gun_on, g_gun_down, g_gun_live;
+static uint64_t g_gun_pressed_ns;     /* when the touch that pulls the trigger began */
+
+/* A touch moves the gun to it and pulls the trigger together; a real gun was
+ * aimed there before. HOTD3 fires where the gun pointed the poll before its
+ * trigger, so the trigger follows the aim by a few frames. */
+#define GUN_TRIGGER_DELAY_NS 50000000ull
+/* and stays pulled this long, for a tap shorter than the delay */
+#define GUN_TRIGGER_MIN_NS   60000000ull
+
+static uint64_t gun_now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
 
 void nc_chihiro_gun(float x, float y, bool on_screen, bool down)
 {
     pthread_mutex_lock(&g_gun_lock);
+    if (down && !g_gun_down) {
+        g_gun_pressed_ns = gun_now_ns();
+    }
     g_gun_x = x;
     g_gun_y = y;
     g_gun_on = on_screen;
@@ -736,13 +754,16 @@ static void input_driving(ChihiroJVSState *jvs, const NcPadState *p, int profile
 static void input_gun(ChihiroJVSState *jvs, const NcPadState *p)
 {
     float x, y;
-    bool on, down;
+    bool on, down = false;
     pthread_mutex_lock(&g_gun_lock);
     const bool live = g_gun_live;
     x = g_gun_x;
     y = g_gun_y;
     on = g_gun_on;
-    down = g_gun_down;
+    if (g_gun_pressed_ns) {
+        const uint64_t held = gun_now_ns() - g_gun_pressed_ns;
+        down = held >= GUN_TRIGGER_DELAY_NS && (g_gun_down || held < GUN_TRIGGER_DELAY_NS + GUN_TRIGGER_MIN_NS);
+    }
     pthread_mutex_unlock(&g_gun_lock);
     if (!live) {
         x = (p->lx + 32768) / 65535.0f;
