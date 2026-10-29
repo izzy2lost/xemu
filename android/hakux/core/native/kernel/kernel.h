@@ -596,6 +596,10 @@ void nc_intr_register(NcKernel *k);
 bool nc_intr_dispatch(NcKernel *k, bool cpu_enabled);
 /* An ISR returned to the stub. */
 void nc_intr_return(NcKernel *k);
+/* Interrupt work comes before the clock: an ISR or DPC running or queued, or
+ * an asserted line deliverable now that rose since it was last put first.
+ * Timers and wait timeouts that fell due meanwhile wait for it. */
+bool nc_intr_ahead(NcKernel *k);
 
 /* Writes the last kernel calls to fd (fault reports; async-signal tolerant). */
 void nc_kernel_dump_recent(int fd);

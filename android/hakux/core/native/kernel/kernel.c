@@ -962,6 +962,9 @@ static void clock_tick(NcKernel *k)
     if (!k->timer_due_ns && !k->wait_due_ns && !k->slice_due_ns) {
         return;
     }
+    if (nc_intr_ahead(k)) {
+        return;     /* the next entry after it */
+    }
     /* Nothing due for a while by the published time: no clock read (one a
      * kernel entry otherwise, something being armed nearly always). Each due
      * time is armed with the clock thread (nc_kernel_clock_arm), which wakes

@@ -232,6 +232,36 @@ bool nc_intr_dispatch(NcKernel *k, bool cpu_enabled)
     return false;
 }
 
+/*
+ * A device's interrupt that rose before a timeout fell due is served before
+ * the timeout, as the hardware's would be: it preempts the code at once. Here
+ * the guest CPU can be held for a while (FEX compiling a level's code), and
+ * once it is back the clock has run on. Timeouts first, and a thread waiting
+ * on a transfer that finished meanwhile wakes timed out. OutRun 2's beta
+ * cancels its USB request then, and crashes on the completion that follows
+ * (the request's TDs freed, 1b2028 in outrun2.xbe).
+ */
+bool nc_intr_ahead(NcKernel *k)
+{
+    if (k->in_isr || k->in_dpc || nc_dpc_pending()) {
+        return true;
+    }
+    static uint64_t s_put_first[NC_IRQ_LINES];  /* the rise each line was last put first for */
+    const uint32_t lines = nc_irq_lines();
+    for (unsigned level = 0; lines && level < NC_IRQ_LINES; level++) {
+        const uint32_t obj = k->irq_obj[level];
+        if (!(lines & (1u << level)) || !obj || (uint8_t)nc_vm_rd32(k->vm, obj + KI_IRQL) <= *irql(k)) {
+            continue;
+        }
+        const uint64_t rise = nc_irq_rise_ns(level);
+        if (rise != s_put_first[level]) {
+            s_put_first[level] = rise;  /* once a rise: one held by IF stays behind the clock */
+            return true;
+        }
+    }
+    return false;
+}
+
 void nc_intr_return(NcKernel *k)
 {
     k->in_isr = false;

@@ -421,13 +421,16 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
     const unsigned start = cur ? (unsigned)(cur - k->threads) + 1 : 0;
     NcThread *next = NULL;
     uint64_t idle_since = 0;
+    bool clock_first = false;   /* nothing ready behind the interrupt work: the clock after all */
     for (;;) {
         bool fired;
-        const uint64_t timer_due = nc_timer_poll(k, &fired);
         nc_io_poll(k); /* a disc read done sets the event a thread waits on */
         nc_intr_dispatch(k, true);
         nc_dpc_dispatch(k);
-        uint64_t deadline = nc_ke_check_waits(k);
+        /* the ISR or DPC readied runs before timeouts fall due (nc_intr_ahead) */
+        const bool clock = clock_first || !nc_intr_ahead(k);
+        const uint64_t timer_due = clock ? nc_timer_poll(k, &fired) : 0;
+        uint64_t deadline = clock ? nc_ke_check_waits(k) : 0;
         if (timer_due && (!deadline || timer_due < deadline)) {
             deadline = timer_due;
         }
@@ -452,6 +455,10 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
         }
         if (next) {
             break;
+        }
+        if (!clock) {
+            clock_first = true;
+            continue;
         }
         /* Idle. With no timeout pending only an interrupt can wake a thread:
          * give up after a while without one. Paused meanwhile, here it
