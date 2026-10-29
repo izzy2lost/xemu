@@ -975,6 +975,10 @@ static SetupFiles SyncSetupFiles() {
   const std::string flashPath = GetPrefString(env, activity, "flashPath");
   const std::string hddPath = GetPrefString(env, activity, "hddPath");
   const std::string dvdPath = GetPrefString(env, activity, "dvdPath");
+  // A Chihiro game is a folder of its files with boot.id at the top (the
+  // library unpacks .bin images into one): the machine follows the game,
+  // a Chihiro with 128 MiB and the Chihiro BIOS, else an Xbox.
+  const bool chihiroGame = !dvdPath.empty() && FileExists(dvdPath + "/boot.id");
   const std::string mcpxUri = GetPrefString(env, activity, "mcpxUri");
   const std::string flashUri = GetPrefString(env, activity, "flashUri");
   const std::string hddUri = GetPrefString(env, activity, "hddUri");
@@ -1002,10 +1006,19 @@ static SetupFiles SyncSetupFiles() {
       LogError("Failed to sync MCPX ROM");
     }
   }
-  if (!flashPath.empty() && FileExists(flashPath)) {
+  if (chihiroGame) {
+    // Beside the media board ROM, which chihiro.c looks for next to the BIOS.
+    const std::string chihiroBios = base + "/chihiro_bios.bin";
+    if (FileExists(chihiroBios)) {
+      out.flash = chihiroBios;
+      LogInfo("Chihiro game: the Chihiro BIOS");
+    } else {
+      LogError("Chihiro game but no Chihiro BIOS installed");
+    }
+  } else if (!flashPath.empty() && FileExists(flashPath)) {
     out.flash = flashPath;
   }
-  if (out.flash.empty() && !flashUri.empty()) {
+  if (out.flash.empty() && !chihiroGame && !flashUri.empty()) {
     out.flash = base + "/flash.bin";
     if (FileExists(out.flash)) {
       LogInfo("Flash ROM already in app storage, skipping copy");
@@ -1054,7 +1067,7 @@ static SetupFiles SyncSetupFiles() {
     // In Chihiro mode the disc is attached as an IDE disk rather than a
     // CD-ROM, so QEMU may want to write to it. Open a second, writable
     // descriptor for the same fdset when the provider allows it.
-    if (GetPrefBool(env, activity, "setting_chihiro", false)) {
+    if (chihiroGame) {
       g_dvd_fd_rw = OpenUriAsNativeFd(env, activity, dvdUri, "rw");
       if (g_dvd_fd_rw >= 0) {
         g_dvd_fd_readonly = false;
@@ -1118,7 +1131,7 @@ static SetupFiles SyncSetupFiles() {
   StartSystemLink(env, activity, !dvdPath.empty() ? dvdPath : dvdUri, &ds);
   ds.mem_limit_mib = GetPrefInt(env, activity, "setting_system_memory_mib",
                                  GetPrefInt(env, activity, "sys_mem_mib", 64));
-  ds.chihiro = GetPrefBool(env, activity, "setting_chihiro", false);
+  ds.chihiro = chihiroGame;
   {
     std::string ctl = GetPrefString(env, activity, "setting_chihiro_controls");
     ds.chihiro_controls = (ctl == "driving") ? "driving" : "gun";

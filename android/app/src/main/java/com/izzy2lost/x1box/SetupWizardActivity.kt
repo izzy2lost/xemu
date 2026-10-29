@@ -29,7 +29,17 @@ class SetupWizardActivity : AppCompatActivity() {
 
     /** Ask for xemu's files even though the global core is hakuX (a game set to xemu). */
     const val EXTRA_REQUIRE_XEMU_FILES = "requireXemuFiles"
+
+    /** Change one file from Settings: only this step's page, Done to go back. */
+    const val EXTRA_EDIT_STEP = "editStep"
+    const val STEP_MCPX = 0
+    const val STEP_FLASH = 1
+    const val STEP_HDD = 2
+    const val STEP_GAMES_FOLDER = 3
   }
+
+  /** The step Settings opened the wizard on, or -1 for the whole setup. */
+  private var editStep = -1
 
   private data class FileFingerprint(
     val displayName: String,
@@ -175,7 +185,8 @@ class SetupWizardActivity : AppCompatActivity() {
     val coreReady =
       !requireXemuFiles || isFileReady(mcpxPath) && isFileReady(flashPath) && isFileReady(hddPath)
     val gamesFolderReady = hasGamesFolderReady()
-    if (prefs.getBoolean("setup_complete", false) && coreReady && gamesFolderReady) {
+    editStep = intent.getIntExtra(EXTRA_EDIT_STEP, -1)
+    if (editStep < 0 && prefs.getBoolean("setup_complete", false) && coreReady && gamesFolderReady) {
       goToLibrary()
       return
     }
@@ -226,7 +237,9 @@ class SetupWizardActivity : AppCompatActivity() {
 
     btnBack.setOnClickListener { showStep(currentStep - 1) }
     btnNext.setOnClickListener {
-      if (currentStep < pages.size - 1) {
+      if (editStep >= 0) {
+        finish()
+      } else if (currentStep < pages.size - 1) {
         showStep(currentStep + 1)
       } else {
         finishSetup()
@@ -237,7 +250,7 @@ class SetupWizardActivity : AppCompatActivity() {
       this,
       object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
-          if (currentStep > 0) {
+          if (currentStep > 0 && editStep < 0) {
             showStep(currentStep - 1)
           } else {
             finish()
@@ -251,6 +264,11 @@ class SetupWizardActivity : AppCompatActivity() {
     updateHddSelection()
     updateDiscSelection()
 
+    if (editStep >= 0) {
+      indicators.forEach { it.visibility = View.GONE }
+      showStep(editStep)
+      return
+    }
     val startStep = if (coreReady && !gamesFolderReady) pages.size - 1 else 0
     showStep(startStep)
   }
@@ -275,6 +293,12 @@ class SetupWizardActivity : AppCompatActivity() {
   }
 
   private fun updateButtons() {
+    if (editStep >= 0) {
+      btnBack.visibility = View.INVISIBLE
+      btnNext.text = getString(R.string.setup_done)
+      btnNext.isEnabled = !isCopying
+      return
+    }
     btnBack.visibility = if (currentStep == 0) View.INVISIBLE else View.VISIBLE
     val stepFile = when (currentStep) {
       0 -> mcpxPath

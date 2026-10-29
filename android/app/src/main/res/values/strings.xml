@@ -9,6 +9,7 @@
   <string name="setup_back">Back</string>
   <string name="setup_next">Next</string>
   <string name="setup_finish">Finish</string>
+  <string name="setup_done">Done</string>
   <string name="setup_skip">Skip</string>
   <string name="setup_subtitle_hakux">The hakuX core only needs your games folder. The boot ROM, BIOS and hard disk are for the xemu core: skip them if you won\'t use it.</string>
 
@@ -154,7 +155,7 @@
   <string name="settings_system_memory_128">128 MiB (Debug/Homebrew)</string>
   <string name="settings_system_memory_hint">Use 64 MiB for retail games. 128 MiB is mainly for debug/homebrew and may reduce compatibility.</string>
   <string name="settings_chihiro_title">Sega Chihiro (Arcade)</string>
-  <string name="settings_chihiro_desc">Emulates the Sega Chihiro arcade board. Turning this on forces 128 MiB of system memory. You also need a 512 KiB Chihiro BIOS as the flash/BIOS file and the media board ROM installed below. Pick a .bin netboot image in the game library (it is unpacked on first launch) or an already-extracted game folder here.</string>
+  <string name="settings_chihiro_desc">Sega Chihiro arcade games run on their own: a .bin netboot image in the game library is unpacked on first launch and started as a Chihiro with 128 MiB, every other game as an Xbox. The hakuX core needs nothing more; the xemu core also needs the Chihiro BIOS and the media board ROM below.</string>
   <string name="settings_chihiro_controls">Cabinet controls</string>
   <string name="settings_chihiro_controls_gun">Light gun</string>
   <string name="settings_chihiro_controls_driving">Driving</string>
@@ -171,7 +172,24 @@
   <string name="chihiro_unpacking_file">Unpacking Chihiro game…\n%1$d files (%2$s)</string>
   <string name="chihiro_unpacked">Unpacked %1$d files</string>
   <string name="chihiro_unpack_failed">Could not unpack the Chihiro image: %1$s</string>
-  <string name="settings_chihiro_enable">Enable Chihiro mode</string>
+  <string name="settings_chihiro_bios_pick">Install Chihiro BIOS</string>
+  <string name="settings_chihiro_bios_missing">Chihiro BIOS: not installed</string>
+  <string name="settings_chihiro_bios_installed">Chihiro BIOS: installed</string>
+  <string name="settings_chihiro_bios_invalid">That file does not look like a Chihiro BIOS (expected a 512 KiB or 1 MiB dump, such as chihiro_xbox_bios.bin).</string>
+  <string name="chihiro_missing_title">Chihiro files needed</string>
+  <string name="chihiro_missing_message">Chihiro games in the xemu core need files of their own:\n\n%1$s\n\nAdd them now? (The hakuX core needs neither.)</string>
+  <string name="chihiro_missing_bios">• the Chihiro BIOS (a 512 KiB dump, such as chihiro_xbox_bios.bin)</string>
+  <string name="chihiro_missing_mbrom">• the media board ROM (fpr21042_m29w160et.bin)</string>
+  <string name="chihiro_missing_add">Add</string>
+  <string name="chihiro_pick_bios">Pick the Chihiro BIOS</string>
+  <string name="chihiro_pick_mbrom">Pick the media board ROM</string>
+  <string name="settings_section_files">Files</string>
+  <string name="library_refresh">Refresh the game library</string>
+  <string name="settings_file_games_folder">Games folder</string>
+  <string name="settings_file_mcpx">MCPX boot ROM</string>
+  <string name="settings_file_bios">Xbox BIOS</string>
+  <string name="settings_file_hdd">Hard disk image</string>
+  <string name="settings_file_change">Change</string>
   <string name="settings_chihiro_mbrom_pick">Install media board ROM</string>
   <string name="settings_chihiro_mbrom_missing">Media board ROM: not installed</string>
   <string name="settings_chihiro_mbrom_installed">Media board ROM: installed (%1$s)</string>

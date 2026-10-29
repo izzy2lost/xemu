@@ -203,7 +203,7 @@ class SettingsActivity : AppCompatActivity() {
   private lateinit var driverStatusText: TextView
   private lateinit var gpuNotSupportedText: TextView
   private lateinit var btnInstallDriver: MaterialButton
-  private lateinit var switchChihiro: MaterialSwitch
+  private lateinit var tvChihiroBiosStatus: TextView
   private lateinit var switchChihiroWidescreen: MaterialSwitch
   private lateinit var tvChihiroMbRomStatus: TextView
   private lateinit var btnPickChihiroMbRom: MaterialButton
@@ -260,8 +260,19 @@ class SettingsActivity : AppCompatActivity() {
   private val pickChihiroMbRom =
     registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
       uri ?: return@registerForActivityResult
-      persistUriPermission(uri)
-      installChihiroMbRom(uri)
+      if (!ChihiroFiles.installMbRom(this, uri)) {
+        Toast.makeText(this, R.string.settings_chihiro_mbrom_invalid, Toast.LENGTH_LONG).show()
+      }
+      refreshChihiroFileStatus()
+    }
+
+  private val pickChihiroBios =
+    registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+      uri ?: return@registerForActivityResult
+      if (!ChihiroFiles.installBios(this, uri)) {
+        Toast.makeText(this, R.string.settings_chihiro_bios_invalid, Toast.LENGTH_LONG).show()
+      }
+      refreshChihiroFileStatus()
     }
 
   private val pickChihiroFolder =
@@ -338,6 +349,47 @@ class SettingsActivity : AppCompatActivity() {
       exportManagedFiles(uri)
     }
 
+  override fun onResume() {
+    super.onResume()
+    bindFileRows()
+    refreshChihiroFileStatus()
+  }
+
+  /*
+   * The Files section: the games folder and the xemu core's files, each with
+   * what is set and Change, which opens that one step of the setup wizard
+   * (SetupWizardActivity.EXTRA_EDIT_STEP) rather than the whole of it.
+   */
+  private fun bindFileRows() {
+    val rows = findViewById<LinearLayout>(R.id.settings_files_rows)
+    rows.removeAllViews()
+    // the name the user picked (the copy in x1box/ is flash.bin, hdd.img)
+    fun fileName(pathKey: String, uriKey: String): String? =
+      prefs.getString(uriKey, null)?.let { runCatching { DocumentFile.fromSingleUri(this, Uri.parse(it))?.name }.getOrNull() }
+        ?: prefs.getString(pathKey, null)?.let { File(it) }?.takeIf { it.isFile }?.name
+    val folder = prefs.getString("gamesFolderUri", null)
+      ?.let { DocumentFile.fromTreeUri(this, Uri.parse(it))?.name }
+    val entries = listOf(
+      Triple(R.string.settings_file_games_folder, folder, SetupWizardActivity.STEP_GAMES_FOLDER),
+      Triple(R.string.settings_file_mcpx, fileName("mcpxPath", "mcpxUri"), SetupWizardActivity.STEP_MCPX),
+      Triple(R.string.settings_file_bios, fileName("flashPath", "flashUri"), SetupWizardActivity.STEP_FLASH),
+      Triple(R.string.settings_file_hdd, fileName("hddPath", "hddUri"), SetupWizardActivity.STEP_HDD),
+    )
+    for ((title, value, step) in entries) {
+      val row = layoutInflater.inflate(R.layout.settings_file_row, rows, false)
+      row.findViewById<TextView>(R.id.file_row_title).setText(title)
+      row.findViewById<TextView>(R.id.file_row_value).text = value ?: getString(R.string.setup_not_set)
+      row.findViewById<MaterialButton>(R.id.file_row_change).setOnClickListener {
+        startActivity(
+          Intent(this, SetupWizardActivity::class.java)
+            .putExtra(SetupWizardActivity.EXTRA_EDIT_STEP, step)
+            .putExtra(SetupWizardActivity.EXTRA_REQUIRE_XEMU_FILES, true)
+        )
+      }
+      rows.addView(row)
+    }
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     OrientationLocker(this).enable()
@@ -404,7 +456,7 @@ class SettingsActivity : AppCompatActivity() {
     driverStatusText      = findViewById(R.id.settings_gpu_driver_status)
     gpuNotSupportedText   = findViewById(R.id.settings_gpu_not_supported)
     btnInstallDriver      = findViewById(R.id.btn_install_driver)
-    switchChihiro         = findViewById(R.id.switch_chihiro)
+    tvChihiroBiosStatus   = findViewById(R.id.settings_chihiro_bios_status)
     switchChihiroWidescreen = findViewById(R.id.switch_chihiro_widescreen)
     val toggleChihiroControls =
       findViewById<MaterialButtonToggleGroup>(R.id.toggle_chihiro_controls)
@@ -497,20 +549,14 @@ class SettingsActivity : AppCompatActivity() {
       pickDriverZip.launch(arrayOf("application/zip", "application/octet-stream"))
     }
 
-    refreshChihiroMbRomStatus()
+    refreshChihiroFileStatus()
     btnPickChihiroMbRom.setOnClickListener {
       pickChihiroMbRom.launch(arrayOf("application/octet-stream", "*/*"))
     }
+    findViewById<MaterialButton>(R.id.btn_pick_chihiro_bios).setOnClickListener {
+      pickChihiroBios.launch(arrayOf("application/octet-stream", "*/*"))
+    }
     btnPickChihiroFolder.setOnClickListener { pickChihiroFolder.launch(null) }
-    if (switchChihiro.isChecked) {
-      toggleSystemMemory.check(R.id.btn_memory_128)
-    }
-    switchChihiro.setOnCheckedChangeListener { _, checked ->
-      // The baseboard is only wired up on a 128 MiB machine.
-      if (checked) {
-        toggleSystemMemory.check(R.id.btn_memory_128)
-      }
-    }
     btnSelectDriver.setOnClickListener { showDriverSelectionDialog() }
     btnResetDriver.setOnClickListener { confirmResetDriver() }
 
@@ -537,7 +583,6 @@ class SettingsActivity : AppCompatActivity() {
       prefs.getBoolean(DebugLog.PREF_ENABLED, false)
     switchNetworkEnable.isChecked =
       prefs.getBoolean("setting_network_enable", false)
-    switchChihiro.isChecked = prefs.getBoolean("setting_chihiro", false)
     switchChihiroWidescreen.isChecked = prefs.getBoolean("setting_chihiro_widescreen", false)
     when (prefs.getString("setting_chihiro_controls", "gun")) {
       "driving" -> toggleChihiroControls.check(R.id.btn_chihiro_driving)
@@ -652,7 +697,6 @@ class SettingsActivity : AppCompatActivity() {
         .putString(SystemLink.PREF_MODE, selectedLanMode())
         .putString(SystemLink.PREF_HOST, editLanHost.text?.toString()?.trim().orEmpty())
         .putString(SystemLink.PREF_KAI_HOST, editKaiHost.text?.toString()?.trim().orEmpty())
-        .putBoolean("setting_chihiro", switchChihiro.isChecked)
         .putBoolean("setting_chihiro_widescreen", switchChihiroWidescreen.isChecked)
         .putString("setting_chihiro_controls",
                    if (toggleChihiroControls.checkedButtonId == R.id.btn_chihiro_driving)
@@ -1280,8 +1324,11 @@ class SettingsActivity : AppCompatActivity() {
       ?.let { editor.putString("setting_audio_driver", it) }
     parseTomlBoolean(sections, "net", "enable")
       ?.let { editor.putBoolean("setting_network_enable", it) }
+    // A Chihiro machine's 128 MiB was forced by its mode, which now follows
+    // the game: not taken as the Xbox games' memory.
+    val wasChihiro = parseTomlBoolean(sections, "sys", "chihiro") == true
     parseTomlInt(sections, "sys", "mem_limit")
-      ?.takeIf { it == 64 || it == 128 }
+      ?.takeIf { it == 64 || it == 128 && !wasChihiro }
       ?.let { editor.putInt("setting_system_memory_mib", it) }
     parseTomlString(sections, "sys", "chihiro_controls")
       ?.lowercase(Locale.US)
@@ -1289,11 +1336,6 @@ class SettingsActivity : AppCompatActivity() {
       ?.let { editor.putString("setting_chihiro_controls", it) }
     parseTomlBoolean(sections, "chihiro.settings", "widescreen")
       ?.let { editor.putBoolean("setting_chihiro_widescreen", it) }
-    parseTomlBoolean(sections, "sys", "chihiro")
-      ?.let {
-        editor.putBoolean("setting_chihiro", it)
-        if (it) editor.putInt("setting_system_memory_mib", 128)
-      }
   }
 
   private fun parseSimpleTomlSections(file: File): Map<String, Map<String, String>> {
@@ -3112,65 +3154,14 @@ class SettingsActivity : AppCompatActivity() {
     return file.takeIf { it.isFile }
   }
 
-  /**
-   * The Chihiro baseboard flash ROM (SEGABOOT). hw/xbox/chihiro.c looks for it
-   * by name in the directory holding the BIOS, so copy it next to flash.bin
-   * under the emulator's own storage rather than asking the user to place a
-   * file inside Android/data by hand.
-   */
-  private val chihiroMbRomNames = listOf(
-    "fpr21042_m29w160et.bin",
-    "fpr-23887_29lv160te.ic4",
-    "fpr-23887.bin",
-  )
-
-  private fun chihiroMbRomDir(): File = File(getExternalFilesDir(null) ?: filesDir, "x1box")
-
-  private fun installedChihiroMbRom(): File? {
-    val dir = chihiroMbRomDir()
-    return chihiroMbRomNames.map { File(dir, it) }.firstOrNull { it.isFile && it.length() > 0L }
-  }
-
-  private fun refreshChihiroMbRomStatus() {
-    val installed = installedChihiroMbRom()
-    tvChihiroMbRomStatus.text = if (installed == null) {
-      getString(R.string.settings_chihiro_mbrom_missing)
-    } else {
-      getString(R.string.settings_chihiro_mbrom_installed, installed.name)
-    }
-  }
-
-  private fun installChihiroMbRom(uri: Uri) {
-    val sourceName = (getFileName(uri) ?: uri.lastPathSegment ?: "").lowercase(Locale.ROOT)
-    // Accept either of the known dumps, matched on name so the file lands under
-    // a name chihiro.c will actually look for.
-    val destName = chihiroMbRomNames.firstOrNull { it.lowercase(Locale.ROOT) == sourceName }
-      ?: chihiroMbRomNames.first()
-
-    val dir = chihiroMbRomDir()
-    if (!dir.exists() && !dir.mkdirs()) {
-      Toast.makeText(this, R.string.settings_chihiro_mbrom_copy_failed, Toast.LENGTH_LONG).show()
-      return
-    }
-
-    val target = File(dir, destName)
-    val copied = runCatching {
-      contentResolver.openInputStream(uri)?.use { input ->
-        // chihiro_load_flash_rom() rejects anything over 4 MiB.
-        val bytes = input.readBytes()
-        if (bytes.isEmpty() || bytes.size > 4 * 1024 * 1024) {
-          return@use false
-        }
-        target.writeBytes(bytes)
-        true
-      } ?: false
-    }.getOrDefault(false)
-
-    if (!copied) {
-      target.delete()
-      Toast.makeText(this, R.string.settings_chihiro_mbrom_invalid, Toast.LENGTH_LONG).show()
-    }
-    refreshChihiroMbRomStatus()
+  /** What the xemu core has of a Chihiro game's own files (ChihiroFiles). */
+  private fun refreshChihiroFileStatus() {
+    tvChihiroBiosStatus.text = ChihiroFiles.installedBios(this)
+      ?.let { getString(R.string.settings_chihiro_bios_installed) }
+      ?: getString(R.string.settings_chihiro_bios_missing)
+    tvChihiroMbRomStatus.text = ChihiroFiles.installedMbRom(this)
+      ?.let { getString(R.string.settings_chihiro_mbrom_installed, it.name) }
+      ?: getString(R.string.settings_chihiro_mbrom_missing)
   }
 
   /**
@@ -3207,12 +3198,7 @@ class SettingsActivity : AppCompatActivity() {
           prefs.edit()
             .putString("dvdPath", dest.absolutePath)
             .remove("dvdUri")
-            .putBoolean("setting_chihiro", true)
-            .putInt("setting_system_memory_mib", 128)
             .commit()
-          switchChihiro.isChecked = true
-          findViewById<MaterialButtonToggleGroup>(R.id.toggle_system_memory)
-            .check(R.id.btn_memory_128)
           Toast.makeText(this, getString(R.string.chihiro_folder_ready, n),
                          Toast.LENGTH_LONG).show()
         }.onFailure { e ->

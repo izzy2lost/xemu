@@ -47,6 +47,31 @@
             android:text="@string/settings_title"
             android:textAppearance="@style/TextAppearance.Material3.HeadlineMedium" />
 
+          <!-- ── FILES ── -->
+          <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:background="@drawable/section_header_background"
+            android:text="@string/settings_section_files"
+            android:textAppearance="@style/TextAppearance.Material3.LabelLarge"
+            android:textColor="@color/xemu_green_light" />
+
+          <!-- One row per file (SettingsActivity.bindFileRows): what is set, and Change. -->
+          <LinearLayout
+            android:id="@+id/settings_files_rows"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:orientation="vertical" />
+
+          <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="16dp"
+            android:background="@color/xemu_outline_variant" />
+
           <!-- ── DISPLAY ── -->
           <TextView
             android:layout_width="wrap_content"
@@ -415,13 +440,22 @@
             android:textAppearance="@style/TextAppearance.Material3.BodySmall"
             android:textColor="@color/xemu_text_muted" />
 
-          <com.google.android.material.materialswitch.MaterialSwitch
-            android:id="@+id/switch_chihiro"
+          <TextView
+            android:id="@+id/settings_chihiro_bios_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="8dp"
-            android:text="@string/settings_chihiro_enable"
+            android:text="@string/settings_chihiro_bios_missing"
+            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
             android:textColor="@color/xemu_text_muted" />
+
+          <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_pick_chihiro_bios"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="@string/settings_chihiro_bios_pick" />
 
           <TextView
             android:id="@+id/settings_chihiro_mbrom_status"

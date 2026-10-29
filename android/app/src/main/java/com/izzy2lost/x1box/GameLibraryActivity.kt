@@ -32,6 +32,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.LinearSnapHelper
 import androidx.recyclerview.widget.RecyclerView
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import coil.dispose
 import coil.load
 import com.google.android.material.button.MaterialButton
@@ -129,8 +130,8 @@ class GameLibraryActivity : AppCompatActivity() {
   )
 
   private val prefs by lazy { getSharedPreferences("x1box_prefs", MODE_PRIVATE) }
-  // "bin" is the Sega Chihiro netboot image; it only boots with the
-  // machine set to 128 MB (Chihiro mode) in Settings.
+  // "bin" is the Sega Chihiro netboot image: unpacked on first launch and
+  // started as a Chihiro (launchGame).
   private val gameExts = setOf("iso", "xiso", "cso", "cci", "bin")
   private val titleStopWords = setOf("the", "a", "an", "and", "of", "for", "in", "on", "to")
   private val coverRepoBaseUrl = "https://raw.githubusercontent.com/izzy2lost/X1_Covers/main/"
@@ -235,6 +236,59 @@ class GameLibraryActivity : AppCompatActivity() {
 
   private var exitDialog: androidx.appcompat.app.AlertDialog? = null
 
+  /* A Chihiro game for the xemu core, waiting on the files it still needs
+   * (ChihiroFiles): each picked in turn, then the game starts. */
+  private var pendingChihiroLaunch: (() -> Unit)? = null
+  private val pickChihiroFile =
+    registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+      val launch = pendingChihiroLaunch ?: return@registerForActivityResult
+      if (uri == null) {
+        pendingChihiroLaunch = null
+        return@registerForActivityResult
+      }
+      val bios = ChihiroFiles.installedBios(this) == null
+      val ok = if (bios) ChihiroFiles.installBios(this, uri) else ChihiroFiles.installMbRom(this, uri)
+      if (!ok) {
+        pendingChihiroLaunch = null
+        Toast.makeText(
+          this,
+          if (bios) R.string.settings_chihiro_bios_invalid else R.string.settings_chihiro_mbrom_invalid,
+          Toast.LENGTH_LONG,
+        ).show()
+        return@registerForActivityResult
+      }
+      pickNextChihiroFile(launch)
+    }
+
+  /** Starts [launch] once the xemu core has the Chihiro files, asking for the missing ones first. */
+  private fun withChihiroFiles(launch: () -> Unit) {
+    val missing = ChihiroFiles.missingForXemu(this)
+    if (missing.isEmpty()) {
+      launch()
+      return
+    }
+    MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(R.string.chihiro_missing_title)
+      .setMessage(getString(R.string.chihiro_missing_message, missing.joinToString("\n") { getString(it) }))
+      .setPositiveButton(R.string.chihiro_missing_add) { _, _ -> pickNextChihiroFile(launch) }
+      .setNegativeButton(android.R.string.cancel, null)
+      .show()
+  }
+
+  private fun pickNextChihiroFile(launch: () -> Unit) {
+    val missing = ChihiroFiles.missingForXemu(this)
+    if (missing.isEmpty()) {
+      pendingChihiroLaunch = null
+      launch()
+      return
+    }
+    pendingChihiroLaunch = launch
+    val bios = missing.first() == R.string.chihiro_missing_bios
+    Toast.makeText(this, if (bios) R.string.chihiro_pick_bios else R.string.chihiro_pick_mbrom, Toast.LENGTH_SHORT)
+      .show()
+    pickChihiroFile.launch(arrayOf("application/octet-stream", "*/*"))
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     OrientationLocker(this).enable()
@@ -291,6 +345,8 @@ class GameLibraryActivity : AppCompatActivity() {
     findViewById<View>(R.id.btn_library_saves).setOnClickListener {
       startActivity(Intent(this, SaveManagerActivity::class.java))
     }
+    findViewById<View>(R.id.btn_library_refresh).setOnClickListener { refreshLibrary() }
+    findViewById<SwipeRefreshLayout>(R.id.library_refresh).setOnRefreshListener { refreshLibrary() }
     btnSnapshots.setOnClickListener {
       showSnapshotStartupPicker()
     }
@@ -321,6 +377,17 @@ class GameLibraryActivity : AppCompatActivity() {
       HakuxHddSync.async({ HakuxHddSync.importAfterRun(this) }) {}
     }
     OrientationLocker(this).enable()
+    // the games folder changed in Settings (its Files section)
+    if (prefs.getString("gamesFolderUri", null) != gamesFolderUri?.toString()) {
+      refreshLibrary()
+    }
+  }
+
+  /** The games folder read again: games added or removed, a folder changed in Settings. */
+  private fun refreshLibrary() {
+    gamesFolderUri = prefs.getString("gamesFolderUri", null)?.let(Uri::parse)
+    boxArtMisses.clear()
+    loadGames()
   }
 
   override fun onDestroy() {
@@ -858,6 +925,9 @@ class GameLibraryActivity : AppCompatActivity() {
     }
     loadingSpinner.visibility = if (loading) View.VISIBLE else View.GONE
     loadingText.visibility = if (loading) View.VISIBLE else View.GONE
+    if (!loading) {
+      findViewById<SwipeRefreshLayout>(R.id.library_refresh).isRefreshing = false
+    }
   }
 
   private fun renderGames() {
@@ -2040,7 +2110,7 @@ class GameLibraryActivity : AppCompatActivity() {
     // prebuilt mbfs .bin is unpacked into that shape first, once, and reused.
     // The hakuX core boots one from its own hard disk instead (HakuxLaunch.launchChihiro).
     val hakux = HakuxLaunch.coreFor(this, game.relativePath) == HakuxLaunch.CORE_HAKUX
-    if ((hakux || prefs.getBoolean("setting_chihiro", false)) && isFatxImageGame(game)) {
+    if (isFatxImageGame(game)) {
       prepareChihiroGameFolder(game, hakux)
       return
     }
@@ -2099,6 +2169,11 @@ class GameLibraryActivity : AppCompatActivity() {
       return
     }
 
+    // A Chihiro game (its unpacked folder) boots the Chihiro BIOS in xemu.
+    if (dvdPath != null && File(dvdPath, "boot.id").isFile) {
+      withChihiroFiles { launchXemu() }
+      return
+    }
     launchXemu()
   }
 
