@@ -1399,13 +1399,6 @@
               android:text="@string/settings_redo_setup_wizard" />
           </LinearLayout>
 
-          <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_settings_save"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="@string/settings_save" />
-
         </LinearLayout>
       </com.google.android.material.card.MaterialCardView>
     </LinearLayout>

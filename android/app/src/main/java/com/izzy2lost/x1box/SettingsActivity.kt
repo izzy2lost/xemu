@@ -349,6 +349,24 @@ class SettingsActivity : AppCompatActivity() {
       exportManagedFiles(uri)
     }
 
+  /*
+   * No Save button: what is on screen is saved when the screen is left (back,
+   * a picker, the wizard). No game runs meanwhile (each core's process ends
+   * on the way back to the library), so the next launch has it all.
+   */
+  private var saveSettings: (() -> Unit)? = null
+  /* An import recreates the screen on the settings it wrote: not over them. */
+  private var skipSaveOnPause = false
+
+  override fun onPause() {
+    super.onPause()
+    if (skipSaveOnPause) {
+      skipSaveOnPause = false
+    } else {
+      saveSettings?.invoke()
+    }
+  }
+
   override fun onResume() {
     super.onResume()
     bindFileRows()
@@ -427,7 +445,6 @@ class SettingsActivity : AppCompatActivity() {
     val switchShowFps      = findViewById<MaterialSwitch>(R.id.switch_show_fps)
     switchDebugLogs      = findViewById(R.id.switch_debug_logs)
     val toggleAudioDriver = findViewById<MaterialButtonToggleGroup>(R.id.toggle_audio_driver)
-    val btnSave           = findViewById<MaterialButton>(R.id.btn_settings_save)
     val btnRedoSetup      = findViewById<MaterialButton>(R.id.btn_redo_setup_wizard)
     val btnClearCache     = findViewById<MaterialButton>(R.id.btn_clear_system_cache)
     val btnExportDebugLog = findViewById<MaterialButton>(R.id.btn_export_debug_log)
@@ -758,21 +775,16 @@ class SettingsActivity : AppCompatActivity() {
       showInitializeHddLayoutPicker(btnInitializeRetailHdd)
     }
 
-    btnSave.setOnClickListener {
-      if (selectedLanMode() == SystemLink.MODE_JOIN && editLanHost.text.isNullOrBlank()) {
-        inputLanHost.error = getString(R.string.settings_lan_join_needs_host)
-        inputLanHost.requestFocus()
-        return@setOnClickListener
-      }
-      if (selectedLanMode() == SystemLink.MODE_KAI && editKaiHost.text.isNullOrBlank()) {
-        inputKaiHost.error = getString(R.string.settings_kai_needs_address)
-        inputKaiHost.requestFocus()
-        return@setOnClickListener
-      }
+    saveSettings = {
       try {
-        val toastResult = persistSettings()
-        Toast.makeText(this, toastResult.first, toastResult.second).show()
-        finish()
+        persistSettings()
+        // System Link saved without the address it needs: said, as Save did
+        when {
+          selectedLanMode() == SystemLink.MODE_JOIN && editLanHost.text.isNullOrBlank() ->
+            Toast.makeText(this, R.string.settings_lan_join_needs_host, Toast.LENGTH_LONG).show()
+          selectedLanMode() == SystemLink.MODE_KAI && editKaiHost.text.isNullOrBlank() ->
+            Toast.makeText(this, R.string.settings_kai_needs_address, Toast.LENGTH_LONG).show()
+        }
       } catch (error: Exception) {
         Toast.makeText(
           this,
@@ -1185,6 +1197,7 @@ class SettingsActivity : AppCompatActivity() {
       getString(R.string.settings_import_emulator_files_success, summary),
       Toast.LENGTH_LONG,
     ).show()
+    skipSaveOnPause = true
     recreate()
   }
 

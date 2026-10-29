@@ -251,16 +251,11 @@ class PerGameSettingsActivity : AppCompatActivity() {
     val savedOverrides = PerGameSettingsManager.loadOverrides(this, relativePath)
     bindFields(savedOverrides)
 
+    // Every pick is saved as it is made (bindFields); this puts them all back on Use Global.
     findViewById<MaterialButton>(R.id.btn_per_game_settings_clear).setOnClickListener {
       PerGameSettingsManager.clearOverrides(this, relativePath)
+      bindFields(emptyMap())
       Toast.makeText(this, R.string.per_game_settings_cleared, Toast.LENGTH_SHORT).show()
-      finish()
-    }
-
-    findViewById<MaterialButton>(R.id.btn_per_game_settings_save).setOnClickListener {
-      PerGameSettingsManager.saveOverrides(this, relativePath, fieldSelections)
-      Toast.makeText(this, R.string.per_game_settings_saved, Toast.LENGTH_SHORT).show()
-      finish()
     }
   }
 
@@ -273,6 +268,7 @@ class PerGameSettingsActivity : AppCompatActivity() {
       dropdown.setAdapter(ArrayAdapter(this, android.R.layout.simple_list_item_1, labels))
       dropdown.setOnItemClickListener { _, _, position, _ ->
         fieldSelections[field.key] = field.options[position].value
+        PerGameSettingsManager.saveOverrides(this, relativePath, fieldSelections)
       }
 
       val selectedValue = savedOverrides[field.key]
