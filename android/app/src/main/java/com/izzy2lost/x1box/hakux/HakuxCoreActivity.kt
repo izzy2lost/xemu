@@ -49,6 +49,7 @@ import com.izzy2lost.x1box.InGameMenuGrid
 import com.izzy2lost.x1box.OnScreenController
 import com.izzy2lost.x1box.OrientationLocker
 import com.izzy2lost.x1box.PerGameSettingsManager
+import com.izzy2lost.x1box.XboxEepromEditor
 import com.izzy2lost.x1box.R
 import com.izzy2lost.x1box.SystemLink
 import com.izzy2lost.x1box.XbeMetadataReader
@@ -117,6 +118,14 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       else -> "stretch"
     }
     args += "tz=${TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000}"
+    /* Settings > EEPROM: the language and the video flags (480p, 720p,
+     * 1080i, widescreen / letterbox, PAL 60), into this run's EEPROM. */
+    if (prefs.contains(XboxEepromEditor.PREF_LANGUAGE)) {
+      args += "lang=${prefs.getInt(XboxEepromEditor.PREF_LANGUAGE, 1)}"
+    }
+    if (prefs.contains(XboxEepromEditor.PREF_VIDEO_FLAGS)) {
+      args += "video=" + Integer.toHexString(prefs.getInt(XboxEepromEditor.PREF_VIDEO_FLAGS, 0))
+    }
     /* Player 1 (the on-screen controls, and the first pad used); each other pad plugs
      * in as its player when it is first used (HakuxPadRouter). */
     args += "pads=" + Integer.toHexString(router?.pluggedMask() ?: 1)

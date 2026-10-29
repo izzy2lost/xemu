@@ -332,11 +332,11 @@
   <string name="settings_eeprom_refresh_rate_60">60 Hz</string>
   <string name="settings_eeprom_refresh_rate_50">50 Hz</string>
   <string name="settings_eeprom_status_ready">EEPROM file: %1$s</string>
-  <string name="settings_eeprom_status_missing">EEPROM not found at %1$s. Launch a game once to create it.</string>
+  <string name="settings_eeprom_status_missing">These settings are used by hakuX. xemu\'s EEPROM (%1$s) is made the first time a game runs in xemu; open Settings again after that to write them into it.</string>
   <string name="settings_eeprom_status_invalid">EEPROM is invalid at %1$s.</string>
   <string name="settings_eeprom_status_error">Failed to read EEPROM at %1$s.</string>
   <string name="settings_eeprom_status_unknown">EEPROM file: %1$s (contains unknown values; saving will normalize them)</string>
-  <string name="settings_eeprom_hint">Updates language and Xbox video settings in eeprom.bin. HD modes depend on the game, cable, and video standard. Restart emulation after saving.</string>
+  <string name="settings_eeprom_hint">The console\'s language and video settings, for both cores: written to xemu\'s eeprom.bin, and given to hakuX at every launch (in hakuX the video standard follows each game\'s region). HD modes (480p, 720p, 1080i) are offered only by games that support them.</string>
 
   <string name="settings_saved">Settings saved</string>
   <string name="settings_saved_with_eeprom">Settings and EEPROM saved</string>

@@ -1935,18 +1935,7 @@ class SettingsActivity : AppCompatActivity() {
       eepromEditable = false
       eepromMissing = true
       eepromError = false
-      setEepromEditorEnabled(false)
-      setEepromLanguageSelection(selectedEepromLanguage)
-      setEepromVideoSelection(selectedEepromVideoStandard)
-      setEepromVideoSettingsSelection(
-        XboxEepromEditor.VideoSettings(
-          allow480p = false,
-          allow720p = false,
-          allow1080i = false,
-          aspectRatio = selectedEepromAspectRatio,
-          refreshRate = selectedEepromRefreshRate,
-        )
-      )
+      showStoredEepromChoices()
       tvEepromStatus.text = getString(
         R.string.settings_eeprom_status_missing,
         eepromFile.absolutePath,
@@ -1959,7 +1948,6 @@ class SettingsActivity : AppCompatActivity() {
       eepromEditable = true
       eepromMissing = false
       eepromError = false
-      setEepromEditorEnabled(true)
       setEepromLanguageSelection(snapshot.language)
       setEepromVideoSelection(snapshot.videoStandard)
       setEepromVideoSettingsSelection(snapshot.videoSettings)
@@ -1977,18 +1965,7 @@ class SettingsActivity : AppCompatActivity() {
       eepromEditable = false
       eepromMissing = false
       eepromError = true
-      setEepromEditorEnabled(false)
-      setEepromLanguageSelection(selectedEepromLanguage)
-      setEepromVideoSelection(selectedEepromVideoStandard)
-      setEepromVideoSettingsSelection(
-        XboxEepromEditor.VideoSettings(
-          allow480p = false,
-          allow720p = false,
-          allow1080i = false,
-          aspectRatio = selectedEepromAspectRatio,
-          refreshRate = selectedEepromRefreshRate,
-        )
-      )
+      showStoredEepromChoices()
       tvEepromStatus.text = getString(
         R.string.settings_eeprom_status_invalid,
         eepromFile.absolutePath,
@@ -1997,18 +1974,7 @@ class SettingsActivity : AppCompatActivity() {
       eepromEditable = false
       eepromMissing = false
       eepromError = true
-      setEepromEditorEnabled(false)
-      setEepromLanguageSelection(selectedEepromLanguage)
-      setEepromVideoSelection(selectedEepromVideoStandard)
-      setEepromVideoSettingsSelection(
-        XboxEepromEditor.VideoSettings(
-          allow480p = false,
-          allow720p = false,
-          allow1080i = false,
-          aspectRatio = selectedEepromAspectRatio,
-          refreshRate = selectedEepromRefreshRate,
-        )
-      )
+      showStoredEepromChoices()
       tvEepromStatus.text = getString(
         R.string.settings_eeprom_status_error,
         eepromFile.absolutePath,
@@ -2049,7 +2015,36 @@ class SettingsActivity : AppCompatActivity() {
     dropdownGameOrientation.setText(getString(option.labelRes), false)
   }
 
+  /*
+   * Without a usable xemu EEPROM the editor still works: its choices are the
+   * ones stored with the settings (XboxEepromEditor.PREF_*), which the hakuX
+   * core boots with, and xemu's EEPROM takes them once it exists.
+   */
+  private fun showStoredEepromChoices() {
+    XboxEepromEditor.Language.fromId(prefs.getInt(XboxEepromEditor.PREF_LANGUAGE, -1).toUInt())
+      ?.let { selectedEepromLanguage = it }
+    XboxEepromEditor.VideoStandard.fromId(prefs.getInt(XboxEepromEditor.PREF_VIDEO_STANDARD, -1).toUInt())
+      ?.let { selectedEepromVideoStandard = it }
+    setEepromLanguageSelection(selectedEepromLanguage)
+    setEepromVideoSelection(selectedEepromVideoStandard)
+    setEepromVideoSettingsSelection(
+      XboxEepromEditor.videoSettings(prefs.getInt(XboxEepromEditor.PREF_VIDEO_FLAGS, 0).toUInt())
+    )
+  }
+
   private fun applyEepromEdits(): Pair<Int, Int> {
+    val videoSettings = XboxEepromEditor.VideoSettings(
+      allow480p = switchEeprom480p.isChecked,
+      allow720p = switchEeprom720p.isChecked,
+      allow1080i = switchEeprom1080i.isChecked,
+      aspectRatio = selectedEepromAspectRatio,
+      refreshRate = selectedEepromRefreshRate,
+    )
+    prefs.edit()
+      .putInt(XboxEepromEditor.PREF_LANGUAGE, selectedEepromLanguage.id.toInt())
+      .putInt(XboxEepromEditor.PREF_VIDEO_STANDARD, selectedEepromVideoStandard.id.toInt())
+      .putInt(XboxEepromEditor.PREF_VIDEO_FLAGS, videoSettings.toManagedBits().toInt())
+      .apply()
     if (eepromMissing) {
       return Pair(R.string.settings_saved_eeprom_missing, Toast.LENGTH_LONG)
     }
@@ -2062,13 +2057,7 @@ class SettingsActivity : AppCompatActivity() {
         resolveEepromFile(),
         selectedEepromLanguage,
         selectedEepromVideoStandard,
-        XboxEepromEditor.VideoSettings(
-          allow480p = switchEeprom480p.isChecked,
-          allow720p = switchEeprom720p.isChecked,
-          allow1080i = switchEeprom1080i.isChecked,
-          aspectRatio = selectedEepromAspectRatio,
-          refreshRate = selectedEepromRefreshRate,
-        ),
+        videoSettings,
       )
       if (changed) {
         Pair(R.string.settings_saved_with_eeprom, Toast.LENGTH_SHORT)
@@ -2078,20 +2067,6 @@ class SettingsActivity : AppCompatActivity() {
     } catch (_: Exception) {
       Pair(R.string.settings_saved_eeprom_failed, Toast.LENGTH_LONG)
     }
-  }
-
-  private fun setEepromEditorEnabled(enabled: Boolean) {
-    inputEepromLanguage.isEnabled = enabled
-    inputEepromVideoStandard.isEnabled = enabled
-    inputEepromAspectRatio.isEnabled = enabled
-    inputEepromRefreshRate.isEnabled = enabled
-    dropdownEepromLanguage.isEnabled = enabled
-    dropdownEepromVideoStandard.isEnabled = enabled
-    dropdownEepromAspectRatio.isEnabled = enabled
-    dropdownEepromRefreshRate.isEnabled = enabled
-    switchEeprom480p.isEnabled = enabled
-    switchEeprom720p.isEnabled = enabled
-    switchEeprom1080i.isEnabled = enabled
   }
 
   private fun setEepromLanguageSelection(language: XboxEepromEditor.Language) {

@@ -5,6 +5,15 @@ import java.io.IOException
 import java.security.SecureRandom
 
 internal object XboxEepromEditor {
+  /*
+   * The editor's choices, kept in the app's settings as well as in xemu's
+   * EEPROM file: the hakuX core, whose EEPROM is its own, boots with them
+   * (HakuxCoreActivity: lang=, video=), and they need no file to edit.
+   */
+  const val PREF_LANGUAGE = "eeprom_language"
+  const val PREF_VIDEO_STANDARD = "eeprom_video_standard"
+  const val PREF_VIDEO_FLAGS = "eeprom_video_flags"
+
   private const val EEPROM_SIZE = 256
 
   private const val FACTORY_CHECKSUM_OFFSET = 0x30
@@ -135,6 +144,15 @@ internal object XboxEepromEditor {
       get() = (rawVideoSettings and MANAGED_VIDEO_SETTINGS_MASK) != videoSettings.toManagedBits()
   }
 
+  /** The video flags (EEPROM 0x94) as the editor's settings. */
+  fun videoSettings(bits: UInt): VideoSettings = VideoSettings(
+    allow480p = (bits and VIDEO_SETTINGS_480P) != 0u,
+    allow720p = (bits and VIDEO_SETTINGS_720P) != 0u,
+    allow1080i = (bits and VIDEO_SETTINGS_1080I) != 0u,
+    aspectRatio = AspectRatio.fromBits(bits) ?: AspectRatio.NORMAL,
+    refreshRate = RefreshRate.fromBits(bits) ?: RefreshRate.DEFAULT,
+  )
+
   @Throws(IOException::class, IllegalArgumentException::class)
   fun load(file: File): Snapshot {
     val data = file.readBytes()
@@ -147,13 +165,7 @@ internal object XboxEepromEditor {
     return Snapshot(
       language = Language.fromId(rawLanguage) ?: Language.ENGLISH,
       videoStandard = VideoStandard.fromId(rawVideoStandard) ?: VideoStandard.NTSC_M,
-      videoSettings = VideoSettings(
-        allow480p = (rawVideoSettings and VIDEO_SETTINGS_480P) != 0u,
-        allow720p = (rawVideoSettings and VIDEO_SETTINGS_720P) != 0u,
-        allow1080i = (rawVideoSettings and VIDEO_SETTINGS_1080I) != 0u,
-        aspectRatio = AspectRatio.fromBits(rawVideoSettings) ?: AspectRatio.NORMAL,
-        refreshRate = RefreshRate.fromBits(rawVideoSettings) ?: RefreshRate.DEFAULT,
-      ),
+      videoSettings = videoSettings(rawVideoSettings),
       rawLanguage = rawLanguage,
       rawVideoStandard = rawVideoStandard,
       rawVideoSettings = rawVideoSettings,
