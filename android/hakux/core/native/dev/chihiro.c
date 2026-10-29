@@ -149,6 +149,14 @@ int chihiro_detected_game_profile(void)
     return cabinet() ? cabinet()->profile : P_NONE;
 }
 
+/* xemu's chihiro_resolve_board_type on Auto: House of the Dead 3 and Crazy
+ * Taxi were made for the Type-1 (FPGA) media board, every other game, known
+ * or not, for the Type-3 (ASIC) one. */
+bool nc_chihiro_type3(void)
+{
+    return !cabinet() || (cabinet()->profile != P_HOTD3 && cabinet()->profile != P_CTX);
+}
+
 void nc_chihiro_set_game(const char *xbe)
 {
     const char *n = xbe ? xbe : "";

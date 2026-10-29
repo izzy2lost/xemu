@@ -114,13 +114,15 @@ void nc_chihiro_init(NcUsbDev **qc, NcUsbDev **sc);
 /* The game's XBE (its name picks the cabinet: the input layout, the drive
  * board). */
 void nc_chihiro_set_game(const char *xbe);
+/* Whether that game's cabinet has the Type-3 (ASIC) media board. */
+bool nc_chihiro_type3(void);
 struct NcKernel;
 void nc_chihiro_set_kernel(struct NcKernel *k); /* debug: NC_CHIHIRO_PCS's thread dump */
 /* The light gun from the touch screen: x, y 0..1 across the picture. */
 void nc_chihiro_gun(float x, float y, bool on_screen, bool down);
 /* The game's backup to its file now, if it changed. */
 void nc_chihiro_flush(void);
-/* dev/mediaboard.c, the Chihiro's Type-1 media board: its LPC ports
+/* dev/mediaboard.c, the Chihiro's media board (Type-1 or Type-3): its LPC ports
  * (0x40xx; false: not its port, or not a Chihiro), and the mailbox sectors of
  * the raw disk (false: not one of them). */
 struct NcVm;

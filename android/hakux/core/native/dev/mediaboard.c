@@ -10,6 +10,16 @@
  * without a board ('!' Type-1 or ')' Type-3, vsg.xbe 0x14c4e0); the others
  * run without one. The FPGA board (Type-1) has no V850 to run: the commands
  * are answered here, as xemu answers them.
+ *
+ * The Type-3 (ASIC) board, which every game but House of the Dead 3 and Crazy
+ * Taxi was made for (nc_chihiro_type3), is reached through a register window
+ * instead: port 0x4004 names a register, port 0x4000 reads or writes it. Its
+ * mailbox is the same 32 bytes, at 0x84000000 (answer) and 0x84000020
+ * (command), run by a write to 0x84000040. xemu runs the board's own V850
+ * firmware for it; the commands are answered here as for the Type-1. Only
+ * through a Type-3 board does a game reach the network board's (Net-DIMM)
+ * mailbox, 0x91000000 and 0x91000200, and ask its firmware version: OutRun 2
+ * SP and Maximum Tune stop on "Error 14" below 11.01.
  */
 #include "native/core/irq.h"
 #include "native/core/nc.h"
@@ -57,6 +67,19 @@ static uint16_t g_scratch;            /* 0x4026 */
 static unsigned g_base_reads = 1;
 static uint8_t g_resp[32];
 
+/* The Type-3's register window (xemu's ChihiroLPCState). */
+static uint32_t g_reg;                /* port 0x4004: the register 0x4000 reaches */
+static uint32_t g_saddr;              /* 0xA0000020: where 0xA0000000 reads and writes */
+static uint32_t g_saddr_status;       /* 0xA0000040: bit 31, a burst (writes step on) */
+static uint32_t g_asic_ctrl = 1;      /* 0x80000140: bit 0, the V850 released (SEGABOOT did) */
+static uint32_t g_t3_cmd[8], g_t3_resp[8];
+static bool g_e1_armed;
+/* The network board's mailbox: eight words written in a row, read in a row. */
+static uint32_t g_nd_cmd[8], g_nd_resp[8];
+static unsigned g_nd_cmd_i, g_nd_resp_i;
+/* The network firmware: 13.05, the only one dumped (xemu answers 00011305). */
+#define ND_FW_VERSION 0x1305u
+
 /* A message for the title: bit 0 of 0x40E0, and a rise of IRQ 10, an edge
  * (xemu pulses it: lower, raise). */
 static void raise_message(void)
@@ -65,6 +88,150 @@ static void raise_message(void)
     nc_irq_set_edge(MB_IRQ, true);
     nc_irq_set(MB_IRQ, false);
     nc_irq_set(MB_IRQ, true);
+}
+
+static void process(const uint8_t *w, uint8_t *r, NcVm *vm);
+
+/* The network board's answer (xemu's chihiro_netdimm_answer, no board
+ * attached): bit 2 of 0x40E0 and IRQ 10. */
+static void netdimm_answer(void)
+{
+    const uint16_t op = (uint16_t)(g_nd_cmd[0] >> 16);
+    memset(g_nd_resp, 0, sizeof(g_nd_resp));
+    g_nd_resp[0] = g_nd_cmd[0] | 0x80000000u;
+    switch (op) {
+    case MB_CMD_INIT:
+        g_nd_resp[1] = DIMM_SIZE;
+        break;
+    case MB_CMD_STATUS:
+        g_nd_resp[1] = MB_STATUS_READY;
+        g_nd_resp[2] = 100;
+        break;
+    case MB_CMD_GET_VERSION:
+        g_nd_resp[1] = 0x00010000u | ND_FW_VERSION;
+        break;
+    default:
+        /* the sockets of a board with no cable: socket, setsockopt, bind,
+         * listen and gethostbyname succeed, whatever needs a peer fails */
+        if ((op & 0xFF00u) == 0x0400u) {
+            g_nd_resp[1] = op == 0x040B || op == 0x040E || op == 0x0402 || op == 0x0408 || op == 0x0405 ? 0
+                                                                                                    : 0xFFFFFFFFu;
+        }
+        break;
+    }
+    static unsigned said;
+    if (said++ < 16) {
+        nc_log(TAG, "network board: command %04x (seq %04x)", op, g_nd_cmd[0] & 0xFFFFu);
+    }
+    g_nd_resp_i = 0;
+    g_e0 |= 0x04;
+    nc_irq_set_edge(MB_IRQ, true);
+    nc_irq_set(MB_IRQ, false);
+    nc_irq_set(MB_IRQ, true);
+}
+
+/* A Type-3 command, in words (seq | cmd << 16, then its arguments): answered
+ * as the Type-1's, whose 32 bytes are the same words. */
+static void t3_execute(void)
+{
+    uint8_t w[32], r[32];
+    memcpy(w, g_t3_cmd, sizeof(w));
+    static unsigned said;
+    if (said++ < 24) {
+        nc_log(TAG, "media board (Type-3): command %04x (seq %04x)", w[2] | w[3] << 8, w[0] | w[1] << 8);
+    }
+    process(w, r, NULL);
+    memcpy(g_t3_resp, r, sizeof(r));
+    raise_message();
+}
+
+/* A word read through the window at a: the mailbox, the board's registers. */
+static uint32_t t3_read(uint32_t a)
+{
+    if (a >= 0x84000000u && a <= 0x8400001Cu) {
+        return g_t3_resp[(a - 0x84000000u) / 4];
+    }
+    switch (a) {
+    case 0x80000140: return g_asic_ctrl;
+    case 0x80000160: return 0;        /* bit 0 clear: the network board is there */
+    case 0x80000164: return 1;
+    case 0xA0001E60: return 2;        /* the DMA control register */
+    default: return 0;
+    }
+}
+
+static void t3_write(uint32_t a, uint32_t v)
+{
+    if (a >= 0x84000020u && a <= 0x8400003Cu) {
+        g_t3_cmd[(a - 0x84000020u) / 4] = v;
+    } else if (a >= 0x84000000u && a <= 0x8400001Cu) {
+        g_t3_resp[(a - 0x84000000u) / 4] = v;
+        if (a == 0x84000000u && !v) {
+            memset(g_t3_resp, 0, sizeof(g_t3_resp));  /* the answer taken */
+        }
+    } else if (a == 0x80000140u) {
+        g_asic_ctrl = v;              /* its firmware upload (0x84800000) is not run */
+    } else if (a == 0x84000040u && (v & 1)) {
+        t3_execute();
+    }
+}
+
+static uint32_t reg_read(void)
+{
+    switch (g_reg) {
+    case 0xA0000000: {                /* the word at g_saddr, which steps on */
+        const uint32_t v = t3_read(g_saddr);
+        g_saddr += 4;
+        return v;
+    }
+    case 0xA0000020: return g_saddr;
+    case 0xA0000040: return g_saddr_status;
+    case 0x90000000: return 1;        /* shared memory ready (the network board's doorbell) */
+    case 0x91000000: {
+        const uint32_t v = g_nd_resp[g_nd_resp_i & 7];
+        if (g_nd_resp_i < 7) {
+            g_nd_resp_i++;
+        }
+        return v;
+    }
+    case 0x91000200:                  /* the command slot free: a message starts */
+        g_nd_cmd_i = 0;
+        return 0;
+    default:
+        return t3_read(g_reg);
+    }
+}
+
+static void reg_write(uint32_t v)
+{
+    switch (g_reg) {
+    case 0x91000200:
+        if (g_nd_cmd_i < 8) {
+            g_nd_cmd[g_nd_cmd_i++] = v;
+            if (g_nd_cmd_i == 8) {
+                netdimm_answer();
+            }
+        }
+        break;
+    case 0x91000000:                  /* the answer released */
+        memset(g_nd_resp, 0, sizeof(g_nd_resp));
+        g_nd_resp_i = g_nd_cmd_i = 0;
+        break;
+    case 0xA0000020:
+        g_saddr = v;
+        break;
+    case 0xA0000040:
+        g_saddr_status = v;
+        break;
+    case 0xA0000000:
+        t3_write(g_saddr, v);
+        if (g_saddr_status & 0x80000000u) {
+            g_saddr += 4;             /* a burst */
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 bool nc_mediaboard_port_in(uint16_t port, uint32_t *v)
@@ -92,11 +259,14 @@ bool nc_mediaboard_port_in(uint16_t port, uint32_t *v)
     case 0xE0:
         *v = g_e0;
         break;
-    case 0xF0:  /* chip revision: FPGA (Type-1) revision 1 */
-        *v = 0x0001u;
+    case 0x00:
+        *v = nc_chihiro_type3() ? reg_read() : 0;
         break;
-    case 0xF4:  /* the DIMM size jumpers */
-        *v = DIMM_FACTOR;
+    case 0xF0:  /* chip revision: the ASIC (Type-3), or FPGA (Type-1) revision 1 */
+        *v = nc_chihiro_type3() ? 0x0100u : 0x0001u;
+        break;
+    case 0xF4:  /* the DIMM size jumpers (and a Type-3's dip switch register) */
+        *v = DIMM_FACTOR | (nc_chihiro_type3() ? 0x40u : 0);
         break;
     default:
         *v = 0;
@@ -113,6 +283,14 @@ bool nc_mediaboard_port_out(uint16_t port, uint32_t value)
     }
     pthread_mutex_lock(&g_lock);
     switch (port & 0xFFu) {
+    case 0x00:
+        if (nc_chihiro_type3()) {
+            reg_write(value);
+        }
+        break;
+    case 0x04:
+        g_reg = value;
+        break;
     case 0x26:
         g_scratch = (uint16_t)value;
         break;
@@ -123,11 +301,20 @@ bool nc_mediaboard_port_out(uint16_t port, uint32_t value)
         }
         break;
     case 0xE1:  /* the trigger: 0 lowers IRQ 10 (busy bit of the scratch cleared) */
-    case 0xE2:
-        if (!value || (port & 0xFFu) == 0xE2) {
+        if (value) {
+            g_e1_armed = true;
+        } else {
+            if (g_e1_armed && nc_chihiro_type3()) {
+                g_e0 &= (uint8_t)~0x01u;  /* a Type-3 game's worker took the message */
+            }
+            g_e1_armed = false;
             g_scratch &= (uint16_t)~0x0100u;
             nc_irq_set(MB_IRQ, false);
         }
+        break;
+    case 0xE2:
+        g_scratch &= (uint16_t)~0x0100u;
+        nc_irq_set(MB_IRQ, false);
         break;
     default:
         break;
@@ -175,7 +362,7 @@ static void process(const uint8_t *w, uint8_t *r, NcVm *vm)
     case MB_CMD_HARDWARE_TEST: {
         memcpy(r + 4, w + 4, 4);
         const uint32_t p = (uint32_t)(w[8] | w[9] << 8 | w[10] << 16 | (uint32_t)w[11] << 24);
-        if (p >= 0x80000000u && nc_vm_phys(vm, p) != UINT32_MAX && nc_vm_phys(vm, p + 7) != UINT32_MAX) {
+        if (vm && p >= 0x80000000u && nc_vm_phys(vm, p) != UINT32_MAX && nc_vm_phys(vm, p + 7) != UINT32_MAX) {
             nc_vm_will_write(p, 8);
             memcpy(nc_vm_host(vm, p), "TEST OK", 8);
         }
