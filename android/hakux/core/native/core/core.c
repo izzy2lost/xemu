@@ -161,13 +161,33 @@ bool nc_core_boot(NcCore *c, int disc_fd)
             snprintf(why, sizeof(why), "%s isn't on the hard disk.", rel);
             return boot_failed(why);
         }
-        if (*dir) {
-            nc_io_host_path(part, dir, host, sizeof(host));
+        /* A Chihiro game's D: is its whole filesystem, where boot.id is; its
+         * XBE can sit in a folder of it (Maximum Tune: \A\V307.xbe, the data
+         * in \Data). */
+        size_t root = strlen(dir);
+        if (nc_chihiro_enabled()) {
+            for (size_t at = root; at > 0;) {
+                char id[NC_LAUNCH_PAGE + 16];
+                snprintf(id, sizeof(id), "%.*s\\boot.id", (int)at, dir);
+                if (nc_io_host_path(part, id, host, sizeof(host)) == 1) {
+                    root = at;
+                    break;
+                }
+                while (at > 0 && dir[at - 1] != '\\') {
+                    at--;
+                }
+                at = at > 0 ? at - 1 : 0;
+            }
+        }
+        if (root) {
+            char top[NC_LAUNCH_PAGE];
+            snprintf(top, sizeof(top), "%.*s", (int)root, dir);
+            nc_io_host_path(part, top, host, sizeof(host));
         } else {
             snprintf(host, sizeof(host), "%s/Partition%d", nc_io_hdd_root(), part);
         }
         const unsigned n = overlay_folder(&c->disc, host, "");
-        snprintf(xbe_path, sizeof(xbe_path), "\\%s", name);
+        snprintf(xbe_path, sizeof(xbe_path), "%s%s\\%s", dir[root] ? "\\" : "", dir[root] ? dir + root + 1 : "", name);
         snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "\\Device\\Harddisk0\\Partition%d\\%s", part,
                  rel);
         nc_log("hakuX-native-frontier", "boot: %s from the hard disk (%u files of %s as D:)", c->kernel.image_path,

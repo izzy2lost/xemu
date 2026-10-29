@@ -407,7 +407,7 @@ object ChihiroGameFolder {
 
   /**
    * The XBE an unpacked game in [dir] boots: the one its boot.id names, else
-   * its first .xbe.
+   * its first .xbe. A path relative to [dir], in backslashes.
    */
   fun bootExecutable(dir: File): String? {
     val data = runCatching { File(dir, "boot.id").readBytes() }.getOrNull()
@@ -416,6 +416,16 @@ object ChihiroGameFolder {
           String(it, BOOTID_MAGIC_OFFSET, 4, Charsets.US_ASCII) == "BTID" &&
           String(it, BOOTID_XBAM_OFFSET, 4, Charsets.US_ASCII) == "XBAM"
       }
+    // Maximum Tune names a folder too (\A\V307.xbe): followed, one part at a time.
+    val namedPath = data?.let { asciiField(it, BOOTID_EXECUTABLE_OFFSET, 64) }
+      ?.split('\\', '/')?.filter { it.isNotEmpty() }.orEmpty()
+    var at: File? = dir
+    for (part in namedPath) {
+      at = at?.listFiles().orEmpty().firstOrNull { it.name.equals(part, ignoreCase = true) }
+    }
+    if (namedPath.isNotEmpty() && at?.isFile == true) {
+      return at.relativeTo(dir).path.replace('/', '\\')
+    }
     val named = bootIdExecutable(data)
     val files = dir.listFiles().orEmpty().filter { it.isFile }
     return files.firstOrNull { named != null && it.name.equals(named, ignoreCase = true) }?.name
