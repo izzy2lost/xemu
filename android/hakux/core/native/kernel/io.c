@@ -1195,15 +1195,17 @@ static int partition_root(const NcFile *nf);
  * reader (XDK 5455) counts the bytes only after ERROR_IO_PENDING, through
  * GetOverlappedResult, and took a disc read that succeeded at once as 0 bytes
  * read, a dirty disc. pend: a success may pend (not a read through the cache,
- * disc_cached). */
-static uint32_t io_finish(NcKernel *k, const NcFile *nf, const uint32_t *a, uint32_t st, uint32_t n, bool pend)
+ * disc_cached). always: one with neither event nor APC pends too (an unbuffered
+ * write to the hard disk, as the disc's transfers). */
+static uint32_t io_finish(NcKernel *k, const NcFile *nf, const uint32_t *a, uint32_t st, uint32_t n, bool pend,
+                          bool always)
 {
     if (nf->async && st >= 0xC0000000u) {
         return st;
     }
     io_status(k, a[4], st, n);
     complete(k, a);
-    return pend && nf->async && (a[1] || a[2] || nf->kind == F_DISC) ? STATUS_PENDING : st;
+    return pend && nf->async && (a[1] || a[2] || always || nf->kind == F_DISC) ? STATUS_PENDING : st;
 }
 
 /* A disc read of part of a sector goes through the file system's cache, which
@@ -1253,7 +1255,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         nc_vm_will_write(a[5], a[6]);
         nc_mediaboard_mbcom(k->vm, off, nc_vm_host(k->vm, a[5]), a[6], false);
         nf->pos = off + a[6];
-        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true);
+        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true, false);
     }
     const int raw = nf->kind == F_VOLUME && nf->partition == 0 ? 0
                   : nf->kind == F_HOST && nf->is_dir ? partition_root(nf) : -1;
@@ -1271,7 +1273,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         if (g_trace_io) {
             nc_log("hakuX-native-io", "read %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
         }
-        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true);
+        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true, false);
     }
     if (nf->is_dir || nf->kind == F_VOLUME) {
         io_status(k, a[4], STATUS_INVALID_DEVICE_REQUEST, 0);
@@ -1331,7 +1333,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                nf->path, (unsigned long long)off, a[6], a[5], st, n, a[1] ? " event" : "", a[2] ? " apc" : "",
                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
     }
-    return io_finish(k, nf, a, st, n, async);
+    return io_finish(k, nf, a, st, n, async, false);
 }
 
 /* The partition number if nf is a hard disk partition's root, else -1. */
@@ -1413,7 +1415,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                 nc_log("hakuX-native-io", "write %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
             }
         }
-        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true);
+        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true, false);
     }
     if (nf->kind == F_HOST && nf->is_dir && partition_root(nf) >= 3) {
         /* A cache drive formatted raw (XMountUtilityDrive): the superblock
@@ -1430,7 +1432,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                    g_cluster_sectors[part], nf->host);
             remove_tree(nf->host, false);
         }
-        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true);
+        return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true, false);
     }
     if (nf->kind != F_HOST || nf->is_dir || !handle_can_write(nf, "write to")) {
         io_status(k, a[4], STATUS_ACCESS_DENIED, 0);
@@ -1463,7 +1465,11 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
                (unsigned long long)off, a[6], a[5], st, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
     }
     nf->pos = off + (n > 0 ? (uint64_t)n : 0);
-    return io_finish(k, nf, a, st, n > 0 ? (uint32_t)n : 0, nf->no_buffering);   /* cached: in the call */
+    /* Unbuffered, an overlapped write pends whatever it waits on, as the hard
+     * disk's do: Kung Fu Chaos advances its OVERLAPPED's Offset only after
+     * ERROR_IO_PENDING, so done in the call, its copies to the cache drive came
+     * out shifted over their 2 KiB headers and the next boot read garbage. */
+    return io_finish(k, nf, a, st, n > 0 ? (uint32_t)n : 0, nf->no_buffering, nf->no_buffering);   /* cached: in the call */
 }
 
 /* ---------------------------------------------------------- information */
@@ -2442,6 +2448,46 @@ static uint64_t ObReferenceObjectByName(NcKernel *k, NcFrame *f, const uint32_t 
     return NC_STATUS_SUCCESS;
 }
 
+/* ObOpenObjectByName(ObjectAttributes, ObjectType, ParseContext, Handle): a named event,
+ * semaphore, mutant or timer (OpenEvent and the like); a symbolic link by its name;
+ * anything else (a file, a directory, a device) as NtOpenFile opens it. */
+static uint64_t ObOpenObjectByName(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    char name[512];
+    ansi(k, nc_vm_rd32(k->vm, a[0] + 4), name, sizeof(name));
+    uint32_t h = 0, info = 0, st;
+    enum NcObType type;
+    const uint32_t named = nc_ob_find_named(k, name, &type);
+    if (named) {
+        if (a[1] && a[1] != k->type_va[type]) {
+            st = NC_STATUS_OBJECT_TYPE_MISMATCH;
+        } else {
+            h = nc_ob_handle(k, named, type);
+            st = h ? NC_STATUS_SUCCESS : NC_STATUS_INSUFFICIENT_RESOURCES;
+        }
+    } else if (a[1] && (a[1] == k->type_va[NC_OB_EVENT] || a[1] == k->type_va[NC_OB_SEMAPHORE] ||
+                        a[1] == k->type_va[NC_OB_MUTANT] || a[1] == k->type_va[NC_OB_TIMER])) {
+        st = NC_STATUS_OBJECT_NAME_NOT_FOUND;
+    } else if (a[1] && a[1] == k->type_va[NC_OB_SYMLINK]) {
+        const int i = link_find(name);
+        NcFile *nf = i < 0 ? NULL : file_new();
+        if (nf) {
+            nf->kind = F_LINK;
+            snprintf(nf->path, sizeof(nf->path), "%s", g_links[i].target);
+            h = file_handle(k, nf);
+        }
+        st = i < 0 ? STATUS_OBJECT_NAME_NOT_FOUND : h ? NC_STATUS_SUCCESS : NC_STATUS_INSUFFICIENT_RESOURCES;
+    } else {
+        st = do_open(k, 0x80100000 /* GENERIC_READ | SYNCHRONIZE */, a[0], FILE_OPEN,
+                     0x20 /* FILE_SYNCHRONOUS_IO_NONALERT */, &h, &info);
+    }
+    nc_log("hakuX-native-io", "open object %s (type %08x) -> %08x", name, a[1], st);
+    if (st == NC_STATUS_SUCCESS) {
+        nc_vm_wr32(k->vm, a[3], h);
+    }
+    return st;
+}
+
 void nc_io_register(NcKernel *k)
 {
     g_trace_io = getenv("NC_TRACE_IO") != NULL;
@@ -2468,6 +2514,7 @@ void nc_io_register(NcKernel *k)
     nc_kernel_impl(k, "NtOpenSymbolicLinkObject", NtOpenSymbolicLinkObject);
     nc_kernel_impl(k, "NtQuerySymbolicLinkObject", NtQuerySymbolicLinkObject);
     nc_kernel_impl(k, "ObReferenceObjectByName", ObReferenceObjectByName);
+    nc_kernel_impl(k, "ObOpenObjectByName", ObOpenObjectByName);
     nc_kernel_impl(k, "IoCreateDevice", IoCreateDevice);
     nc_kernel_impl(k, "IoDeleteDevice", IoDeleteDevice);
 }

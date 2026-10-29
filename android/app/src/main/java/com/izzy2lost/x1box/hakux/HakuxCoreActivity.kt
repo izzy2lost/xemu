@@ -92,8 +92,25 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private fun setting(key: String): String? =
     PerGameSettingsManager.getRuntimeOverride(this, key) ?: prefs.all[key]?.toString()
 
+  /**
+   * The cache drives (Partition3-5, a title's Z:) emptied once: before the core's
+   * overlapped writes to them pended, Kung Fu Chaos copied its files there shifted over
+   * their 2 KiB headers, and it read those copies back at every later boot (a crash at
+   * boot or in a fight). Titles copy again into an empty cache drive.
+   */
+  private fun clearOldCacheDrives(hdd: File) {
+    val marker = File(hdd, ".cache-drives-v2")
+    if (marker.exists() || !hdd.isDirectory) return
+    for (n in 3..5) {
+      File(hdd, "Partition$n").listFiles()?.forEach { it.deleteRecursively() }
+    }
+    runCatching { marker.createNewFile() }
+  }
+
   override fun getArguments(): Array<String> {
-    val args = mutableListOf(discArg, File(filesDir, "hakux/hdd").absolutePath)
+    val hdd = File(filesDir, "hakux/hdd")
+    clearOldCacheDrives(hdd)
+    val args = mutableListOf(discArg, hdd.absolutePath)
     val state = intent.getStringExtra(EXTRA_LOADSTATE)
     if (state != null) {
       args += "loadstate=$state"        /* boot into a savestate (HakuxSaveStates) */

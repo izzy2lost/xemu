@@ -385,13 +385,16 @@ static uint64_t KeCancelTimer(NcKernel *k, NcFrame *f, const uint32_t *a)
 /* NtCreateTimer(TimerHandle, ObjectAttributes, TimerType) */
 static uint64_t NtCreateTimer(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    uint32_t timer = nc_ob_create(k, NC_OB_TIMER, KTIMER_SIZE);
+    uint32_t status;
+    uint32_t timer = nc_ob_create_named(k, NC_OB_TIMER, KTIMER_SIZE, a[1], &status);
     if (!timer) {
-        return NC_STATUS_INSUFFICIENT_RESOURCES;
+        return status ? status : NC_STATUS_INSUFFICIENT_RESOURCES;
     }
-    timer_init(k, timer, a[2]);
+    if (status != NC_STATUS_OBJECT_NAME_EXISTS) {
+        timer_init(k, timer, a[2]);
+    }
     nc_vm_wr32(k->vm, a[0], nc_ob_handle(k, timer, NC_OB_TIMER));
-    return NC_STATUS_SUCCESS;
+    return status;
 }
 
 static uint32_t timer_of(NcKernel *k, uint32_t handle)

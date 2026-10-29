@@ -8,6 +8,8 @@
  */
 #include "native/kernel/kernel.h"
 
+#include <strings.h>
+
 #define OB_HEADER 0x10u
 
 /* Body size of each type's objects, for freeing them: file and symbolic-link
@@ -123,6 +125,78 @@ bool nc_ob_close(NcKernel *k, uint32_t handle)
         release(k, object, type);
     }
     return true;
+}
+
+/* Named objects, all in guest memory so savestates keep them: a word of the
+ * kernel's area (between the export table and the stubs) heads a chain of
+ * records in the pool, each { next record, object, name length, name }.
+ * Named objects are never freed (freeable), so a record never dangles. */
+#define NAMES_HEAD (NC_KERNEL_VA + 0x0EF0u)
+#define NAME_MAX_LEN 128u
+
+/* The name of OBJECT_ATTRIBUTES attrs (its ObjectName, an OBJECT_STRING), or false. */
+static bool attrs_name(NcKernel *k, uint32_t attrs, char *out, uint32_t *len)
+{
+    const uint32_t str = attrs ? nc_vm_rd32(k->vm, attrs + 4) : 0;
+    if (!str) {
+        return false;
+    }
+    *len = *(uint16_t *)nc_vm_host(k->vm, str);
+    if (!*len || *len > NAME_MAX_LEN) {
+        return false;
+    }
+    memcpy(out, nc_vm_host(k->vm, nc_vm_rd32(k->vm, str + 4)), *len);
+    out[*len] = 0;
+    return true;
+}
+
+static uint32_t find_named(NcKernel *k, const char *name, uint32_t len)
+{
+    for (uint32_t r = nc_vm_rd32(k->vm, NAMES_HEAD); r; r = nc_vm_rd32(k->vm, r)) {
+        if (nc_vm_rd32(k->vm, r + 8) == len &&
+            !strncasecmp(nc_vm_host(k->vm, r + 12), name, len)) {
+            return nc_vm_rd32(k->vm, r + 4);
+        }
+    }
+    return 0;
+}
+
+uint32_t nc_ob_find_named(NcKernel *k, const char *name, enum NcObType *type)
+{
+    const uint32_t obj = find_named(k, name, (uint32_t)strlen(name));
+    if (obj && type) {
+        *type = type_of(k, obj);
+    }
+    return obj;
+}
+
+uint32_t nc_ob_create_named(NcKernel *k, enum NcObType type, uint32_t body_size, uint32_t attrs,
+                            uint32_t *status)
+{
+    char name[NAME_MAX_LEN + 1];
+    uint32_t len;
+    *status = NC_STATUS_SUCCESS;
+    if (!attrs_name(k, attrs, name, &len)) {
+        return nc_ob_create(k, type, body_size);
+    }
+    const uint32_t old = find_named(k, name, len);
+    if (old) {
+        *status = type_of(k, old) == type ? NC_STATUS_OBJECT_NAME_EXISTS : NC_STATUS_OBJECT_TYPE_MISMATCH;
+        return *status == NC_STATUS_OBJECT_NAME_EXISTS ? old : 0;
+    }
+    const uint32_t obj = nc_ob_create(k, type, body_size);
+    const uint32_t r = obj ? nc_pool_alloc(k, 12 + len) : 0;
+    if (!r) {
+        return obj;     /* unnamed, then: nothing finds it by name */
+    }
+    nc_vm_wr32(k->vm, r, nc_vm_rd32(k->vm, NAMES_HEAD));
+    nc_vm_wr32(k->vm, r + 4, obj);
+    nc_vm_wr32(k->vm, r + 8, len);
+    memcpy(nc_vm_host(k->vm, r + 12), name, len);
+    nc_vm_wr32(k->vm, NAMES_HEAD, r);
+    nc_log("hakuX-native", "ob: %s named %s", type == NC_OB_EVENT ? "event" : type == NC_OB_SEMAPHORE ? "semaphore"
+                                              : type == NC_OB_MUTANT ? "mutant" : "timer", name);
+    return obj;
 }
 
 /* NtClose(Handle): a file or symbolic link goes with its last handle and

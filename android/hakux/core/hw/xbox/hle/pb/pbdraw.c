@@ -407,20 +407,29 @@ static uint32_t sd_height(uint32_t cur, unsigned hz)
 
 /* The display the video mode shows: its width by the frame buffer's pitch,
  * its height the HD modes' or (SD) sd_height of cur, the height the title
- * draws at now. */
-static bool mode_size(uint32_t cur, uint32_t *w, uint32_t *h, uint32_t *seq)
+ * draws at now. *field: field rendering (D3DPRESENTFLAG_FIELD), the mode's
+ * pitch half the frame buffer's rows: the interlaced scanout, which steps
+ * two pitches a line, then reads the buffer's top half, one field, and the
+ * TV spreads its lines over the screen. Kung Fu Chaos renders its fights
+ * so, each field 240 lines in the top of a 640 x 480 buffer. */
+static bool mode_size(uint32_t cur, uint32_t *w, uint32_t *h, uint32_t *seq, bool *field)
 {
     static const uint32_t k_w[] = { 640, 720, 1280, 1920 };
     uint32_t pitch, xfmt;
     unsigned hz;
     *seq = hle_pb_display_mode_get(&pitch, &xfmt, &hz);
+    *field = false;
     const HleFmtInfo *fi = pitch ? hle_fmt_info(xfmt) : NULL;
     const uint32_t bytes = fi && !(fi->flags & (HLE_FI_DEPTH | HLE_FI_DXT)) ? fi->bpp / 8 : 0;
-    for (unsigned i = 0; bytes && i < ARRAY_SIZE(k_w); i++) {
-        if (k_w[i] * bytes == pitch || tile_pitch(k_w[i] * bytes) == pitch) {
-            *w = k_w[i];
-            *h = k_w[i] == 1920 ? 1080 : k_w[i] == 1280 ? 720 : sd_height(cur, hz);
-            return true;
+    for (unsigned f = 0; f < 2; f++) {
+        const uint32_t p = pitch << f;
+        for (unsigned i = 0; bytes && i < ARRAY_SIZE(k_w); i++) {
+            if (k_w[i] * bytes == p || tile_pitch(k_w[i] * bytes) == p) {
+                *w = k_w[i];
+                *h = k_w[i] == 1920 ? 1080 : k_w[i] == 1280 ? 720 : sd_height(cur, hz);
+                *field = f;
+                return true;
+            }
         }
     }
     return false;
@@ -428,6 +437,7 @@ static bool mode_size(uint32_t cur, uint32_t *w, uint32_t *h, uint32_t *seq)
 
 static uint32_t g_mode_seen;            /* the video modes set the display followed */
 static bool g_disp_moded;               /* the display is the video mode's size (not a guess) */
+static bool g_disp_field;               /* the mode shows the frame buffer's top half (mode_size) */
 
 /* The device, at the first render target: the display is that target's
  * size, or the video mode's (mode_sync). */
@@ -437,7 +447,7 @@ static void device(uint32_t w, uint32_t h)
         return;
     }
     uint32_t mw, mh;
-    if (mode_size(h, &mw, &mh, &g_mode_seen)) {
+    if (mode_size(h, &mw, &mh, &g_mode_seen, &g_disp_field)) {
         w = mw;
         h = mh;
         g_disp_moded = true;
@@ -949,12 +959,17 @@ static bool window_clip(uint32_t w, uint32_t h, int32_t r[4])
 static void mode_sync(void)
 {
     uint32_t w, h, seq;
-    const bool ok = mode_size(g_pd.disp_h, &w, &h, &seq);
+    bool field;
+    const bool ok = mode_size(g_pd.disp_h, &w, &h, &seq, &field);
     if (seq == g_mode_seen || !g_pd.device) {
         return;
     }
     g_mode_seen = seq;
     g_disp_moded = ok;
+    if (field != g_disp_field) {
+        hle_log("hakuX-hle-pb", "display: field rendering %s", field ? "on" : "off");
+    }
+    g_disp_field = field;
     if (!ok || (w == g_pd.disp_w && h == g_pd.disp_h)) {
         return;
     }
@@ -1284,7 +1299,8 @@ static void fps_log(void)
 
 /* The part of object o the display shows: as many of its pixels from its top
  * left as the display has (ax x ay samples each: an antialiased target's),
- * as the NV2A's scanout reads them; it scales nothing. A frame buffer made
+ * as the NV2A's scanout reads them; it scales nothing, but a field's lines
+ * (g_disp_field: half of them) are spread over the display. A frame buffer made
  * taller than the frame (a surface as wide as the display is as tall as it,
  * and Hunter: The Reckoning - Redeemer's display was its 640 x 960 back
  * buffer until it set its video mode) shows its frame, not all of itself
@@ -1294,7 +1310,7 @@ static void shown_part(const PbObj *o, uint32_t ax, uint32_t ay, uint32_t *w, ui
 {
     const bool crop = o && g_disp_moded && g_pd.disp_w && g_pd.disp_h;
     *w = crop ? MIN(g_pd.disp_w * MAX(ax, 1u), o->d.w) : 0;
-    *h = crop ? MIN(g_pd.disp_h * MAX(ay, 1u), o->d.h) : 0;
+    *h = crop ? MIN(g_pd.disp_h * MAX(ay, 1u), o->d.h) >> g_disp_field : 0;
 }
 
 /* id goes on screen as it is now, with no flip: the display scans out the
@@ -1339,7 +1355,8 @@ static uint32_t display_object(uint32_t pa)
 {
     uint32_t w, h, seq, pitch, xfmt;
     unsigned hz;
-    if (!mode_size(0, &w, &h, &seq)) {
+    bool field;
+    if (!mode_size(0, &w, &h, &seq, &field) || field) {
         return 0;
     }
     hle_pb_display_mode_get(&pitch, &xfmt, &hz);

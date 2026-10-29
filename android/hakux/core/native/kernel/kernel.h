@@ -67,6 +67,8 @@ typedef uint64_t (*NcKFn)(NcKernel *k, NcFrame *f, const uint32_t *args);
 #define NC_STATUS_INVALID_PARAMETER   0xC000000Du
 #define NC_STATUS_NO_MEMORY           0xC0000017u
 #define NC_STATUS_OBJECT_TYPE_MISMATCH 0xC0000024u
+#define NC_STATUS_OBJECT_NAME_NOT_FOUND 0xC0000034u
+#define NC_STATUS_OBJECT_NAME_EXISTS  0x40000000u
 #define NC_STATUS_INSUFFICIENT_RESOURCES 0xC000009Au
 
 /* Guest object types: the VA of the kernel's type-object data export. */
@@ -320,6 +322,13 @@ void nc_ob_dereference(NcKernel *k, uint32_t object);
 uint32_t nc_ob_create(NcKernel *k, enum NcObType type, uint32_t body_size);
 uint32_t nc_ob_handle(NcKernel *k, uint32_t object, enum NcObType type);
 uint32_t nc_ob_lookup(NcKernel *k, uint32_t handle, enum NcObType *type);
+/* Named objects (an event, semaphore, mutant or timer created with a name in its
+ * OBJECT_ATTRIBUTES). nc_ob_create_named: the one of that name if there is one
+ * (*status NC_STATUS_OBJECT_NAME_EXISTS, or a type mismatch: 0), else a new one,
+ * named. nc_ob_find_named: the object of that name, or 0. */
+uint32_t nc_ob_create_named(NcKernel *k, enum NcObType type, uint32_t body_size, uint32_t attrs,
+                            uint32_t *status);
+uint32_t nc_ob_find_named(NcKernel *k, const char *name, enum NcObType *type);
 bool nc_ob_close(NcKernel *k, uint32_t handle);
 void nc_ob_register(NcKernel *k);
 
