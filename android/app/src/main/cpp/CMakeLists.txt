@@ -210,6 +210,31 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nv2a_vsh_cpu)
 
+# --- libchdr (MAME CHD disc images: x1box_chd.c) ---
+# The same revision as android/hakux/build-core.sh: both cores read CHDs.
+set(LIBCHDR_GIT_REV "47d794151b2b64f6aba60304e6480f4f5a2bc24b")
+set(WITH_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
+set(CHDR_WANT_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  libchdr
+  GIT_REPOSITORY "https://github.com/rtissera/libchdr.git"
+  GIT_TAG "${LIBCHDR_GIT_REV}"
+  GIT_SHALLOW FALSE
+)
+FetchContent_GetProperties(libchdr)
+if(NOT libchdr_POPULATED)
+  if(POLICY CMP0169)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0169 OLD)
+  endif()
+  FetchContent_Populate(libchdr)
+  if(POLICY CMP0169)
+    cmake_policy(POP)
+  endif()
+  # Only the static library: its shared one would be built and packed too.
+  add_subdirectory("${libchdr_SOURCE_DIR}" "${libchdr_BINARY_DIR}" EXCLUDE_FROM_ALL)
+endif()
+
 if(XEMU_ENABLE_VULKAN)
   # --- adrenotools (custom GPU driver loading on Adreno) ---
   FetchContent_Declare(
@@ -1297,6 +1322,10 @@ add_library(xemu SHARED
   vmstate_if_android.c
   xemu_fatx_import.c
   xemu_hdd_tools_jni.c
+  # the "chd" block driver: CHD disc images in the DVD drive. Here, not in
+  # xemu_core: the linker drops an archive's block drivers nothing calls.
+  block_chd.c
+  x1box_chd.c
 )
 
 target_compile_definitions(xemu PRIVATE ANDROID __ANDROID__ XBOX CONFIG_SDL CONFIG_OPENGL
@@ -1340,6 +1369,14 @@ find_library(glesv3-lib GLESv3)
 find_library(vulkan-lib vulkan)
 find_library(zlib-lib z)
 
+# The game library's reads of CHD images (ChdNative.kt)
+add_library(x1chd SHARED
+  x1box_chd.c
+  x1box_chd_jni.c
+)
+target_link_libraries(x1chd PRIVATE chdr-static)
+target_link_options(x1chd PRIVATE "-Wl,--exclude-libs,ALL")
+
 if(XEMU_XISO_CONVERTER_BUILD_ENABLED)
   add_library(xiso_converter SHARED
     xiso_converter_jni.cpp
@@ -1362,6 +1399,7 @@ endif()
 
 target_link_libraries(xemu PRIVATE
   xemu_core
+  chdr-static
   dsp56300_emu_ffi
   slirp_static
   iconv_stub

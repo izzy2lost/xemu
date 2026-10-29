@@ -51,6 +51,8 @@ kgsl_patch=$here/patches/adrenotools-kgsl-context-priority.patch
 if ! git -C "$deps/adrenotools" apply --reverse --check "$kgsl_patch" 2>/dev/null; then
   git -C "$deps/adrenotools" apply "$kgsl_patch"
 fi
+# CHD disc images (x1box_chd.c), the revision libxemu's CMakeLists.txt pins
+fetch libchdr https://github.com/rtissera/libchdr.git 47d794151b2b64f6aba60304e6480f4f5a2bc24b
 fetch root/subprojects/nv2a_vsh_cpu https://github.com/xemu-project/nv2a_vsh_cpu.git 1115255708c10c4841b65dcd2223262e7a316598
 
 # FEX: our fork with the system-mode API (branch x1box-haku), pinned. Fetched

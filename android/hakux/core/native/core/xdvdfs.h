@@ -21,9 +21,11 @@ extern "C" {
 #define NC_DISC_OVERLAY 0xF0000000u
 
 typedef struct NcDiscOverlay NcDiscOverlay;
+typedef struct NcDiscChd NcDiscChd;
 
 typedef struct NcDisc {
     int fd;
+    NcDiscChd *chd;        /* a CHD image: what it holds is the disc (x1box_chd.h) */
     uint64_t part_off;     /* byte offset of the game partition in the image */
     uint32_t root_sector;
     uint32_t root_size;
@@ -38,6 +40,10 @@ typedef struct NcDiscFile {
 
 bool nc_disc_open(NcDisc *d, int fd);
 void nc_disc_close(NcDisc *d);
+
+/* The disc image, past a CHD's compression: its size, len bytes at off. */
+uint64_t nc_disc_image_size(const NcDisc *d);
+bool nc_disc_image_read(const NcDisc *d, uint64_t off, void *buf, size_t len);
 
 /* Finds a path such as "\\default.xbe" or "media/x.bin" (either slash,
  * case-insensitive). */

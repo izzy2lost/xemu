@@ -244,7 +244,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private fun gameName(): String =
     discUri?.let { u -> runCatching { androidx.documentfile.provider.DocumentFile.fromSingleUri(this, u)?.name }.getOrNull() ?: u.lastPathSegment }
       ?.substringAfterLast('/')
-      ?.replace(Regex("(\\.xiso)?\\.iso$", RegexOption.IGNORE_CASE), "") ?: "Game"
+      ?.replace(Regex("(\\.xiso)?\\.(iso|chd)$", RegexOption.IGNORE_CASE), "") ?: "Game"
 
   /** The disc, opened in this process: the core reads it by descriptor. */
   private fun openDisc(): String {

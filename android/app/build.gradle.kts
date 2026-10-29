@@ -64,6 +64,9 @@ val buildHakuxCore by tasks.registering(Exec::class) {
   /* System Link's relay, built into the core too (hakux/core/native/cmake/app.cmake) */
   inputs.file(file("src/main/cpp/xemu_lan.cpp"))
   inputs.file(file("src/main/cpp/xemu_lan.h"))
+  /* CHD disc images, read by the core too (hakux/core/native/CMakeLists.txt) */
+  inputs.file(file("src/main/cpp/x1box_chd.c"))
+  inputs.file(file("src/main/cpp/x1box_chd.h"))
   outputs.file(File(hakuxJniLibs, "arm64-v8a/libhakuxcore.so"))
 }
 

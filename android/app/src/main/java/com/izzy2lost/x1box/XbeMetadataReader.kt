@@ -85,16 +85,24 @@ object XbeMetadataReader {
   fun read(context: Context, uri: Uri, icon: Boolean = true): Metadata? {
     return try {
       context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
-        FileInputStream(descriptor.fileDescriptor).use { input -> readDiscImage(input.channel, icon) }
+        FileInputStream(descriptor.fileDescriptor).use { input ->
+          val channel = input.channel
+          if (readAt(channel, 0, 8)?.let(ChdNative::isChd) == true) {
+            ChdNative.open(descriptor)?.use { chd -> readDiscImage(icon, chd::read) }
+          } else {
+            readDiscImage(icon) { position, length -> readAt(channel, position, length) }
+          }
+        }
       }
     } catch (_: Exception) {
       null
     }
   }
 
-  private fun readDiscImage(channel: FileChannel, wantIcon: Boolean): Metadata? {
+  /** readAt: length bytes of the image at a position, null past its end. */
+  private fun readDiscImage(wantIcon: Boolean, readAt: (position: Long, length: Int) -> ByteArray?): Metadata? {
     for (partition in PARTITION_OFFSETS) {
-      val volume = readAt(channel, partition + VOLUME_DESCRIPTOR_OFFSET, VOLUME_DESCRIPTOR_SIZE)
+      val volume = readAt(partition + VOLUME_DESCRIPTOR_OFFSET, VOLUME_DESCRIPTOR_SIZE)
         ?: continue
       if (!startsWith(volume, 0, VOLUME_MAGIC) ||
         !startsWith(volume, VOLUME_TRAILING_MAGIC_OFFSET, VOLUME_MAGIC)
@@ -106,12 +114,12 @@ object XbeMetadataReader {
       if (rootSize <= 0L || rootSize > MAX_ROOT_DIRECTORY_SIZE) {
         return null
       }
-      val root = readAt(channel, partition + rootSector * SECTOR_SIZE, rootSize.toInt())
+      val root = readAt(partition + rootSector * SECTOR_SIZE, rootSize.toInt())
         ?: return null
       val (sector, size) = findFile(root, "default.xbe") ?: return null
       val start = partition + sector * SECTOR_SIZE
       return parseXbe(wantIcon) { offset, length ->
-        if (offset < 0 || offset + length > size) null else readAt(channel, start + offset, length)
+        if (offset < 0 || offset + length > size) null else readAt(start + offset, length)
       }
     }
     return null

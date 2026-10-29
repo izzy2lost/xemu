@@ -89,6 +89,8 @@ class GameLibraryActivity : AppCompatActivity() {
     XISO,
     REGULAR_ISO,
     UNKNOWN_ISO,
+    /* A MAME CHD: both cores read the image inside (x1box_chd.c) */
+    CHD,
   }
 
   private enum class LibraryViewMode {
@@ -132,7 +134,7 @@ class GameLibraryActivity : AppCompatActivity() {
   private val prefs by lazy { getSharedPreferences("x1box_prefs", MODE_PRIVATE) }
   // "bin" is the Sega Chihiro netboot image: unpacked on first launch and
   // started as a Chihiro (launchGame).
-  private val gameExts = setOf("iso", "xiso", "cso", "cci", "bin")
+  private val gameExts = setOf("iso", "xiso", "cso", "cci", "bin", "chd")
   private val titleStopWords = setOf("the", "a", "an", "and", "of", "for", "in", "on", "to")
   private val coverRepoBaseUrl = "https://raw.githubusercontent.com/izzy2lost/X1_Covers/main/"
   private val boxArtCache = ConcurrentHashMap<String, String>()
@@ -2279,7 +2281,8 @@ class GameLibraryActivity : AppCompatActivity() {
         val sizeBytes = child.length()
         val discImageFormat = resolveDiscImageFormat(child.uri, name, sizeBytes, seenDiscFormatKeys)
         val xbe = if (discImageFormat == DiscImageFormat.XISO ||
-          discImageFormat == DiscImageFormat.REGULAR_ISO
+          discImageFormat == DiscImageFormat.REGULAR_ISO ||
+          discImageFormat == DiscImageFormat.CHD
         ) {
           xbeMetadataCache.get(child.uri, sizeBytes, seenXbeKeys)
         } else {
@@ -2403,6 +2406,9 @@ class GameLibraryActivity : AppCompatActivity() {
     seenKeys: MutableSet<String>,
   ): DiscImageFormat {
     val lower = fileName.lowercase(Locale.ROOT)
+    if (ChdNative.isChdName(lower)) {
+      return DiscImageFormat.CHD
+    }
     if (!isDiscImageFormatDetectable(lower)) {
       return DiscImageFormat.OTHER
     }
@@ -2512,6 +2518,7 @@ class GameLibraryActivity : AppCompatActivity() {
     val lower = fileName.lowercase(Locale.ROOT)
     val rawTitle = when {
       lower.endsWith(".xiso.iso") -> fileName.dropLast(".xiso.iso".length)
+      lower.endsWith(".xiso.chd") -> fileName.dropLast(".xiso.chd".length)
       fileName.contains('.') -> fileName.substringBeforeLast('.')
       else -> fileName
     }

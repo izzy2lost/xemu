@@ -10,8 +10,11 @@
  */
 #include "native/core/xdvdfs.h"
 
+#include "x1box_chd.h"
+
 #include <ctype.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -37,14 +40,71 @@ static bool pread_all(int fd, void *buf, size_t len, uint64_t off)
     return true;
 }
 
+/* libchdr decodes one read at a time: the lock serialises the core's threads. */
+struct NcDiscChd {
+    X1Chd *chd;
+    pthread_mutex_t lock;
+};
+
+bool nc_disc_image_read(const NcDisc *d, uint64_t off, void *buf, size_t len)
+{
+    if (!d->chd) {
+        return pread_all(d->fd, buf, len, off);
+    }
+    pthread_mutex_lock(&d->chd->lock);
+    const bool ok = x1box_chd_read(d->chd->chd, off, buf, len);
+    pthread_mutex_unlock(&d->chd->lock);
+    return ok;
+}
+
+uint64_t nc_disc_image_size(const NcDisc *d)
+{
+    struct stat st;
+    return d->chd ? x1box_chd_size(d->chd->chd)
+                  : fstat(d->fd, &st) == 0 ? (uint64_t)st.st_size : 0;
+}
+
+static void close_chd(NcDisc *d)
+{
+    if (d->chd) {
+        x1box_chd_close(d->chd->chd);
+        pthread_mutex_destroy(&d->chd->lock);
+        free(d->chd);
+        d->chd = NULL;
+    }
+}
+
+static bool open_chd(NcDisc *d)
+{
+    uint8_t head[8];
+    if (!pread_all(d->fd, head, sizeof(head), 0) || !x1box_chd_probe(head, sizeof(head))) {
+        return true;    /* not a CHD: the image itself */
+    }
+    char err[256] = "";
+    X1Chd *chd = x1box_chd_open_fd(d->fd, err, sizeof(err));
+    if (!chd || !(d->chd = calloc(1, sizeof(*d->chd)))) {
+        nc_log("hakuX-native", "disc: can't open the CHD: %s", err[0] ? err : "out of memory");
+        x1box_chd_close(chd);
+        return false;
+    }
+    d->chd->chd = chd;
+    pthread_mutex_init(&d->chd->lock, NULL);
+    nc_log("hakuX-native", "disc: CHD holding a %llu-byte image",
+           (unsigned long long)x1box_chd_size(chd));
+    return true;
+}
+
 bool nc_disc_open(NcDisc *d, int fd)
 {
     memset(d, 0, sizeof(*d));
     d->fd = fd;
+    if (!open_chd(d)) {
+        return false;
+    }
     for (size_t i = 0; i < sizeof(k_part_offsets) / sizeof(k_part_offsets[0]); i++) {
         uint8_t vd[NC_XDVDFS_SECTOR];
         uint64_t off = k_part_offsets[i];
-        if (!pread_all(fd, vd, sizeof(vd), off + 32ull * NC_XDVDFS_SECTOR)) {
+        if (!nc_disc_image_read(d, off + 32ull * NC_XDVDFS_SECTOR, vd, sizeof(vd))) {
             continue;
         }
         if (memcmp(vd, k_magic, 20) == 0 && memcmp(vd + 0x7EC, k_magic, 20) == 0) {
@@ -57,11 +117,13 @@ bool nc_disc_open(NcDisc *d, int fd)
         }
     }
     nc_log("hakuX-native", "disc: no XDVDFS volume found");
+    close_chd(d);   /* the caller closes the descriptor */
     return false;
 }
 
 void nc_disc_close(NcDisc *d)
 {
+    close_chd(d);
     if (d->fd >= 0) {
         close(d->fd);
     }
@@ -149,8 +211,8 @@ static bool disc_find(const NcDisc *d, const char *path, NcDiscFile *out)
         if (!dir) {
             return false;
         }
-        bool ok = pread_all(d->fd, dir, cur.size,
-                            d->part_off + (uint64_t)cur.sector * NC_XDVDFS_SECTOR) &&
+        bool ok = nc_disc_image_read(d, d->part_off + (uint64_t)cur.sector * NC_XDVDFS_SECTOR,
+                                     dir, cur.size) &&
                   dir_search(dir, cur.size, 0, p, (size_t)(end - p), &cur);
         free(dir);
         if (!ok) {
@@ -424,7 +486,7 @@ bool nc_disc_find_orig(const NcDisc *d, const char *path, NcDiscFile *out)
 bool nc_disc_read_orig(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
 {
     return f->sector < NC_DISC_OVERLAY && off + len <= f->size &&
-           pread_all(d->fd, buf, len, d->part_off + (uint64_t)f->sector * NC_XDVDFS_SECTOR + off);
+           nc_disc_image_read(d, d->part_off + (uint64_t)f->sector * NC_XDVDFS_SECTOR + off, buf, len);
 }
 
 bool nc_disc_read(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
@@ -434,7 +496,7 @@ bool nc_disc_read(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf,
     }
     const bool ok = f->sector >= NC_DISC_OVERLAY
                         ? ov_read(d, f, off, buf, len)
-                        : pread_all(d->fd, buf, len, d->part_off + (uint64_t)f->sector * NC_XDVDFS_SECTOR + off);
+                        : nc_disc_image_read(d, d->part_off + (uint64_t)f->sector * NC_XDVDFS_SECTOR + off, buf, len);
     if (ok && d->ov) {
         for (unsigned i = 0; i < d->ov->np; i++) {
             const OvPatch *p = &d->ov->p[i];

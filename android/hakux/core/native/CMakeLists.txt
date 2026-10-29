@@ -99,6 +99,16 @@ target_include_directories(hakux_native PRIVATE "${HAKUX_FEX_DIR}/External/xxhas
 # The HLE layer's pure modules build without QEMU in this mode.
 target_compile_definitions(hakux_native PRIVATE HLE_HOST_TEST)
 target_link_libraries(hakux_native PUBLIC nc_fex hakux_hle hakux_apu log z)
+
+# CHD disc images (core/xdvdfs.c): the app's reader over libchdr, the one
+# xemu's "chd" block driver uses (android/app/src/main/cpp/x1box_chd.c).
+set(NC_CHD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../app/src/main/cpp" CACHE PATH "x1box_chd.c's folder")
+set(WITH_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
+set(CHDR_WANT_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory("${NC_DEPS}/libchdr" libchdr EXCLUDE_FROM_ALL)
+target_sources(hakux_native PRIVATE "${NC_CHD_DIR}/x1box_chd.c")
+target_include_directories(hakux_native PRIVATE "${NC_CHD_DIR}")
+target_link_libraries(hakux_native PRIVATE chdr-static)
 target_compile_options(hakux_native PRIVATE -Wall -Wno-unused-parameter)
 
 add_executable(xboxrun run/xboxrun.c run/capture.c)

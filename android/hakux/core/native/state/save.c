@@ -116,10 +116,10 @@ static void identity(NcStateInfo *in)
     memset(in->xbe_sha1, 0, sizeof(in->xbe_sha1));
     memcpy(in->xbe_sha1, &crc, 4);
     memcpy(in->xbe_sha1 + 4, &xf.size, 4);
-    struct stat st;
-    in->disc_size = fstat(c->disc.fd, &st) == 0 ? (uint64_t)st.st_size : 0;
+    /* the image's, so a CHD and the ISO it was made from share savestates */
+    in->disc_size = nc_disc_image_size(&c->disc);
     uint8_t sec[2048];
-    in->disc_hash = pread(c->disc.fd, sec, sizeof(sec), (off_t)(c->disc.part_off + 32 * 2048)) == (ssize_t)sizeof(sec)
+    in->disc_hash = nc_disc_image_read(&c->disc, c->disc.part_off + 32 * 2048, sec, sizeof(sec))
                         ? (uint32_t)crc32(0, sec, sizeof(sec))
                         : 0;
     in->ram_size = c->vm.ram_size;
