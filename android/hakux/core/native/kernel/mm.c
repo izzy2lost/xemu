@@ -953,17 +953,17 @@ static uint64_t MmSetAddressProtect(NcKernel *k, NcFrame *f, const uint32_t *a)
 
 /* MmClaimGpuInstanceMemory(NumberOfBytes, NumberOfPaddingBytes): the GPU's
  * instance memory sits at the top of RAM below a 64 KiB pad; the result is
- * the end of that block. */
+ * the end of that block. The pad is kept from the start (nc_kernel_init). */
 static uint64_t MmClaimGpuInstanceMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    const uint32_t pad = 0x10000;
+    const uint32_t pad = NC_GPU_INSTANCE_PAD;
     if (a[1]) {
         nc_vm_wr32(k->vm, a[1], pad);
     }
     if (!g_gpu_instance_end) {
         g_gpu_instance_end = k->vm->ram_size - pad;
         uint32_t size = nc_align_up(a[0], NC_PAGE);
-        nc_vm_claim_phys(k->vm, g_gpu_instance_end - size, size + pad);
+        nc_vm_claim_phys(k->vm, g_gpu_instance_end - size, size);
     }
     return NC_CONTIG_WINDOW | g_gpu_instance_end;
 }

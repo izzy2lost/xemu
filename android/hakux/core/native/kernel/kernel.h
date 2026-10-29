@@ -589,6 +589,10 @@ void nc_apc_return(NcKernel *k, NcFrame *f);
 /* rtl.c: RtlNtStatusToDosError. */
 uint32_t nc_rtl_status_to_dos(uint32_t status);
 
+/* The pad MmClaimGpuInstanceMemory reports above the GPU's memory, at the
+ * top of RAM (mm.c), kept from allocations from boot. */
+#define NC_GPU_INSTANCE_PAD 0x10000u
+
 /* intr.c: interrupt objects and delivery. */
 void nc_intr_register(NcKernel *k);
 /* Delivers the highest-priority deliverable asserted line (readies the ISR

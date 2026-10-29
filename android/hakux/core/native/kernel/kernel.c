@@ -369,6 +369,15 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
                NC_KERNEL_PA + NC_KERNEL_SIZE);
         return false;
     }
+    /* The GPU's instance memory is the top of RAM, under the pad
+     * MmClaimGpuInstanceMemory reports; D3D ends its push buffer's DMA object
+     * below it. Kept from every allocation from the start, as the kernel's is:
+     * Maximum Tune allocates its push buffer before it claims the GPU's
+     * memory, got the top page, and its last packets ran past the object. */
+    if (!nc_vm_claim_phys(vm, vm->ram_size - NC_GPU_INSTANCE_PAD, NC_GPU_INSTANCE_PAD)) {
+        nc_log("hakuX-native", "kernel: the GPU's instance memory is taken");
+        return false;
+    }
     uint8_t *km = nc_vm_host(vm, NC_KERNEL_VA);
     memset(km, 0, NC_KERNEL_SIZE);
     memset(km + K_STUBS, 0xCC, K_DATA - K_STUBS);
