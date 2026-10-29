@@ -324,6 +324,7 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
             "  vec2 v = floor(c * 255.0 + 0.5);\n"
             "  return mix(v, v - 256.0, greaterThanEqual(v, vec2(128.0))) / 127.0;\n"
             "}\n"
+            "%s"
             "void main() {\n"
             "  vec4 v0 = vDiffuse, v1 = vSpecular;\n"
             "  vec4 vTex3 = %s;\n", interp, interp, k->wbuf ? HLE_WBUF_IN_GLSL : "",
@@ -331,6 +332,14 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
             "layout(input_attachment_index = 0, set = 2, binding = 0) "
             "uniform subpassInput uFb;\n" : "",
         k->fbfetch & HLE_FB_ZEQ ? HLE_ZEQ_DECL_GLSL : "",
+        /* debug views 27, 28: a float by its bits (isnan / isinf can be
+         * folded away by a compiler that assumes neither: Mali's) */
+        k->debug >= 27 ?
+            "vec4 fpclass(float x, float s) { uint u = floatBitsToUint(x);\n"
+            "  if ((u & 0x7FFFFFFFu) > 0x7F800000u) return vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "  if (u == 0x7F800000u) return vec4(0.0, 1.0, 0.0, 1.0);\n"
+            "  if (u == 0xFF800000u) return vec4(0.0, 0.0, 1.0, 1.0);\n"
+            "  return vec4(vec3(clamp(abs(x) / s, 0.0, 1.0)), 1.0); }\n" : "",
         k->point_sprite ? "vec4(gl_PointCoord, 1.0, 1.0)" : "vTex3i");
     if (k->wbuf) {
         put(&b, HLE_WBUF_CALC_GLSL);
@@ -543,7 +552,16 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
                       k->debug == 22 ? "vec4(normalize(vTex2.xyz) * 0.5 + 0.5, 1.0)" :
                       k->debug == 23 ? "vec4(any(isnan(vTex2)) ? 1.0 : 0.0, "
                                        "any(isinf(vTex2)) ? 1.0 : 0.0, 0.0, 1.0)" :
-                      k->debug == 24 ? "sampc(2u, vec3(0.3, 0.5, 0.8))" : "outc";
+                      k->debug == 24 ? "sampc(2u, vec3(0.3, 0.5, 0.8))" :
+                      /* the fog start, end / 2000 and density as the shader has them */
+                      k->debug == 25 ? "vec4(clamp(pc.fog.xy / 2000.0, 0.0, 1.0), clamp(pc.fog.z, 0.0, 1.0), 1.0)" :
+                      /* the fog alpha the final combiner reads */
+                      k->debug == 26 ? "vec4(vec3(fogr.a), 1.0)" :
+                      /* the fog distance (27) and factor before its clamp (28), by
+                       * their bits: red NaN, green +Inf, blue -Inf, else grey */
+                      k->debug == 27 ? "fpclass(vFog, 2000.0)" :
+                      k->debug == 28 ? "fpclass((pc.fog.y - vFog) / (pc.fog.y - pc.fog.x), 1.0)" :
+                      "outc";
     put(&b, "  oColor = %s;\n%s", dbg, k->out_bgra ? "  oColor = oColor.bgra;\n" : "");
     if (k->sblend) {
         put(&b, "  { ivec4 sv = ivec4(floor(clamp(%s, 0.0, 1.0) * 255.0 + 0.5));\n"

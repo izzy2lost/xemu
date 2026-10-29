@@ -1755,7 +1755,8 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
                 k->psh ? "combiners" : "stages", k->vs.fvf, (unsigned long long)k->vsh);
         return HLE_PB_FAILED;
     }
-    {   /* debug: HAKUX_HLE_VSHDUMP=<program hash>[,...], their GLSL, line by line */
+    {   /* debug: HAKUX_HLE_VSHDUMP=<program hash>[,...], their GLSL and the pixel
+         * shaders drawn with them, line by line */
         static const char *dump = (const char *)1;
         if (dump == (const char *)1) {
             dump = getenv("HAKUX_HLE_VSHDUMP");
@@ -1766,6 +1767,10 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
             for (char *l = vsrc, *nl; l && *l; l = nl ? nl + 1 : NULL) {
                 nl = strchr(l, '\n');
                 hle_log("hakuX-hle-vsh", "%.*s", nl ? (int)(nl - l) : (int)strlen(l), l);
+            }
+            for (char *l = fsrc, *nl; l && *l; l = nl ? nl + 1 : NULL) {
+                nl = strchr(l, '\n');
+                hle_log("hakuX-hle-psh", "%.*s", nl ? (int)(nl - l) : (int)strlen(l), l);
             }
         }
     }
