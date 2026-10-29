@@ -1755,6 +1755,20 @@ static HlePbResult pipeline_build(const void *key, const uint32_t *tok, uint32_t
                 k->psh ? "combiners" : "stages", k->vs.fvf, (unsigned long long)k->vsh);
         return HLE_PB_FAILED;
     }
+    {   /* debug: HAKUX_HLE_VSHDUMP=<program hash>[,...], their GLSL, line by line */
+        static const char *dump = (const char *)1;
+        if (dump == (const char *)1) {
+            dump = getenv("HAKUX_HLE_VSHDUMP");
+        }
+        char hex[20];
+        snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)k->vsh);
+        if (dump && k->vsh && strstr(dump, hex)) {
+            for (char *l = vsrc, *nl; l && *l; l = nl ? nl + 1 : NULL) {
+                nl = strchr(l, '\n');
+                hle_log("hakuX-hle-vsh", "%.*s", nl ? (int)(nl - l) : (int)strlen(l), l);
+            }
+        }
+    }
     if (unsup && !cache_only) {
         hle_log("hakuX-hle-pipe", "pixel shader: texture modes %x sampled as PROJECT2D "
                 "(modes 0x%05x)", unsup, k->pk.tex_modes);

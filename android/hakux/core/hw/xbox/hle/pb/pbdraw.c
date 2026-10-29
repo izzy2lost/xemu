@@ -1777,7 +1777,21 @@ static void ff_consts(float (*c)[4])
     regs_f(c[HLE_FFHW_C_TEXMAT], 0x06C0, 64);
     regs_f(c[HLE_FFHW_C_TEXGEN], 0x0840, 64);
     regs_f(c[HLE_FFHW_C_VPOFF], NV097_SET_VIEWPORT_OFFSET, 4);
-    regs_f(c[HLE_FFHW_C_FOGPLANE], 0x09D0, 4);
+    /* The fog plane from the transform context (slot 0x39), as the NV2A
+     * reads it: SET_FOG_PLANE writes it there (xf_slot), and so do constant
+     * loads and state programs, which leave the method's register behind
+     * (Ollie King: its world all fog colour). */
+    memcpy(c[HLE_FFHW_C_FOGPLANE], g_pd.consts[0x39], 16);
+    if (memcmp(g_pd.consts[0x39], &g_pd.r[0x09D0 >> 2], 16)) {
+        static unsigned said;
+        if (said++ < 4) {
+            float r[4];
+            regs_f(r, 0x09D0, 4);
+            hle_log("hakuX-hle-pb", "fog plane %g %g %g %g in the transform context, %g %g %g %g by its method",
+                    c[HLE_FFHW_C_FOGPLANE][0], c[HLE_FFHW_C_FOGPLANE][1], c[HLE_FFHW_C_FOGPLANE][2],
+                    c[HLE_FFHW_C_FOGPLANE][3], r[0], r[1], r[2], r[3]);
+        }
+    }
     regs_f(c[HLE_FFHW_C_EYE], 0x0A50, 4);
     regs_f(c[HLE_FFHW_C_AMBIENT], 0x0A10, 3);
     regs_f(&c[HLE_FFHW_C_AMBIENT][3], 0x03B4, 1);
