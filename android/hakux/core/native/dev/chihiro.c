@@ -45,6 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #ifdef __ANDROID__
@@ -59,10 +60,10 @@ unsigned chihiro_log_mask;
 char chihiro_game_dir[1024];
 char chihiro_game_filename[64];
 bool chihiro_freeplay_setting;
-bool chihiro_hw210_enabled;      /* no card readers yet: the SC's UARTs idle */
-bool chihiro_crp1231_enabled;
+bool chihiro_hw210_enabled;      /* no HW210 readers yet: that UART idles */
+bool chihiro_crp1231_enabled;    /* Maximum Tune's reader (nc_chihiro_set_game) */
 CardReaderState *chihiro_card_reader_global;
-CRP1231State *chihiro_crp1231_global;
+static CRP1231State g_crp1231;
 
 static uint64_t g_t0_ms;
 
@@ -78,15 +79,94 @@ int64_t qemu_clock_get_ms(int clock)
     return (int64_t)(mono_ms() - g_t0_ms);
 }
 
-/* The card readers aren't fitted yet (chihiro_*_enabled stay off, so the
- * firmware's UARTs never reach these). */
+/* The HW210 readers aren't fitted yet (chihiro_hw210_enabled stays off, so
+ * the firmware's UART never reaches these). */
 void card_reader_write_byte(CardReaderState *s, uint8_t byte) {}
 int card_reader_read(CardReaderState *s, uint8_t *buf, int max_len) { return 0; }
 bool card_reader_has_response(CardReaderState *s) { return false; }
-void crp1231_receive_byte(CRP1231State *r, uint8_t byte) {}
-bool crp1231_has_response(CRP1231State *r) { return false; }
-bool crp1231_read(CRP1231State *r, uint8_t *out) { return false; }
-bool crp1231_mid_response(CRP1231State *r) { return false; }
+
+/* What xemu's chihiro.c gives the CRP-1231 (chihiro-cardreader-crp1231.c). */
+bool chihiro_file_replace(const char *path, const ChihiroFilePart *parts, int count)
+{
+    char tmp[600];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    bool ok = f != NULL;
+    for (int i = 0; ok && i < count; i++) {
+        ok = fwrite(parts[i].data, 1, parts[i].size, f) == parts[i].size;
+    }
+    if (f && fclose(f) != 0) {
+        ok = false;
+    }
+    if (ok) {
+        ok = rename(tmp, path) == 0;
+    }
+    if (!ok) {
+        remove(tmp);
+        nc_log(TAG, "cannot write %s", path);
+    }
+    return ok;
+}
+
+static char g_save[512];              /* NC_CHIHIRO_SAVE (nc_chihiro_init) */
+
+/* A game's card: one per game, beside its backup (<save>.card). */
+static bool card_path(char *out, size_t len)
+{
+    return g_save[0] && (size_t)snprintf(out, len, "%s.card", g_save) < len;
+}
+
+/* A blank the game wrote for the first time becomes the game's card. */
+bool chihiro_card_issue(ChihiroCardSlot slot, char *out, size_t out_len)
+{
+    if (slot != CHIHIRO_CARD_SLOT_CRP1231 || !card_path(out, out_len)) {
+        return false;
+    }
+    FILE *f = fopen(out, "wb");
+    if (!f) {
+        nc_log(TAG, "cannot make a card at %s", out);
+        return false;
+    }
+    fclose(f);
+    nc_log(TAG, "new card: %s", out);
+    return true;
+}
+
+void chihiro_card_note(const char *msg, bool warning)
+{
+    nc_log(TAG, "card: %s", msg);
+}
+
+/* xemu's chihiro_crp1231_card_key: the game's card, or a blank, into the
+ * reader's mouth; again, taken back while still in the mouth. */
+static void crp1231_card_key(void)
+{
+    if (!chihiro_crp1231_enabled) {
+        return;
+    }
+    switch (g_crp1231.card_pos) {
+    case CRP1231_CARD_IN:
+        nc_log(TAG, "card: the card is in the reader");
+        return;
+    case CRP1231_CARD_GATE:
+        nc_log(TAG, "card: the card is coming out");
+        return;
+    case CRP1231_CARD_ENTRY:
+        crp1231_take_back(&g_crp1231);
+        nc_log(TAG, "card: out");
+        return;
+    }
+    char path[600] = "";
+    struct stat st;
+    if (!card_path(path, sizeof(path)) || stat(path, &st) != 0 || st.st_size == 0) {
+        path[0] = 0;                  /* none written yet: a blank */
+    }
+    if (!crp1231_offer(&g_crp1231, path)) {
+        nc_log(TAG, "card: %s is not a card", path);
+        return;
+    }
+    nc_log(TAG, "card: %s in", path[0] ? path : "a blank");
+}
 
 /* xemu's CONFIG_CHIHIRO_JVS_PROFILE_*: the input layout. */
 enum { P_NONE = -1, P_HOTD3, P_VC3, P_GS, P_CTX, P_OR2, P_OK, P_WMMT2, P_GUNDAM };
@@ -173,6 +253,7 @@ void nc_chihiro_set_game(const char *xbe)
             break;
         }
     }
+    chihiro_crp1231_enabled = g_cabinet && g_cabinet->card == CHIHIRO_CARD_CRP1231;
     nc_log(TAG, "game %s: %s", n, g_cabinet ? g_cabinet->xbe : "not in the cabinet table, nothing fitted");
 }
 
@@ -595,6 +676,8 @@ void nc_chihiro_init(NcUsbDev **qc, NcUsbDev **sc)
     chihiro_driveboard_global = &g_sega838;
     v257_init(&g_v257);
     chihiro_v257_global = &g_v257;
+    crp1231_init(&g_crp1231);
+    chihiro_crp1231_global = &g_crp1231;
 
     g_qc = board_new(true);
     g_sc = board_new(false);
@@ -701,6 +784,12 @@ static void input_driving(ChihiroJVSState *jvs, const NcPadState *p, int profile
     jvs->analog[3] = 0x8000;
 
     if (profile == P_WMMT2) {
+        static bool card_prev;        /* D-pad Up: the card in, or back out */
+        const bool card = p->buttons & NC_PAD_DPAD_UP;
+        if (card && !card_prev) {
+            crp1231_card_key();
+        }
+        card_prev = card;
         v257_set_steer(&g_v257, (int16_t)steer);
         const uint16_t w = v257_wheel(&g_v257);
         jvs->analog[0] = (uint16_t)(w << 6 | w >> 4);

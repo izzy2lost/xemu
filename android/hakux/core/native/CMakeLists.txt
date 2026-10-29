@@ -77,9 +77,9 @@ add_library(hakux_native STATIC
 )
 target_include_directories(hakux_native PUBLIC "${NC_REPO}")
 
-# The Chihiro baseboard (dev/chihiro.c): xemu's 8051, AN2131, JVS and drive
-# board models, next to the core in the x1box tree (hw/xbox/chihiro), built
-# unchanged against native/chihiro/shim.
+# The Chihiro baseboard (dev/chihiro.c): xemu's 8051, AN2131, JVS, drive
+# board and CRP-1231 card reader models, next to the core in the x1box tree
+# (hw/xbox/chihiro), built unchanged against native/chihiro/shim.
 set(NC_CHIHIRO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../hw/xbox/chihiro" CACHE PATH "xemu's hw/xbox/chihiro")
 add_library(hakux_chihiro STATIC
   "${NC_CHIHIRO_DIR}/chihiro-8051.c"
@@ -87,6 +87,7 @@ add_library(hakux_chihiro STATIC
   "${NC_CHIHIRO_DIR}/chihiro-jvs.c"
   "${NC_CHIHIRO_DIR}/chihiro-driveboard-sega838.c"
   "${NC_CHIHIRO_DIR}/chihiro-driveboard-v257.c"
+  "${NC_CHIHIRO_DIR}/chihiro-cardreader-crp1231.c"
 )
 target_include_directories(hakux_chihiro PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/chihiro/shim" "${NC_CHIHIRO_DIR}")
