@@ -66,7 +66,7 @@
 #define DISC_TIME 0x01C0739BEB8F8000ull /* 2001-01-01 */
 
 enum FileKind { F_DISC, F_HOST, F_VOLUME, F_LINK };
-/* A Chihiro's \??\mbcom:, the media board DIMM's system area and mailbox
+/* A Chihiro's \??\mbcom: (or \??\mbsys:), the media board DIMM's system area and mailbox
  * (dev/mediaboard.c), as an F_VOLUME. */
 #define MBCOM_VOLUME 100
 struct DirEntry;
@@ -940,7 +940,8 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
     *info = 5; /* FILE_DOES_NOT_EXIST */
     NcFile *nf = NULL;
 
-    if (dev == -2 && nc_chihiro_enabled() && !strcasecmp(path, "\\??\\mbcom:")) {
+    /* \??\mbsys: (OutRun 2 SP's ranking) is the same system area by its other name */
+    if (dev == -2 && nc_chihiro_enabled() && (!strcasecmp(path, "\\??\\mbcom:") || !strcasecmp(path, "\\??\\mbsys:"))) {
         nf = file_new();
         if (!nf) {
             return NC_STATUS_INSUFFICIENT_RESOURCES;
