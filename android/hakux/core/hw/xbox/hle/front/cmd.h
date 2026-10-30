@@ -225,6 +225,8 @@ typedef struct HleCmdReadback {
      * reaches the value (hle_tl_land). */
     uint32_t arena_off, level, face, w, h;
     uint32_t fb, fb_len;            /* fb 0: none */
+    uint32_t rows;                  /* linear rows: only the first rows of the w x h
+                                       image go back (the guest's buffer), 0: all */
 } HleCmdReadback;
 #define HLE_RB_DIRECT 0xFFFFFFFFu
 

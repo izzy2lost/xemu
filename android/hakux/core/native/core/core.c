@@ -505,6 +505,19 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
             fclose(df);
             nc_log("hakuX-native-frontier", "guest fault: low memory written to %s", dump);
         }
+        /* debug: NC_FAULT_DUMP_RAM=<file> writes all of RAM by physical address (the
+         * contiguous window), for what a corrupted heap held */
+        const char *ram = getenv("NC_FAULT_DUMP_RAM");
+        FILE *rf = ram ? fopen(ram, "wb") : NULL;
+        if (rf) {
+            static uint8_t zero[NC_PAGE];
+            for (uint32_t p = 0; p < c->vm.ram_size; p += NC_PAGE) {
+                const uint32_t v = NC_CONTIG_WINDOW + p;
+                fwrite(nc_vm_phys(&c->vm, v) != UINT32_MAX ? nc_vm_host(&c->vm, v) : zero, 1, NC_PAGE, rf);
+            }
+            fclose(rf);
+            nc_log("hakuX-native-frontier", "guest fault: RAM written to %s", ram);
+        }
         return fault_report(c, pc, va, "the title doesn't handle it");
     }
     nc_cpu_fault_resume(c->cpu, ucontext);

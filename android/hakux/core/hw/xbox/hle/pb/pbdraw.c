@@ -111,7 +111,20 @@ typedef struct PbObj {
                                            title's data: superseded while written <= it */
     uint64_t bind_hash;                 /* swizzled: its memory sampled at its last bind
                                            (mem_sample_hash; the GPU's draws don't land there) */
+    uint32_t clip_rows;                 /* linear: the most rows a surface clip bound it
+                                           with (writeback), 0 none yet */
 } PbObj;
+
+/* The rows of a linear target that are its memory: those the title rendered
+ * it with (uploads from memory and write-backs to it). A display-wide target is made as tall as the display (linear_size);
+ * its memory needn't be. Tomb Raider Legend's 640 x 448 movie frame buffer
+ * lies 16 KiB under its heap's blocks, and copies of all 480 rows zeroed a free
+ * block's links: a NULL write in the heap's malloc at the first level; and its
+ * movie frames, uploaded 480 rows, showed the heap's bytes in a line under them. */
+static uint32_t obj_rows(const PbObj *o, const HleSurfDesc *d)
+{
+    return o && o->clip_rows ? MIN(o->clip_rows, d->h) : d->h;
+}
 
 /* A texture the stage registers described: the back end's image of it,
  * defined again when its memory was written (checked once a frame) or its
@@ -551,7 +564,7 @@ static void restored_pixels(PbObj *o)
     if (g_pd.swaps >= g_restored_until || !fi || (fi->flags & (HLE_FI_DEPTH | HLE_FI_DXT))) {
         return;
     }
-    const HleRect r = { 0, 0, (int32_t)o->d.w, (int32_t)o->d.h };
+    const HleRect r = { 0, 0, (int32_t)o->d.w, (int32_t)obj_rows(o, &o->d) };
     const int32_t pt[1][2] = { { 0, 0 } };
     hle_res_upload(o->id, o->d.pa, o->d.pitch, 1, &r, pt);
     o->written = ++g_pd.wseq;
@@ -745,12 +758,12 @@ static bool span_written(uint32_t lo, uint32_t len, const uint64_t h[2])
 
 static void obj_edges_set(PbObj *o)
 {
-    span_edges_set(o->d.pa, o->d.pitch * o->d.h, o->edge_hash);
+    span_edges_set(o->d.pa, o->d.pitch * obj_rows(o, &o->d), o->edge_hash);
 }
 
 static bool obj_written(const PbObj *o)
 {
-    return span_written(o->d.pa, o->d.pitch * o->d.h, o->edge_hash);
+    return span_written(o->d.pa, o->d.pitch * obj_rows(o, &o->d), o->edge_hash);
 }
 
 /* A texture was defined from [pa, pa + len): the memory holds the title's
@@ -829,7 +842,7 @@ static bool rt_cpu_upload(uint32_t id, bool used)
         return false;
     }
     obj_edges_set(o);
-    const HleRect r = { 0, 0, (int32_t)o->d.w, (int32_t)o->d.h };
+    const HleRect r = { 0, 0, (int32_t)o->d.w, (int32_t)obj_rows(o, &o->d) };
     const int32_t pt[1][2] = { { 0, 0 } };
     hle_res_upload(id, o->d.pa, o->d.pitch, 1, &r, pt);
     o->written = ++g_pd.wseq;
@@ -877,7 +890,8 @@ static void writeback(uint32_t id)
         ((uint64_t)d->pitch * d->h > WRITEBACK_MAX && !(cpu_wb && o && o->cpu_used))) {
         return;
     }
-    const uint32_t len = d->pitch * d->h;
+    const uint32_t rows = obj_rows(o, d);
+    const uint32_t len = d->pitch * rows;
     const uint32_t fb = hle_res_rb_fb(len);
     HleCmdReadback *rb = begin(HLE_OP_READBACK, sizeof(*rb));
     memset(rb, 0, sizeof(*rb));
@@ -885,10 +899,14 @@ static void writeback(uint32_t id)
     rb->surf = id;
     rb->pa = d->pa;
     rb->pitch = d->pitch;
+    rb->rows = rows;
     rb->arena_off = HLE_RB_DIRECT;
     hle_res_rb_land(rb, fb, len, hle_fe_last_value() + 1);     /* the next submission */
     hle_barrier_arm_landing(d->pa, len, hle_fe_last_value() + 1);
     hle_fe_commit();
+    if (rtlog_on()) {
+        hle_log("hakuX-hle-pb", "writeback %u: %08x %ux%u, %u rows", id, d->pa, d->w, d->h, rows);
+    }
     g_pd.writebacks++;
 }
 
@@ -1015,6 +1033,7 @@ static void sync_rt(void)
     }
     g_pd.aa_x = swz ? 1 : sx;
     g_pd.aa_y = swz ? 1 : sy;
+    const uint32_t clip_rows = swz ? 0 : h;     /* before linear_size makes it the surface's */
     uint32_t cpitch = R(NV097_SET_SURFACE_PITCH) & 0xFFFF, zpitch = R(NV097_SET_SURFACE_PITCH) >> 16;
     uint32_t cpa = R(NV097_SET_SURFACE_COLOR_OFFSET) & 0x0FFFFFFFu;
     uint32_t zpa = R(NV097_SET_SURFACE_ZETA_OFFSET) & 0x0FFFFFFFu;
@@ -1050,6 +1069,10 @@ static void sync_rt(void)
     }
     if (ds && ds != g_pd.ds) {
         zwrite_from_colour(ds);
+    }
+    PbObj *ro = obj_of(rt);
+    if (ro && clip_rows > ro->clip_rows) {
+        ro->clip_rows = clip_rows;
     }
     if (rt != g_pd.rt || ds != g_pd.ds) {
         if (rt != g_pd.rt) {
@@ -1305,12 +1328,19 @@ static void fps_log(void)
  * and Hunter: The Reckoning - Redeemer's display was its 640 x 960 back
  * buffer until it set its video mode) shows its frame, not all of itself
  * squeezed into the display. Whole when it is no bigger, or while the
- * display's size is a guess (no video mode known: the first target bound). */
+ * display's size is a guess (no video mode known: the first target bound);
+ * at most the rows the title renders it with. */
 static void shown_part(const PbObj *o, uint32_t ax, uint32_t ay, uint32_t *w, uint32_t *h)
 {
     const bool crop = o && g_disp_moded && g_pd.disp_w && g_pd.disp_h;
     *w = crop ? MIN(g_pd.disp_w * MAX(ax, 1u), o->d.w) : 0;
     *h = crop ? MIN(g_pd.disp_h * MAX(ay, 1u), o->d.h) >> g_disp_field : 0;
+    /* a frame the title renders shorter than the display (its clip's rows,
+     * obj_rows) fills the display: Tomb Raider Legend draws 640 x 448, and the
+     * 32 lines under it, which the TV's overscan hid, were a black bar */
+    if (o && o->clip_rows && o->clip_rows < (*h ? *h : o->d.h)) {
+        *h = o->clip_rows;
+    }
 }
 
 /* id goes on screen as it is now, with no flip: the display scans out the
@@ -2896,7 +2926,7 @@ static unsigned writeback_range(uint32_t pa, uint32_t end, uint64_t v, bool gpu_
             PbObj *o = &g_pd.objs[i];
             const HleFmtInfo *fi = hle_fmt_info(o->d.xfmt);
             if (o->written > after && (!next || o->written < next->written) && !o->cube &&
-                o->d.pitch && o->d.pa < end && o->d.pa + o->d.pitch * o->d.h > pa && fi &&
+                o->d.pitch && o->d.pa < end && o->d.pa + o->d.pitch * obj_rows(o, &o->d) > pa && fi &&
                 !(fi->flags & (HLE_FI_DEPTH | HLE_FI_DXT))) {
                 next = o;
             }
@@ -2905,7 +2935,8 @@ static unsigned writeback_range(uint32_t pa, uint32_t end, uint64_t v, bool gpu_
             break;
         }
         after = next->written;
-        const uint32_t len = next->d.pitch * next->d.h;
+        const uint32_t rows = obj_rows(next, &next->d);
+        const uint32_t len = next->d.pitch * rows;
         if (obj_superseded(next)) {
             /* the title's data is there now (a texture defined from it) */
             if (gpu_newer) {
@@ -2928,6 +2959,7 @@ static unsigned writeback_range(uint32_t pa, uint32_t end, uint64_t v, bool gpu_
         rb->surf = next->id;
         rb->pa = next->d.pa;
         rb->pitch = next->d.pitch;
+        rb->rows = rows;
         rb->arena_off = HLE_RB_DIRECT;
         hle_res_rb_land(rb, fb, len, v);
         hle_barrier_arm_landing(next->d.pa, len, v);
