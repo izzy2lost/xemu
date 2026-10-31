@@ -287,6 +287,13 @@ struct NcKernel {
 };
 
 bool nc_kernel_init(NcKernel *k, NcVm *vm);
+/* Before nc_kernel_init: the boot is for a savestate whose process object is
+ * at kprocess (0: none), and the kernel pool's first range goes where the
+ * boot that made it put it, under that object (kernel.c POOL_BASE). */
+void nc_kernel_pool_for(uint32_t kprocess);
+/* The process object's address in a savestate's kernel section (0: none, or
+ * the state can't be read). */
+uint32_t nc_kern_state_kprocess(const char *path);
 
 /* Creates the title's first thread at entry; run it with nc_cpu_run. */
 NcThread *nc_kernel_boot_thread(NcKernel *k, NcCpu *cpu, uint32_t entry, uint32_t stack_size);
@@ -375,6 +382,11 @@ uint32_t nc_kernel_code_alloc(NcKernel *k, uint32_t len);
  * hardware is pointed at the kernel (DirectSound's GP mailbox wait). */
 struct HleXbeInfo;
 void nc_kernel_title_fixups(NcKernel *k, const struct HleXbeInfo *xbe);
+/* ... and the library code a section holds (XMV's stream wait), at boot and
+ * as XeLoadSection loads one */
+void nc_kernel_section_fixups(NcKernel *k, uint32_t va, uint32_t len, const char *name);
+/* ... and over the sections a savestate's load brought (saved before a fixup) */
+void nc_kernel_loaded_fixups(NcKernel *k);
 
 /* ex.c: the console's video settings, as the dashboard keeps them: the
  * EEPROM's video flags (XC_VIDEO_FLAGS: NC_VIDEO_*) and the AV pack the

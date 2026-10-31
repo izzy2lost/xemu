@@ -93,6 +93,9 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     const char *mb = getenv("NC_RAM_MB");
     /* A Chihiro has 128 MiB too. */
     const uint32_t ram = (mb && atoi(mb) == 128) || nc_chihiro_enabled() ? 128u << 20 : NC_RAM_RETAIL;
+    /* a savestate's kernel objects are where its boot made them (KERN v3
+     * moved the pool's first range) */
+    nc_kernel_pool_for(g_loadstate[0] ? nc_kern_state_kprocess(g_loadstate) : 0);
     if (!nc_vm_init(&c->vm, ram) || !nc_kernel_init(&c->kernel, &c->vm)) {
         return boot_failed("The emulated console couldn't be set up.");
     }
@@ -268,6 +271,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
             nc_hle_set_fatal(NC_FATAL_STATE, why);
             return false;
         }
+        nc_kernel_loaded_fixups(&c->kernel);
         nc_mods_after_load(&c->kernel, c->kernel.image_path);
         g_loaded = true;
     }

@@ -52,6 +52,12 @@ enum {
      * presents with nothing to wait for (vk/swapchain.c). On for every
      * driver but Turnip, whose present hands the compositor a fence. */
     HLE_QUIRK_PRESENT_CPU_WAIT = 1u << 11,
+    /* A vertex attribute whose address its component size doesn't divide
+     * (Vulkan's rule: a float at a 2-byte boundary, as an Xbox vertex of 18
+     * bytes puts every other one) is read wrong, and the meshes explode
+     * (Mali-G57): such a binding's vertices are copied to the arena with each
+     * attribute moved to an offset its components divide (pb/pbdraw.c). */
+    HLE_QUIRK_VB_ALIGN = 1u << 12,
 };
 
 extern uint32_t g_hle_quirks;

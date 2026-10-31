@@ -39,3 +39,8 @@ One entry per section version (tools/native/statelock.py).
 
 - NcKernel.handles_more: the handle table grows from 4096 slots to 16384 (Super Monkey Ball Deluxe keeps ~6100 files open); its slots past 4096 (v1 states: none, all free)
 - upgraded: v1..v1 states load
+
+## KERN v3 (2026-10-29, after 113a34e7e7)
+
+- the kernel pool's first 64 KiB range sits just above the kernel (physical 0x50000), not 512 KiB under the top reserve (Burnout 2 lays out 0x2377000-0x3F00000 at fixed addresses); a state's boot puts it under the state's process object (v1, v2 states, and states saved since by a run that loaded one: where it was)
+- upgraded: v1..v2 states load

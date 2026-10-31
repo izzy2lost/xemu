@@ -208,7 +208,8 @@ typedef struct HleFfPush {
  * vertex a step in front of the far plane (2^24 - 2) came out at 1.0, and
  * Super Monkey Ball Deluxe's movies, drawn there over a depth buffer cleared
  * to the far plane, failed their LESS test (black, the subtitles over it
- * drawn). Any other scale (1.0, a float depth buffer) is the plain product. */
+ * drawn). Any other scale (a float depth buffer's, pbdraw.c zfloat_scale)
+ * is the plain product. */
 #define HLE_ZNORM_GLSL(z, out) \
     "  precise float " out " = " z " * pc.zscale + " z " * (pc.zscale == uintBitsToFloat(0x33800000u) ||\n" \
     "      pc.zscale == uintBitsToFloat(0x37800000u) ? pc.zscale * pc.zscale : 0.0);\n"

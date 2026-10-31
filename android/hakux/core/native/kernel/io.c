@@ -1182,6 +1182,23 @@ static uint64_t io_offset(NcKernel *k, const NcFile *nf, uint32_t byte_offset)
     return nf->pos;
 }
 
+/* A read or write through nf ended at end: the file's position goes there
+ * through a handle opened for synchronous I/O, as the Xbox's file systems
+ * keep it (NT's, FO_SYNCHRONOUS_IO only); an overlapped request names its
+ * offset and leaves the position to the title. Burnout 2 reads its 4.6 MiB
+ * traffic data in 128 KiB overlapped reads, moving the position itself
+ * (SetFilePointer) after each: moved here too, each read came from twice
+ * its offset, and the data's pointer walk faulted as the game started. One
+ * without an offset of its own (the position's) moves it still. */
+static void io_moved(NcKernel *k, NcFile *nf, uint32_t byte_offset, uint64_t end)
+{
+    const bool named = byte_offset && !(nc_vm_rd32(k->vm, byte_offset) == 0xFFFFFFFEu &&
+                                        nc_vm_rd32(k->vm, byte_offset + 4) == 0xFFFFFFFFu);
+    if (!nf->async || !named) {
+        nf->pos = end;
+    }
+}
+
 static int partition_root(const NcFile *nf);
 
 /* Ends a read or write: its IoStatusBlock, event and APC, and what it returns.
@@ -1254,7 +1271,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         const uint64_t off = io_offset(k, nf, a[7]);
         nc_vm_will_write(a[5], a[6]);
         nc_mediaboard_mbcom(k->vm, off, nc_vm_host(k->vm, a[5]), a[6], false);
-        nf->pos = off + a[6];
+        io_moved(k, nf, a[7], off + a[6]);
         return io_finish(k, nf, a, NC_STATUS_SUCCESS, a[6], true, false);
     }
     const int raw = nf->kind == F_VOLUME && nf->partition == 0 ? 0
@@ -1269,7 +1286,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         if (raw || !nc_mediaboard_raw(k->vm, off, nc_vm_host(k->vm, a[5]), a[6], false)) {
             raw_io(raw, off, nc_vm_host(k->vm, a[5]), a[6], false);
         }
-        nf->pos = off + a[6];
+        io_moved(k, nf, a[7], off + a[6]);
         if (g_trace_io) {
             nc_log("hakuX-native-io", "read %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
         }
@@ -1303,7 +1320,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         const bool later = async || (n >= SYNC_LATER_MIN && can_block(k));
         if ((nf->kind == F_DISC || (nf->kind == F_HOST && nf->fd >= 0)) && later &&
             disc_read_later(k, nf, a, off, n, !async)) {
-            nf->pos = off + n;
+            io_moved(k, nf, a[7], off + n);
             if (g_trace_io) {
                 nc_log("hakuX-native-io", "read %s +%llx %u into %08x %s%s%s", nf->path, (unsigned long long)off,
                        n, a[5], async ? "pending" : "waited for", a[1] ? " event" : "", a[2] ? " apc" : "");
@@ -1323,7 +1340,7 @@ static uint64_t NtReadFile(NcKernel *k, NcFrame *f, const uint32_t *a)
             n = 0;
         }
     }
-    nf->pos = off + n;
+    io_moved(k, nf, a[7], off + n);
     if (g_trace_io) {
         uint8_t b[8] = {0};
         if (n >= 8) {
@@ -1404,13 +1421,13 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         if (nf->partition == MBCOM_VOLUME) {
             const uint64_t off = io_offset(k, nf, a[7]);
             nc_mediaboard_mbcom(k->vm, off, nc_vm_host(k->vm, a[5]), a[6], true);
-            nf->pos = off + a[6];
+            io_moved(k, nf, a[7], off + a[6]);
         } else if (nf->partition == 0) {
             const uint64_t off = io_offset(k, nf, a[7]);
             if (!nc_mediaboard_raw(k->vm, off, nc_vm_host(k->vm, a[5]), a[6], true)) {
                 raw_io(0, off, nc_vm_host(k->vm, a[5]), a[6], true);
             }
-            nf->pos = off + a[6];
+            io_moved(k, nf, a[7], off + a[6]);
             if (g_trace_io) {
                 nc_log("hakuX-native-io", "write %s raw +%llx %u", nf->path, (unsigned long long)off, a[6]);
             }
@@ -1421,7 +1438,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         /* A cache drive formatted raw (XMountUtilityDrive): the superblock
          * write empties the folder; the head of the partition is kept. */
         const uint64_t o = io_offset(k, nf, a[7]);
-        nf->pos = o + a[6];
+        io_moved(k, nf, a[7], o + a[6]);
         raw_io(partition_root(nf), o, nc_vm_host(k->vm, a[5]), a[6], true);
         /* The FATX superblock: "FATX", volume id, sectors per cluster. */
         const uint8_t *sb = nc_vm_host(k->vm, a[5]);
@@ -1464,7 +1481,7 @@ static uint64_t NtWriteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         nc_log("hakuX-native-io", "write %s +%llx %u from %08x -> %08x [%02x%02x%02x%02x %02x%02x%02x%02x]", nf->path,
                (unsigned long long)off, a[6], a[5], st, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
     }
-    nf->pos = off + (n > 0 ? (uint64_t)n : 0);
+    io_moved(k, nf, a[7], off + (n > 0 ? (uint64_t)n : 0));
     /* Unbuffered, an overlapped write pends whatever it waits on, as the hard
      * disk's do: Kung Fu Chaos advances its OVERLAPPED's Offset only after
      * ERROR_IO_PENDING, so done in the call, its copies to the cache drive came

@@ -13,6 +13,7 @@
 #include "hw/xbox/hle/vk/back.h"
 #include "hw/xbox/hle/vk/display.h"
 #include "hw/xbox/hle/vk/guest_ram.h"
+#include "hw/xbox/hle/vk/quirks.h"
 #include "hw/xbox/hle/pb/pbres.h"
 #include "hw/xbox/hle/tex/xdk.h"
 #include "hw/xbox/hle/tex/xdk_res.h"
@@ -1150,6 +1151,43 @@ static void rt_first_write(void)
     }
 }
 
+/* A float depth buffer (CONTROL0 bit 12) holds the depth itself: D3D's range
+ * is 0 .. 1e30 for F24S8 and 0 .. 511.9375 (the format's maximum) for F16,
+ * its far plane what it sets as CLIP_MAX. The image (D32_SFLOAT) holds it
+ * over that maximum, as the shadow-buffer compares read it (psh.c k_max):
+ * the largest scale whose product with the maximum stays within 1.0, so a
+ * vertex on the far plane does not clip. Unscaled, Touge R's scene (F24S8,
+ * the far plane at 1e30) clipped or clamped to 1.0 against its clear at 0.0
+ * and failed its LESSEQUAL test: the screen black under the HUD. */
+static float zfloat_scale(bool z24)
+{
+    static float s[2];
+    if (!s[z24]) {
+        const float m = z24 ? 1.0e30f : 511.9375f;
+        float v = 1.0f / m;
+        while (m * v > 1.0f) {
+            v = nextafterf(v, 0.0f);
+        }
+        s[z24] = v;
+    }
+    return s[z24];
+}
+
+/* A float depth buffer's clear value (F24: 8-bit exponent, 16-bit mantissa;
+ * F16: 4-bit exponent biased 7, 12-bit mantissa) as the top of the depths
+ * it stands for: the NV2A tests at the format's precision, and a far-plane
+ * vertex lands on D3D's far clear, short of 1e30 by the mantissa it drops. */
+static float zfloat_clear(uint32_t v, bool z24)
+{
+    if (!v) {
+        return 0.0f;
+    }
+    uint32_t b = z24 ? (v << 7) | 0x7Fu : ((v << 11) + 0x3C000000u) | 0x7FFu;
+    float f;
+    memcpy(&f, &b, 4);
+    return isfinite(f) ? MIN(f * zfloat_scale(z24), 1.0f) : 1.0f;
+}
+
 static void clear(uint32_t flags)
 {
     sync_rt();
@@ -1173,10 +1211,10 @@ static void clear(uint32_t flags)
                    ((v >> 5) & 0x3F) * 255 / 63 << 8 | (v & 0x1F) * 255 / 31;
     }
     if (zf == 2) {
-        c->z = zfloat ? 0.0f : (zs >> 8) / 16777215.0f;
+        c->z = zfloat ? zfloat_clear(zs >> 8, true) : (zs >> 8) / 16777215.0f;
         c->stencil = zs & 0xFF;
     } else {
-        c->z = zfloat ? 0.0f : (zs & 0xFFFF) / 65535.0f;
+        c->z = zfloat ? zfloat_clear(zs & 0xFFFF, false) : (zs & 0xFFFF) / 65535.0f;
     }
     if (r.x1 > 0 || r.y1 > 0 || (uint32_t)r.x2 < g_pd.rt_w || (uint32_t)r.y2 < g_pd.rt_h) {
         c->nrects = 1;
@@ -3138,9 +3176,10 @@ static void emit(HleCmdDraw *d)
     uint32_t zf = (R(NV097_SET_SURFACE_FORMAT) >> 4) & 0xF;
     d->vsh = ff ? ff_program() : program();
     d->consts_off = c_off;
-    /* the integer formats' 2^-n, the shaders adding the rest (HLE_ZNORM_GLSL) */
-    d->zscale = (R(NV097_SET_CONTROL0) & 0x1000u) ? 1.0f : zf == 1 ? 1.0f / 65536.0f
-                                                                : 1.0f / 16777216.0f;
+    /* the integer formats' 2^-n, the shaders adding the rest (HLE_ZNORM_GLSL);
+     * a float format's own (zfloat_scale) */
+    d->zscale = (R(NV097_SET_CONTROL0) & 0x1000u) ? zfloat_scale(zf == 2) : zf == 1 ? 1.0f / 65536.0f
+                                                                           : 1.0f / 16777216.0f;
     d->ff_ubo = HLE_DRAW_NO_UBO;
     drawlog(d, ff);
     HleCmdDraw *c = begin(HLE_OP_DRAW, sizeof(*c));
@@ -3337,6 +3376,88 @@ static bool recopied(uint32_t from, uint32_t len)
     return t[i].again;
 }
 
+/* The bytes of an attribute's component as the back end fetches it, which
+ * its address must be a multiple of (vk/draw.c vat_format: CMP as 16-bit
+ * halves). */
+static uint32_t attr_comp(uint32_t fmt)
+{
+    switch (fmt & 0xF) {
+    case 0: case 4: return 1;               /* UB_D3D, UB_OGL */
+    case 1: case 5: case 6: return 2;       /* S1, S32K, CMP */
+    default: return 4;                      /* F */
+    }
+}
+
+/* HLE_QUIRK_VB_ALIGN: an attribute of binding b (its vertex 0 at base)
+ * whose address its components don't divide, at some vertex. */
+static bool vb_misaligned(const HleCmdDraw *d, unsigned b, uint32_t base)
+{
+    for (unsigned a = 0; a < HLE_DRAW_ATTRS; a++) {
+        const uint32_t x = d->attr[a], c = attr_comp(x & 0xFF);
+        if (((x >> 4) & 0xF) && ((x >> 8) & 0xFF) == b &&
+            ((base + (x >> 16)) % c || d->bind_stride[b] % c)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* HLE_QUIRK_VB_ALIGN: binding b's n vertices (src, len bytes from from)
+ * copied to the arena with each attribute at an offset its components
+ * divide, in the order they had, and a stride 4 divides; the draw's
+ * attributes and binding say where. False: no room. */
+static bool vb_realign(HleCmdDraw *d, unsigned b, const uint8_t *src, uint32_t from, uint32_t len,
+                       uint32_t n)
+{
+    struct { unsigned a; uint32_t off, size, to; } at[HLE_DRAW_ATTRS];
+    unsigned na = 0;
+    for (unsigned a = 0; a < HLE_DRAW_ATTRS; a++) {
+        const uint32_t x = d->attr[a];
+        if (((x >> 4) & 0xF) && ((x >> 8) & 0xFF) == b) {
+            unsigned k = na++;
+            while (k && at[k - 1].off > (x >> 16)) {
+                at[k] = at[k - 1];
+                k--;
+            }
+            at[k].a = a;
+            at[k].off = x >> 16;
+            at[k].size = attr_bytes(x & 0xFF);
+        }
+    }
+    uint32_t end = 0;
+    for (unsigned i = 0; i < na; i++) {
+        at[i].to = ROUND_UP(end, attr_comp(d->attr[at[i].a] & 0xFF));
+        end = at[i].to + at[i].size;
+    }
+    const uint32_t st = d->bind_stride[b], ns = st ? ROUND_UP(end, 4u) : 0;
+    uint8_t *dst;
+    const uint32_t off = arena(st ? n * ns : end, &dst);
+    if (off == HLE_ARENA_FULL) {
+        return false;
+    }
+    if (recopied(from, len)) {
+        hle_barrier_arm_copied(from, len);
+    }
+    for (uint32_t v = 0; v < (st ? n : 1); v++) {
+        for (unsigned i = 0; i < na; i++) {
+            memcpy(dst + v * ns + at[i].to, src + v * st + at[i].off, at[i].size);
+        }
+    }
+    static bool said;
+    if (!said) {
+        said = true;
+        hle_log("hakuX-hle-pb", "vb_align: a binding of stride %u at %08x copied with its attributes aligned "
+                "(stride %u)", st, from, ns);
+    }
+    for (unsigned i = 0; i < na; i++) {
+        d->attr[at[i].a] = (d->attr[at[i].a] & 0xFFFFu) | at[i].to << 16;
+    }
+    d->bind_stride[b] = ns;
+    d->bind_off[b] = off;
+    g_pd.vb_copied++;
+    return true;
+}
+
 /* The vertex arrays the indices reach, read in place or copied to the
  * arena, the indices converted for the primitive and rebased. */
 static void draw_arrays(void)
@@ -3396,6 +3517,13 @@ static void draw_arrays(void)
         uint32_t from = base[b] + (st ? lo * st : 0);
         uint32_t len = st ? (hi - lo) * st + MAX(end[b], 1u) : end[b];
         const uint8_t *src = hle_pa_ptr(from, len);
+        if (src && hle_quirk(HLE_QUIRK_VB_ALIGN) && vb_misaligned(&d, b, base[b])) {
+            if (!vb_realign(&d, b, src, from, len, st ? hi - lo + 1 : 1)) {
+                skip(SK_DRAW_ARRAYS_ARENA);
+                return;
+            }
+            continue;
+        }
         if (src && vb_in_place() && !hle_barrier_contended(from, len)) {
             hle_barrier_arm(from, len, hle_fe_last_value() + 1);
             d.guest_vb |= 1u << b;

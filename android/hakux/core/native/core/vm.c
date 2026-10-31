@@ -584,7 +584,8 @@ static uint32_t smallest_run(const NcVm *vm, uint32_t first, uint32_t last, uint
  * long-lived allocations (page tables) fill holes and leave the
  * large runs whole for MmAllocateContiguousMemory; from the top end of the
  * run, the highest of equals, so the kernel's own memory stays high (low RAM
- * is the title's: nc_vm_alloc_at). */
+ * is the title's: nc_vm_alloc_at; the pool's first range sits just above
+ * the kernel, kernel.c POOL_BASE). */
 uint32_t nc_vm_alloc_phys(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi)
 {
     const uint32_t pages = nc_align_up(len ? len : 1, NC_PAGE) / NC_PAGE;

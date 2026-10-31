@@ -378,6 +378,7 @@ static uint64_t XeLoadSection(NcKernel *k, NcFrame *f, const uint32_t *a)
     if (!nc_disc_read(k->disc, k->xbe_file, raw, dst, rsize < vsize ? rsize : vsize)) {
         return 0xC000009Cu; /* STATUS_DEVICE_DATA_ERROR */
     }
+    nc_kernel_section_fixups(k, va, vsize, section_name(k, s));
     nc_cpu_invalidate(k->cpu, va, vsize);
     return NC_STATUS_SUCCESS;
 }

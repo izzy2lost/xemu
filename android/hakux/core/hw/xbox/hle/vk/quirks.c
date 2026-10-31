@@ -38,6 +38,17 @@ static bool not_turnip(const HleDriver *d)
     return !mesa_turnip(d);
 }
 
+/* Mali hardware, any driver (vendor 0x13B5: Arm's, PanVK) */
+static bool mali(const HleDriver *d)
+{
+    return d->props.vendorID == 0x13B5;
+}
+
+static bool mali_g57(const HleDriver *d)
+{
+    return mali(d) && strstr(d->props.deviceName, "Mali-G57") != NULL;
+}
+
 /* Seen on (driver, version, what showed it). */
 static const HleQuirk k_quirks[] = {
     /* Adreno 840 stock driver 0x8034a02c: Forza's menu text picks its glyph
@@ -64,6 +75,12 @@ static const HleQuirk k_quirks[] = {
      * Turnip's makes a sync file and returns (Mesa vk_android.c); the other
      * drivers are untested, so they keep the wait. */
     { HLE_QUIRK_PRESENT_CPU_WAIT, "present_cpu_wait", not_turnip },
+    /* Mali-G57 MC2, Arm's r54p1 (an Infinix X6858 user's diag log,
+     * 2026-10-26): Mortal Kombat Shaolin Monks' meshes exploded; its vertices
+     * are 18 bytes, two floats at offset 10, and the diag build counted 7.8
+     * million misaligned attribute fetches in 230 s, nothing else wrong.
+     * The driver has no VK_EXT_legacy_vertex_attributes. */
+    { HLE_QUIRK_VB_ALIGN, "vb_align", mali_g57 },
 };
 
 static uint32_t g_defaults;
