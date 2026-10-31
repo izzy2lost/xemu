@@ -19,6 +19,7 @@
  *     PRCB at 0x28 starting with CurrentThread
  */
 #include "native/kernel/kernel.h"
+#include "native/dev/usb.h"
 
 #include <stdio.h>
 #include <time.h>
@@ -310,6 +311,68 @@ static uint64_t quantum_ns(NcKernel *k)
     return (uint64_t)(q ? q : 60) * 1000000u / 3;
 }
 
+/* A Chihiro game's ready thread starved of the CPU for STARVE_NS runs once at
+ * priority 15, as NT's balance set manager boosts one ready that long
+ * (KiScanReadyQueues): Virtua Cop 3 (a disc) on its first boot raised its
+ * CPU-load counter to priority 10 to spin, while the main thread (15) waited
+ * for a critical section handed to a priority 8 thread that never ran, so
+ * the flag that stops the counter was never set. Chihiro mode only: a
+ * retail title's scheduling stays as it was. Not in savestates (Chihiro
+ * mode has none); g_boosted holds the priority a boosted thread goes back to. */
+#define STARVE_NS 1000000000ull
+static uint64_t g_ready_since[NC_MAX_THREADS];
+static int g_boosted[NC_MAX_THREADS];
+static bool g_boost_init;
+
+/* Boosts the threads ready and unrun for STARVE_NS; true if one was. */
+static bool starve_boost(NcKernel *k, uint64_t now)
+{
+    if (!nc_chihiro_enabled()) {
+        return false;
+    }
+    if (!g_boost_init) {
+        for (unsigned i = 0; i < NC_MAX_THREADS; i++) {
+            g_boosted[i] = -1;
+        }
+        g_boost_init = true;
+    }
+    bool any = false;
+    for (unsigned i = 0; i < k->threads_hi; i++) {
+        NcThread *t = &k->threads[i];
+        if (t->state != NC_T_READY || t->suspend || t == k->isr_thread || t == k->dpc_thread ||
+            t->priority >= 15) {
+            g_ready_since[i] = 0;
+            continue;
+        }
+        if (!g_ready_since[i]) {
+            g_ready_since[i] = now;
+        } else if (now - g_ready_since[i] >= STARVE_NS && g_boosted[i] < 0) {
+            static unsigned s_logged;
+            if (s_logged++ < 16) {
+                nc_log("hakuX-native", "ps: t%u (priority %d) ready %.1f s without running: priority 15 for a turn",
+                       t->id, t->priority, (now - g_ready_since[i]) / 1e9);
+            }
+            g_boosted[i] = t->priority;
+            t->priority = 15;
+            any = true;
+        }
+    }
+    return any;
+}
+
+/* The thread waits or its quantum ran out: a boost ends (unless the title set
+ * its priority meanwhile). */
+static void starve_unboost(NcKernel *k, NcThread *t)
+{
+    const unsigned i = (unsigned)(t - k->threads);
+    if (g_boost_init && g_boosted[i] >= 0) {
+        if (t->priority == 15) {
+            t->priority = g_boosted[i];
+        }
+        g_boosted[i] = -1;
+    }
+}
+
 /* Threads of one priority share the CPU in slices. Without them a thread
  * polling at that priority kept it for good once interrupts handed it back:
  * Bink's scheduler in Halo spins on a zero-timeout wait for a task mutex the
@@ -319,6 +382,12 @@ void nc_ps_slice_end(NcKernel *k, uint64_t now)
     NcThread *cur = k->current;
     if (!cur || cur != k->slice_thread || cur->state != NC_T_RUNNING) {
         return; /* an ISR or a DPC runs: the slice ends once its thread is back */
+    }
+    if (g_boost_init && g_boosted[cur - k->threads] >= 0) {
+        cur->slice_expired = true;      /* a boost lasts one quantum */
+        k->resched = true;
+        k->slice_due_ns = 0;
+        return;
     }
     for (unsigned i = 0; i < k->threads_hi; i++) {
         const NcThread *t = &k->threads[i];
@@ -330,6 +399,9 @@ void nc_ps_slice_end(NcKernel *k, uint64_t now)
             g_nc_sched.slices++;
             return;
         }
+    }
+    if (starve_boost(k, now)) {
+        k->resched = true;              /* a boosted thread may outrank it now */
     }
     cur->slice_used_ns = 0;
     cur->slice_start_ns = now;
@@ -375,6 +447,10 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
     uint8_t *irql = nc_vm_host(k->vm, k->kpcr_va + 0x24);
     const bool pinned = cur && cur->state == NC_T_RUNNING && !cur->suspend && cur != k->isr_thread &&
                         cur != k->dpc_thread && !k->in_isr && !k->in_dpc && *irql >= 2;
+    if (cur && cur != k->isr_thread && cur != k->dpc_thread &&
+        (cur->state != NC_T_RUNNING || cur->slice_expired)) {
+        starve_unboost(k, cur);         /* it waits, ends, or its quantum is over (not preempted) */
+    }
     if (cur && cur->state == NC_T_RUNNING) {
         if (cur->slice_expired) {
             cur->ready_seq = ++k->ready_clock;
@@ -515,6 +591,7 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
     pcr_enter(k, next);
     k->current = next;
     next->state = NC_T_RUNNING;
+    g_ready_since[next - k->threads] = 0;
     next->run_seq = next->ready_seq;    /* its place, kept if it is switched out */
     next->ready_seq = 0;
     if (next != k->isr_thread && next != k->dpc_thread) {

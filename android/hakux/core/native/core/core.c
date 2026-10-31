@@ -218,7 +218,18 @@ bool nc_core_boot(NcCore *c, int disc_fd)
         }
     }
     if (nc_chihiro_enabled()) {
-        nc_chihiro_set_game(xbe_path);  /* the cabinet it was made for */
+        /* A Chihiro game on a disc (an image repacked as an Xbox disc, its
+         * XBE renamed default.xbe): the cabinet by the XBE its boot.id names */
+        char game[NC_LAUNCH_PAGE];
+        snprintf(game, sizeof(game), "%s", xbe_path);
+        NcDiscFile id;
+        char named[0x20] = "";
+        if (!hdd && nc_disc_find(&c->disc, "\\boot.id", &id) && id.size >= 0xC0 &&
+            nc_disc_read(&c->disc, &id, 0xA0, named, sizeof(named) - 1) && named[0]) {
+            snprintf(game, sizeof(game), "%s", named);
+            nc_log("hakuX-native-frontier", "Chihiro disc: boot.id names %s", named);
+        }
+        nc_chihiro_set_game(game);      /* the cabinet it was made for */
         nc_chihiro_set_kernel(&c->kernel);
     }
     if (!nc_xbe_load(&c->vm, &c->disc, xbe_path, &c->kernel, &c->xbe)) {

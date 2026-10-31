@@ -82,15 +82,32 @@ object XbeMetadataReader {
   private const val FORMAT_LINEAR_X8R8G8B8 = 0x1E
 
   /** Null for anything that isn't an original Xbox disc image, or can't be read. icon: decode the title image. */
-  fun read(context: Context, uri: Uri, icon: Boolean = true): Metadata? {
+  fun read(context: Context, uri: Uri, icon: Boolean = true): Metadata? =
+    withImage(context, uri) { readAt -> readDiscImage(icon, readAt) }
+
+  /**
+   * Whether the disc image holds a Chihiro game: boot.id at its root, as SEGA's media board
+   * images have it (one repacked as an Xbox disc keeps it beside default.xbe).
+   */
+  fun isChihiroDisc(context: Context, uri: Uri): Boolean =
+    withImage(context, uri) { readAt ->
+      rootDirectory(readAt)?.let { (_, root) -> findFile(root, "boot.id") != null }
+    } == true
+
+  /** block with the image's reader: length bytes at a position, null past its end. */
+  private fun <T> withImage(
+    context: Context,
+    uri: Uri,
+    block: (readAt: (position: Long, length: Int) -> ByteArray?) -> T?,
+  ): T? {
     return try {
       context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
         FileInputStream(descriptor.fileDescriptor).use { input ->
           val channel = input.channel
           if (readAt(channel, 0, 8)?.let(ChdNative::isChd) == true) {
-            ChdNative.open(descriptor)?.use { chd -> readDiscImage(icon, chd::read) }
+            ChdNative.open(descriptor)?.use { chd -> block(chd::read) }
           } else {
-            readDiscImage(icon) { position, length -> readAt(channel, position, length) }
+            block { position, length -> readAt(channel, position, length) }
           }
         }
       }
@@ -99,8 +116,8 @@ object XbeMetadataReader {
     }
   }
 
-  /** readAt: length bytes of the image at a position, null past its end. */
-  private fun readDiscImage(wantIcon: Boolean, readAt: (position: Long, length: Int) -> ByteArray?): Metadata? {
+  /** The game partition's offset and its root directory, null when the image has none. */
+  private fun rootDirectory(readAt: (position: Long, length: Int) -> ByteArray?): Pair<Long, ByteArray>? {
     for (partition in PARTITION_OFFSETS) {
       val volume = readAt(partition + VOLUME_DESCRIPTOR_OFFSET, VOLUME_DESCRIPTOR_SIZE)
         ?: continue
@@ -114,15 +131,19 @@ object XbeMetadataReader {
       if (rootSize <= 0L || rootSize > MAX_ROOT_DIRECTORY_SIZE) {
         return null
       }
-      val root = readAt(partition + rootSector * SECTOR_SIZE, rootSize.toInt())
-        ?: return null
-      val (sector, size) = findFile(root, "default.xbe") ?: return null
-      val start = partition + sector * SECTOR_SIZE
-      return parseXbe(wantIcon) { offset, length ->
-        if (offset < 0 || offset + length > size) null else readAt(start + offset, length)
-      }
+      return readAt(partition + rootSector * SECTOR_SIZE, rootSize.toInt())?.let { partition to it }
     }
     return null
+  }
+
+  /** readAt: length bytes of the image at a position, null past its end. */
+  private fun readDiscImage(wantIcon: Boolean, readAt: (position: Long, length: Int) -> ByteArray?): Metadata? {
+    val (partition, root) = rootDirectory(readAt) ?: return null
+    val (sector, size) = findFile(root, "default.xbe") ?: return null
+    val start = partition + sector * SECTOR_SIZE
+    return parseXbe(wantIcon) { offset, length ->
+      if (offset < 0 || offset + length > size) null else readAt(start + offset, length)
+    }
   }
 
   /*

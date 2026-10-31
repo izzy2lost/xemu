@@ -907,6 +907,30 @@ static bool resolve_name(NcKernel *k, uint32_t root, char *name, size_t cap)
     return true;
 }
 
+/* A Chihiro game repacked as an Xbox disc may hold only one region's data:
+ * Virtua Cop 3's (MYSTRO's) has media\capdat_j.bin and no capdat_e.bin, and
+ * run as an Export cabinet it waited for the file for good on its title
+ * screen. A missing "<name>_e.<ext>" or "_u.<ext>" opens "<name>_j.<ext>". */
+static bool chihiro_region_file(const NcDisc *disc, const char *rel, NcDiscFile *out)
+{
+    const char *dot = strrchr(rel, '.');
+    if (!nc_chihiro_enabled() || !dot || dot - rel < 2 || dot[-2] != '_' ||
+        (tolower((unsigned char)dot[-1]) != 'e' && tolower((unsigned char)dot[-1]) != 'u')) {
+        return false;
+    }
+    char alt[512];
+    if (strlen(rel) >= sizeof(alt)) {
+        return false;
+    }
+    snprintf(alt, sizeof(alt), "%s", rel);
+    alt[dot - rel - 1] = 'j';
+    if (!nc_disc_find(disc, alt, out)) {
+        return false;
+    }
+    nc_log("hakuX-native-io", "open %s: not on the disc, its Japanese one (%s) instead", rel, alt);
+    return true;
+}
+
 /* Opens (and creates) a file for NtCreateFile/NtOpenFile. Returns the status;
  * *info receives the IoStatusBlock information. */
 /* An open whose FILE_DIRECTORY_FILE / FILE_NON_DIRECTORY_FILE doesn't fit
@@ -973,7 +997,7 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t attrs, uint32_t d
             return STATUS_MEDIA_WRITE_PROTECTED;
         }
         NcDiscFile df;
-        if (!nc_disc_find(k->disc, rel, &df)) {
+        if (!nc_disc_find(k->disc, rel, &df) && !chihiro_region_file(k->disc, rel, &df)) {
             nc_log("hakuX-native-io", "open %s: not on the disc", path);
             return STATUS_OBJECT_NAME_NOT_FOUND;
         }

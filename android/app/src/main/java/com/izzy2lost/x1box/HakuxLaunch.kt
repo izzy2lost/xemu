@@ -144,6 +144,17 @@ object HakuxLaunch {
     if (loadState != null) {
       intent.putExtra(HakuxCoreActivity.EXTRA_LOADSTATE, loadState)
     }
+    // A Chihiro game repacked as an Xbox disc (boot.id at its root): the Sega
+    // baseboard on the USB, as for an unpacked one (launchChihiro).
+    if (XbeMetadataReader.isChihiroDisc(activity, Uri.parse(dvdUri))) {
+      val name = (Uri.parse(dvdUri).lastPathSegment ?: "disc").substringAfterLast('/').substringBeforeLast('.')
+      intent
+        .putExtra(HakuxCoreActivity.EXTRA_CHIHIRO_ROMS, chihiroRoms(activity)?.absolutePath ?: "")
+        .putExtra(
+          HakuxCoreActivity.EXTRA_CHIHIRO_SAVE,
+          File(activity.filesDir, "hakux/chihiro-saves/$name.sav").apply { parentFile?.mkdirs() }.absolutePath,
+        )
+    }
     EmulationProcessHandoff.launch(activity, intent)
   }
 }
