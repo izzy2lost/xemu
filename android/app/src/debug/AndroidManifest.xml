@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Debug builds only: the hakuX core can be started from adb for device tests,
-     am start -n <pkg>/com.izzy2lost.x1box.hakux.HakuxCoreActivity -\-es dvdUri <uri> -->
+<!-- Debug builds only: both cores can be started from adb for device tests,
+     am start -n <pkg>/com.izzy2lost.x1box.hakux.HakuxCoreActivity -\-es dvdUri <uri>
+     am start -n <pkg>/com.izzy2lost.x1box.MainActivity (the game in prefs: dvdPath/dvdUri) -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
   xmlns:tools="http://schemas.android.com/tools">
   <application>
     <activity
       android:name="com.izzy2lost.x1box.hakux.HakuxCoreActivity"
+      android:exported="true"
+      tools:replace="android:exported" />
+    <activity
+      android:name="com.izzy2lost.x1box.MainActivity"
       android:exported="true"
       tools:replace="android:exported" />
   </application>

@@ -3479,6 +3479,110 @@ err_drain:
     return false;
 }
 
+#ifdef XBOX
+/*
+ * A snapshot kept in a file of its own rather than in a qcow2 image, for a
+ * machine without a writable disk to snapshot (the Chihiro: its game lives
+ * in the DIMM, which the snapshot carries). [header] is the caller's, written
+ * first and skipped on load; the caller checks it before loading.
+ */
+bool xemu_save_vm_file(const char *path, const void *header,
+                       size_t header_len, Error **errp)
+{
+    RunState saved_state = runstate_get();
+    g_autofree char *tmp = g_strdup_printf("%s.tmp", path);
+    QIOChannelFile *ioc;
+    QEMUFile *f;
+    int ret, ret2;
+
+    GLOBAL_STATE_CODE();
+
+    if (!migrate_can_snapshot(errp) || migration_is_blocked(errp)) {
+        return false;
+    }
+
+    global_state_store();
+    vm_stop(RUN_STATE_SAVE_VM);
+    bdrv_drain_all_begin();
+
+    ret = -1;
+    ioc = qio_channel_file_new_path(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY,
+                                    0600, errp);
+    if (ioc) {
+        qio_channel_set_name(QIO_CHANNEL(ioc), "xemu-state-save");
+        f = qemu_file_new_output(QIO_CHANNEL(ioc));
+        object_unref(OBJECT(ioc));
+        if (header_len) {
+            qemu_put_buffer(f, header, header_len);
+        }
+        ret = qemu_savevm_state(f, errp);
+        ret2 = qemu_fclose(f);
+        if (ret == 0 && ret2 < 0) {
+            error_setg_errno(errp, -ret2, "Could not write '%s'", tmp);
+            ret = ret2;
+        }
+        /* the slot keeps its last good state until this one is whole */
+        if (ret == 0 && rename(tmp, path) != 0) {
+            error_setg_errno(errp, errno, "Could not replace '%s'", path);
+            ret = -1;
+        }
+        if (ret != 0) {
+            unlink(tmp);
+        }
+    }
+
+    bdrv_drain_all_end();
+    vm_resume(saved_state);
+    return ret == 0;
+}
+
+bool xemu_load_vm_file(const char *path, size_t header_len, Error **errp)
+{
+    MigrationIncomingState *mis = migration_incoming_get_current();
+    QIOChannelFile *ioc;
+    QEMUFile *f;
+    int ret;
+
+    if (!migrate_can_snapshot(errp)) {
+        return false;
+    }
+
+    ioc = qio_channel_file_new_path(path, O_RDONLY | O_BINARY, 0, errp);
+    if (!ioc) {
+        return false;
+    }
+    qio_channel_set_name(QIO_CHANNEL(ioc), "xemu-state-load");
+    f = qemu_file_new_input(QIO_CHANNEL(ioc));
+    object_unref(OBJECT(ioc));
+    if (header_len) {
+        g_autofree uint8_t *skip = g_malloc(header_len);
+        if (qemu_get_buffer(f, skip, header_len) != header_len) {
+            error_setg(errp, "'%s' is too short to be a state", path);
+            qemu_fclose(f);
+            return false;
+        }
+    }
+
+    replay_flush_events();
+    bdrv_drain_all_begin();
+
+    qemu_system_reset(SHUTDOWN_CAUSE_SNAPSHOT_LOAD);
+    mis->from_src_file = f;
+
+    if (!yank_register_instance(MIGRATION_YANK_INSTANCE, errp)) {
+        mis->from_src_file = NULL;
+        qemu_fclose(f);
+        bdrv_drain_all_end();
+        return false;
+    }
+    ret = qemu_loadvm_state(f, errp);
+    migration_incoming_state_destroy();
+
+    bdrv_drain_all_end();
+    return ret >= 0;
+}
+#endif
+
 void load_snapshot_resume(RunState state)
 {
     vm_resume(state);

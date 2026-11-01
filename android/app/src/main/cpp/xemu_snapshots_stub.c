@@ -1,11 +1,13 @@
 #include "qemu/osdep.h"
 #include "ui/xemu-snapshots.h"
+#include "ui/xemu-settings.h"
 #include "qapi/error.h"
 #include "migration/snapshot.h"
 #include "migration/qemu-file.h"
 #include "system/runstate.h"
 #include "xemu-xbe.h"
 #include "hw/xbox/nv2a/nv2a.h"
+#include "hw/xbox/chihiro/chihiro.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_atomic.h>
@@ -316,6 +318,140 @@ char *xemu_get_currently_loaded_disc_path(void)
     return NULL;
 }
 
+/*
+ * Chihiro states. The machine has no hard disk to hold a qcow2 snapshot, and
+ * nothing to snapshot on one: the game lives in the DIMM, which the state
+ * carries as a delta. So each slot is a file of its own, the whole VM state
+ * behind this header, which names the game so another game's state is
+ * refused before anything is reset. A slot holds whichever of the two kinds
+ * was saved last: an Xbox save deletes the slot's Chihiro file.
+ */
+#define CHIHIRO_STATE_MAGIC   "X1CS"
+#define CHIHIRO_STATE_VERSION 1
+
+typedef struct ChihiroStateHeader {
+    char magic[4];
+    uint32_t version;
+    uint64_t dimm_size;
+    uint64_t dimm_identity;
+    char game[120];
+} ChihiroStateHeader;
+
+static char *get_chihiro_state_path(const char *vm_name)
+{
+    const char *base = SDL_GetAndroidInternalStoragePath();
+    char safe_name[128];
+    char *dir, *path;
+
+    if (!base || !base[0]) {
+        return NULL;
+    }
+    dir = g_strdup_printf("%s/x1box/states", base);
+    if (g_mkdir_with_parents(dir, 0700) != 0) {
+        SNAP_LOGW("failed to create state dir: %s", dir);
+        g_free(dir);
+        return NULL;
+    }
+    sanitize_snapshot_name(vm_name, safe_name, sizeof(safe_name));
+    path = g_strdup_printf("%s/%s.xst", dir, safe_name);
+    g_free(dir);
+    return path;
+}
+
+static void chihiro_game_name(char *out, size_t len)
+{
+    const char *path = xemu_chihiro_image();
+    const char *leaf = path ? strrchr(path, '/') : NULL;
+    g_strlcpy(out, leaf ? leaf + 1 : (path ? path : ""), len);
+}
+
+/* The header of the state at path; false when there is none to read. */
+static bool read_chihiro_state_header(const char *path, ChihiroStateHeader *hdr)
+{
+    FILE *f = fopen(path, "rb");
+    bool ok;
+
+    if (!f) {
+        return false;
+    }
+    ok = fread(hdr, sizeof(*hdr), 1, f) == 1;
+    fclose(f);
+    hdr->game[sizeof(hdr->game) - 1] = '\0';
+    return ok;
+}
+
+static void chihiro_state_save(const char *vm_name, Error **err)
+{
+    g_autofree char *path = get_chihiro_state_path(vm_name);
+    ChihiroStateHeader hdr;
+
+    if (!path) {
+        error_setg(err, "No folder for save states");
+        return;
+    }
+    memset(&hdr, 0, sizeof(hdr));
+    memcpy(hdr.magic, CHIHIRO_STATE_MAGIC, 4);
+    hdr.version = CHIHIRO_STATE_VERSION;
+    if (!chihiro_dimm_image_identity(&hdr.dimm_size, &hdr.dimm_identity)) {
+        error_setg(err, "The game was not loaded into the media board");
+        return;
+    }
+    chihiro_game_name(hdr.game, sizeof(hdr.game));
+
+    chihiro_dimm_clear_error();
+    gint64 t0 = g_get_monotonic_time();
+    if (!xemu_save_vm_file(path, &hdr, sizeof(hdr), err)) {
+        const char *why = chihiro_dimm_last_error();
+        if (why) {
+            error_prepend(err, "%s: ", why);
+        }
+        return;
+    }
+    SNAP_LOGI("chihiro state saved: %s (%lld ms)", path,
+              (long long)(g_get_monotonic_time() - t0) / 1000);
+}
+
+static void chihiro_state_load(const char *vm_name, Error **err)
+{
+    g_autofree char *path = get_chihiro_state_path(vm_name);
+    ChihiroStateHeader hdr;
+    uint64_t size, identity;
+    char game[sizeof(hdr.game)];
+
+    if (!path || !read_chihiro_state_header(path, &hdr) ||
+        memcmp(hdr.magic, CHIHIRO_STATE_MAGIC, 4) != 0) {
+        error_setg(err, "This slot holds no Chihiro state");
+        return;
+    }
+    if (hdr.version != CHIHIRO_STATE_VERSION) {
+        error_setg(err, "This state was saved by another version of the app");
+        return;
+    }
+    chihiro_game_name(game, sizeof(game));
+    if (!chihiro_dimm_image_identity(&size, &identity) ||
+        size != hdr.dimm_size || identity != hdr.dimm_identity) {
+        error_setg(err, "This state is from %s, not %s", hdr.game, game);
+        return;
+    }
+
+    chihiro_dimm_clear_error();
+    gint64 t0 = g_get_monotonic_time();
+    bool was_running = runstate_is_running();
+    vm_stop(RUN_STATE_RESTORE_VM);
+    if (!xemu_load_vm_file(path, sizeof(hdr), err)) {
+        const char *why = chihiro_dimm_last_error();
+        if (why) {
+            error_prepend(err, "%s: ", why);
+        }
+        return;
+    }
+    if (was_running) {
+        vm_start();
+    }
+    SNAP_LOGI("chihiro state loaded: %s (%lld ms)", path,
+              (long long)(g_get_monotonic_time() - t0) / 1000);
+}
+
 void xemu_snapshots_save(const char *vm_name, Error **err)
 {
     RunState saved_state = runstate_get();
@@ -335,7 +471,14 @@ void xemu_snapshots_save(const char *vm_name, Error **err)
     if (!runstate_is_running()) {
         vm_start();
     }
-    save_snapshot(vm_name, true, NULL, false, NULL, err);
+    if (xbox_is_chihiro()) {
+        chihiro_state_save(vm_name, err);
+    } else if (save_snapshot(vm_name, true, NULL, false, NULL, err)) {
+        g_autofree char *chihiro_path = get_chihiro_state_path(vm_name);
+        if (chihiro_path) {
+            g_unlink(chihiro_path);
+        }
+    }
     if (saved_state != RUN_STATE_RUNNING) {
         vm_stop(saved_state);
     }
@@ -344,6 +487,18 @@ void xemu_snapshots_save(const char *vm_name, Error **err)
 
 void xemu_snapshots_load(const char *vm_name, Error **err)
 {
+    if (xbox_is_chihiro()) {
+        chihiro_state_load(vm_name, err);
+        return;
+    }
+    {
+        g_autofree char *chihiro_path = get_chihiro_state_path(vm_name);
+        ChihiroStateHeader hdr;
+        if (chihiro_path && read_chihiro_state_header(chihiro_path, &hdr)) {
+            error_setg(err, "This slot holds a Chihiro state (%s)", hdr.game);
+            return;
+        }
+    }
     bool was_running = runstate_is_running();
     vm_stop(RUN_STATE_RESTORE_VM);
     if (load_snapshot(vm_name, NULL, false, NULL, err) && was_running) {
@@ -457,6 +612,7 @@ static struct {
     bool pending;
     bool done;
     bool success;
+    char error[256];    /* why the last operation failed, for the app */
 } g_snap_req = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .cond = PTHREAD_COND_INITIALIZER,
@@ -549,9 +705,11 @@ void xemu_android_process_snapshot_request(void)
 
     if (err) {
         SNAP_LOGW("snapshot op failed: %s", error_get_pretty(err));
+        g_strlcpy(g_snap_req.error, error_get_pretty(err), sizeof(g_snap_req.error));
         error_free(err);
         g_snap_req.success = false;
     } else {
+        g_snap_req.error[0] = '\0';
         g_snap_req.success = true;
     }
 
@@ -599,6 +757,22 @@ Java_com_izzy2lost_x1box_MainActivity_nativeLoadSnapshot(
 {
     (void)obj;
     return dispatch_snapshot(env, name, SNAP_LOAD);
+}
+
+/* Why the last save or load failed, or null after one that worked. */
+JNIEXPORT jstring JNICALL
+Java_com_izzy2lost_x1box_MainActivity_nativeLastSnapshotError(
+        JNIEnv *env, jobject obj)
+{
+    (void)obj;
+    jstring msg = NULL;
+
+    pthread_mutex_lock(&g_snap_req.lock);
+    if (!g_snap_req.success && g_snap_req.error[0]) {
+        msg = (*env)->NewStringUTF(env, g_snap_req.error);
+    }
+    pthread_mutex_unlock(&g_snap_req.lock);
+    return msg;
 }
 
 JNIEXPORT void JNICALL

@@ -55,9 +55,12 @@ const uint8_t *chihiro_flash_rom_bytes(uint32_t *size);
 const char *chihiro_dimm_last_error(void);
 /* Forgets it, before a new save or load. */
 void chihiro_dimm_clear_error(void);
-/* Size and CRC32 of the mounted netboot image as the DIMM delta records
- * them; false when the image cannot be read. */
-bool chihiro_dimm_image_identity(uint64_t *size, uint32_t *crc);
+/* Fingerprints every DIMM page as the game was loaded; snapshots carry only
+ * the pages that differ. Called once the game is in the DIMM. */
+void chihiro_dimm_take_baseline(void);
+/* Size and fingerprint of the game as loaded into the DIMM, which a snapshot
+ * records; false before chihiro_dimm_take_baseline. */
+bool chihiro_dimm_image_identity(uint64_t *size, uint64_t *identity);
 
 /* Load the baseboard EEPROMs (ic10, ic11, pc20): the configured paths first,
  * then the BIOS directory */

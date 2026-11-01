@@ -68,4 +68,27 @@ bool delete_snapshot(const char *name,
  */
 void load_snapshot_resume(RunState state);
 
+#ifdef XBOX
+/**
+ * xemu_save_vm_file: Save the whole VM to a file, not to a disk image.
+ * @path: the file, replaced only once the new state is complete
+ * @header: bytes written ahead of the VM state (may be NULL)
+ * @header_len: their length
+ * @errp: pointer to error object
+ * No block device is snapshotted, so only for a machine whose disks the
+ * guest does not write.
+ */
+bool xemu_save_vm_file(const char *path, const void *header,
+                       size_t header_len, Error **errp);
+
+/**
+ * xemu_load_vm_file: Load a VM state saved by xemu_save_vm_file.
+ * @path: the file
+ * @header_len: the length of its header, already checked by the caller
+ * @errp: pointer to error object
+ * The machine is reset first; on failure it is left as far as the load got.
+ */
+bool xemu_load_vm_file(const char *path, size_t header_len, Error **errp);
+#endif
+
 #endif

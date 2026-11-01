@@ -543,6 +543,7 @@ void xbox_init_common(MachineState *machine,
             if (img_fd >= 0) {
                 qemu_close(img_fd);
             }
+            chihiro_dimm_take_baseline();
         }
 
         /* The Chihiro BIOS jamtable writes to SMBus device 0x6A (Focus

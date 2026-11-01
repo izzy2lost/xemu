@@ -523,12 +523,15 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     hostView.postDelayed({
       Thread {
         val ok = nativeLoadSnapshot(slotName(slot))
+        val why = if (ok) null else runCatching { nativeLastSnapshotError() }.getOrNull()
         runOnUiThread {
           if (ok) {
             writeSnapshotTitleFallback(slot)
           }
           val msg = if (ok) {
             getString(R.string.snapshot_loaded, slot)
+          } else if (!why.isNullOrBlank()) {
+            getString(R.string.snapshot_failed_reason, slot, why)
           } else {
             getString(R.string.snapshot_load_failed, slot)
           }
@@ -727,6 +730,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   private external fun nativeSaveSnapshot(name: String): Boolean
   private external fun nativeLoadSnapshot(name: String): Boolean
+  private external fun nativeLastSnapshotError(): String?
   private external fun nativeRebootSystem()
   private external fun nativeGetFps(): Int
   private external fun nativePollLanEvent(): Long
@@ -921,11 +925,14 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private fun runSnapshotOperation(slot: Int, save: Boolean, onDone: () -> Unit = {}) {
     Thread {
       val ok = if (save) nativeSaveSnapshot(slotName(slot)) else nativeLoadSnapshot(slotName(slot))
+      val why = if (ok) null else runCatching { nativeLastSnapshotError() }.getOrNull()
       runOnUiThread {
         if (ok) {
           writeSnapshotTitleFallback(slot)
         }
-        val msg = if (save) {
+        val msg = if (!ok && !why.isNullOrBlank()) {
+          getString(R.string.snapshot_failed_reason, slot, why)
+        } else if (save) {
           if (ok) getString(R.string.snapshot_saved, slot) else getString(R.string.snapshot_save_failed)
         } else {
           if (ok) getString(R.string.snapshot_loaded, slot) else getString(R.string.snapshot_load_failed, slot)

@@ -34,6 +34,7 @@
 #include "system/block-backend.h"
 #include "chihiro.h"
 #include "chihiro-asic.h"
+#include "chihiro-fatx-builder.h"
 #include "system/blockdev.h"
 #include "system/system.h"
 #include "block/blkmemory.h"
@@ -3653,7 +3654,7 @@ static bool chihiro_interface_ready = false;
  * re-reads the image and applies the delta. */
 
 #define DIMM_MIG_MAGIC   0x4344494d /* CDIM */
-#define DIMM_MIG_VERSION 1
+#define DIMM_MIG_VERSION 2
 #define DIMM_PAGE_SIZE   4096
 
 typedef struct ChihiroDimmMig {
@@ -3683,32 +3684,100 @@ static const char *chihiro_image_basename(void)
     return sep ? sep + 1 : (path ? path : "(none)");
 }
 
-static uint8_t *chihiro_dimm_read_image(uint64_t buf_size,
-                                        uint64_t *file_size, uint32_t *crc)
+/* Each DIMM page's fingerprint as the game was loaded (chihiro_dimm_take_
+ * baseline): a snapshot carries only the pages that differ from it, and the
+ * game is never read again unless a load must put a page back. */
+static uint64_t *chihiro_dimm_baseline;
+static uint32_t chihiro_dimm_baseline_pages;
+static uint64_t chihiro_dimm_identity;
+
+static uint64_t chihiro_dimm_page_hash(const uint8_t *p)
 {
-    const char *path = xemu_chihiro_image();
-    FILE *f = (path && path[0]) ? qemu_fopen(path, "rb") : NULL;
-    if (!f) {
-        return NULL;
+    /* FNV-1a over 64-bit words, four lanes so the multiplies overlap */
+    uint64_t h[4] = { 0xcbf29ce484222325ull, 0x84222325cbf29ce4ull,
+                      0x9e3779b97f4a7c15ull, 0xc2b2ae3d27d4eb4full };
+    for (size_t i = 0; i < DIMM_PAGE_SIZE; i += 32) {
+        for (int l = 0; l < 4; l++) {
+            uint64_t w;
+            memcpy(&w, p + i + l * 8, 8);
+            h[l] = (h[l] ^ w) * 0x100000001b3ull;
+        }
     }
-    uint8_t *buf = g_malloc0(buf_size);
-    size_t n = fread(buf, 1, buf_size, f);
-    fclose(f);
-    *file_size = n;
-    *crc = crc32(0, buf, n);
-    return buf;
+    return (h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7)) * 0x100000001b3ull;
 }
 
-bool chihiro_dimm_image_identity(uint64_t *size, uint32_t *crc)
+void chihiro_dimm_take_baseline(void)
 {
     uint32_t fs_size;
     uint8_t *fs = chihiro_fatx_get_buffer(&fs_size);
+    g_free(chihiro_dimm_baseline);
+    chihiro_dimm_baseline = NULL;
+    chihiro_dimm_baseline_pages = 0;
+    chihiro_dimm_identity = 0;
     if (!fs) {
+        return;
+    }
+    gint64 t0 = g_get_monotonic_time();
+    uint32_t pages = fs_size / DIMM_PAGE_SIZE;
+    uint64_t id = 0xcbf29ce484222325ull ^ fs_size;
+    chihiro_dimm_baseline = g_new(uint64_t, pages);
+    for (uint32_t pg = 0; pg < pages; pg++) {
+        uint64_t h = chihiro_dimm_page_hash(fs + (size_t)pg * DIMM_PAGE_SIZE);
+        chihiro_dimm_baseline[pg] = h;
+        id = (id ^ h) * 0x100000001b3ull;
+    }
+    chihiro_dimm_baseline_pages = pages;
+    chihiro_dimm_identity = id;
+    fprintf(stderr, "Chihiro DIMM baseline: %u pages, identity %016" PRIx64 ", %lld ms\n",
+           pages, id, (long long)(g_get_monotonic_time() - t0) / 1000);
+}
+
+bool chihiro_dimm_image_identity(uint64_t *size, uint64_t *identity)
+{
+    if (!chihiro_dimm_baseline) {
         return false;
     }
-    uint8_t *ref = chihiro_dimm_read_image(fs_size, size, crc);
-    g_free(ref);
-    return ref != NULL;
+    *size = (uint64_t)chihiro_dimm_baseline_pages * DIMM_PAGE_SIZE;
+    *identity = chihiro_dimm_identity;
+    return true;
+}
+
+/* The game as booted, made again the way xbox.c made it: a folder built into
+ * FATX, else the image's bytes. NULL when it cannot be. */
+static uint8_t *chihiro_dimm_rebuild(uint32_t fs_size)
+{
+    const char *path = xemu_chihiro_image();
+    struct stat st;
+    if (!path || !path[0]) {
+        return NULL;
+    }
+    uint8_t *buf = g_malloc0(fs_size);
+    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        uint32_t built = 0;
+        uint32_t mbfs_sectors = (0x40000u << chihiro_dimm_factor()) - 0x8000u;
+        if (chihiro_fatx_build_into(path, buf, fs_size, mbfs_sectors, &built)) {
+            return buf;
+        }
+    } else {
+        int fd = qemu_open(path, O_RDONLY | O_BINARY, NULL);
+        if (fd >= 0) {
+            /* a /dev/fdset/N fd is a dup: its offset is shared, so pread */
+            size_t got = 0;
+            while (got < fs_size) {
+                ssize_t n = pread(fd, buf + got, fs_size - got, got);
+                if (n <= 0) {
+                    break;
+                }
+                got += n;
+            }
+            qemu_close(fd);
+            if (got > 0) {
+                return buf;
+            }
+        }
+    }
+    g_free(buf);
+    return NULL;
 }
 
 static int chihiro_dimm_pre_save(void *opaque)
@@ -3716,42 +3785,41 @@ static int chihiro_dimm_pre_save(void *opaque)
     ChihiroDimmMig *m = opaque;
     uint32_t fs_size;
     uint8_t *fs = chihiro_fatx_get_buffer(&fs_size);
-    uint64_t file_size;
-    uint32_t crc;
-    uint8_t *ref = fs ? chihiro_dimm_read_image(fs_size, &file_size, &crc)
-                      : NULL;
-    if (!ref) {
-        error_report("chihiro: cannot read the game image to delta against");
+    if (!fs || !chihiro_dimm_baseline ||
+        chihiro_dimm_baseline_pages != fs_size / DIMM_PAGE_SIZE) {
+        error_report("chihiro: no DIMM baseline to delta against");
         snprintf(chihiro_dimm_error, sizeof(chihiro_dimm_error),
-                 "the game image '%s' cannot be read", chihiro_image_basename());
+                 "the game '%s' was not loaded into the DIMM",
+                 chihiro_image_basename());
         return -EINVAL;
     }
 
-    uint32_t hdr[7] = { DIMM_MIG_MAGIC, DIMM_MIG_VERSION,
-                        (uint32_t)file_size, (uint32_t)(file_size >> 32),
-                        crc, DIMM_PAGE_SIZE, 0 /* npages */ };
+    uint32_t hdr[8] = { DIMM_MIG_MAGIC, DIMM_MIG_VERSION,
+                        fs_size, 0,
+                        (uint32_t)chihiro_dimm_identity,
+                        (uint32_t)(chihiro_dimm_identity >> 32),
+                        DIMM_PAGE_SIZE, 0 /* npages */ };
     GByteArray *blob = g_byte_array_new();
     g_byte_array_append(blob, (uint8_t *)hdr, sizeof(hdr));
 
     uint32_t npages = 0;
-    for (uint32_t pg = 0; pg < fs_size / DIMM_PAGE_SIZE; pg++) {
+    for (uint32_t pg = 0; pg < chihiro_dimm_baseline_pages; pg++) {
         const uint8_t *cur = fs + (size_t)pg * DIMM_PAGE_SIZE;
-        if (!memcmp(cur, ref + (size_t)pg * DIMM_PAGE_SIZE, DIMM_PAGE_SIZE)) {
+        if (chihiro_dimm_page_hash(cur) == chihiro_dimm_baseline[pg]) {
             continue;
         }
         g_byte_array_append(blob, (uint8_t *)&pg, 4);
         g_byte_array_append(blob, cur, DIMM_PAGE_SIZE);
         npages++;
     }
-    memcpy(blob->data + 24, &npages, 4);
-    g_free(ref);
+    memcpy(blob->data + 28, &npages, 4);
     chihiro_dimm_error[0] = 0;
 
     m->blob_size = blob->len;
     g_free(m->blob);
     m->blob = g_byte_array_free(blob, FALSE);
 
-    printf("Chihiro DIMM migration: %u changed pages, %u byte blob\n",
+    fprintf(stderr, "Chihiro DIMM migration: %u changed pages, %u byte blob\n",
            npages, m->blob_size);
     return 0;
 }
@@ -3772,10 +3840,9 @@ static int chihiro_dimm_post_load(void *opaque, int version_id)
     uint32_t fs_size;
     uint8_t *fs = chihiro_fatx_get_buffer(&fs_size);
     const uint8_t *p = m->blob;
-    uint32_t hdr[7];
-    uint64_t cur_size;
-    uint32_t cur_crc;
-    uint8_t *ref = NULL;
+    uint32_t hdr[8];
+    uint8_t *saved = NULL;
+    uint8_t *pristine = NULL;
 
     snprintf(chihiro_dimm_error, sizeof(chihiro_dimm_error),
              "the snapshot's game data is damaged");
@@ -3785,44 +3852,68 @@ static int chihiro_dimm_post_load(void *opaque, int version_id)
     memcpy(hdr, p, sizeof(hdr));
     p += sizeof(hdr);
     if (hdr[0] != DIMM_MIG_MAGIC || hdr[1] != DIMM_MIG_VERSION ||
-        hdr[5] != DIMM_PAGE_SIZE) {
+        hdr[6] != DIMM_PAGE_SIZE) {
+        goto out;
+    }
+    if (!chihiro_dimm_baseline || hdr[2] != fs_size ||
+        (hdr[4] | (uint64_t)hdr[5] << 32) != chihiro_dimm_identity) {
+        error_report("chihiro: mounted game does not match this snapshot");
+        snprintf(chihiro_dimm_error, sizeof(chihiro_dimm_error),
+                 "it was taken with another game than '%s'",
+                 chihiro_image_basename());
         goto out;
     }
 
-    ref = chihiro_dimm_read_image(fs_size, &cur_size, &cur_crc);
-    if (!ref) {
-        snprintf(chihiro_dimm_error, sizeof(chihiro_dimm_error),
-                 "the game image '%s' cannot be read", chihiro_image_basename());
-        goto out;
-    }
-    if (cur_size != (hdr[2] | (uint64_t)hdr[3] << 32) || cur_crc != hdr[4]) {
-        error_report("chihiro: mounted game image does not match this "
-                     "snapshot");
-        snprintf(chihiro_dimm_error, sizeof(chihiro_dimm_error),
-                 "it was taken with another game than '%s'. Restart xemu "
-                 "with that game to load it", chihiro_image_basename());
-        goto out;
-    }
-    memcpy(fs, ref, fs_size);
-
-    for (uint32_t i = 0; i < hdr[6]; i++) {
+    /* The pages the snapshot carries */
+    uint32_t pages = chihiro_dimm_baseline_pages;
+    saved = g_malloc0(pages);
+    for (uint32_t i = 0; i < hdr[7]; i++) {
         uint32_t pg;
         if ((uint64_t)(p - m->blob) + 4 + DIMM_PAGE_SIZE > m->blob_size) {
             goto out;
         }
         memcpy(&pg, p, 4);
         p += 4;
-        if ((uint64_t)pg * DIMM_PAGE_SIZE + DIMM_PAGE_SIZE > fs_size) {
+        if (pg >= pages) {
             goto out;
         }
         memcpy(fs + (size_t)pg * DIMM_PAGE_SIZE, p, DIMM_PAGE_SIZE);
+        saved[pg] = 1;
         p += DIMM_PAGE_SIZE;
+    }
+
+    /* The rest were as loaded when the snapshot was taken; put back any the
+     * game has changed since, from the game itself. */
+    for (uint32_t pg = 0; pg < pages; pg++) {
+        uint8_t *cur = fs + (size_t)pg * DIMM_PAGE_SIZE;
+        if (saved[pg] ||
+            chihiro_dimm_page_hash(cur) == chihiro_dimm_baseline[pg]) {
+            continue;
+        }
+        if (!pristine) {
+            pristine = chihiro_dimm_rebuild(fs_size);
+            if (!pristine) {
+                snprintf(chihiro_dimm_error, sizeof(chihiro_dimm_error),
+                         "the game '%s' cannot be read",
+                         chihiro_image_basename());
+                goto out;
+            }
+        }
+        const uint8_t *src = pristine + (size_t)pg * DIMM_PAGE_SIZE;
+        if (chihiro_dimm_page_hash(src) != chihiro_dimm_baseline[pg]) {
+            snprintf(chihiro_dimm_error, sizeof(chihiro_dimm_error),
+                     "the game '%s' changed on disk since it was started",
+                     chihiro_image_basename());
+            goto out;
+        }
+        memcpy(cur, src, DIMM_PAGE_SIZE);
     }
     ret = 0;
     chihiro_dimm_error[0] = 0;
 
 out:
-    g_free(ref);
+    g_free(saved);
+    g_free(pristine);
     g_free(m->blob);
     m->blob = NULL;
     m->blob_size = 0;

@@ -523,6 +523,7 @@
   <string name="snapshot_save_failed">Save failed</string>
   <string name="snapshot_loaded">State loaded from Slot %1$d</string>
   <string name="snapshot_load_failed">No save found in Slot %1$d</string>
+  <string name="snapshot_failed_reason">Slot %1$d: %2$s</string>
   <string name="snapshot_select_save_slot">Select slot to save</string>
   <string name="snapshot_select_load_slot">Select slot to load</string>
   <string name="snapshot_empty_slot">Empty slot</string>
