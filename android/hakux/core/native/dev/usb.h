@@ -131,6 +131,21 @@ bool nc_mediaboard_port_out(uint16_t port, uint32_t value);
 bool nc_mediaboard_raw(struct NcVm *vm, uint64_t off, uint8_t *buf, uint32_t len, bool write);
 /* The DIMM's system area, \??\mbcom:, at off (false: not a Chihiro). */
 bool nc_mediaboard_mbcom(struct NcVm *vm, uint64_t off, uint8_t *buf, uint32_t len, bool write);
+/* The board's registers and mailboxes, for savestates (chihiro.c's CHIH
+ * section): the DIMM's system area is not in them, it stays battery-backed. */
+typedef struct NcMbState {
+    uint8_t e0;
+    uint16_t scratch;
+    uint32_t base_reads;
+    uint8_t resp[32];
+    uint32_t reg, saddr, saddr_status, asic_ctrl;
+    uint32_t t3_cmd[8], t3_resp[8];
+    bool e1_armed;
+    uint32_t nd_cmd[8], nd_resp[8];
+    uint32_t nd_cmd_i, nd_resp_i;
+} NcMbState;
+void nc_mediaboard_state_get(NcMbState *s);
+void nc_mediaboard_state_set(const NcMbState *s);
 
 /* ohci.c: the Xbox's first USB controller (0xFED00000, IRQ 1), with gamepads
  * for the players in NC_PAD_MASK (or NC_PADS from player 1; default 1). */

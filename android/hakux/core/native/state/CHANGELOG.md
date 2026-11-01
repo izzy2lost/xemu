@@ -44,3 +44,12 @@ One entry per section version (tools/native/statelock.py).
 
 - the kernel pool's first 64 KiB range sits just above the kernel (physical 0x50000), not 512 KiB under the top reserve (Burnout 2 lays out 0x2377000-0x3F00000 at fixed addresses); a state's boot puts it under the state's process object (v1, v2 states, and states saved since by a run that loaded one: where it was)
 - upgraded: v1..v2 states load
+
+## CHIH v1 (2026-11-01, after 2c68bb7664)
+
+- first version
+
+## THRD v3 (2026-11-01, after 2c68bb7664)
+
+- NcThread.has_wait_irql, wait_irql: the IRQL a thread blocked at, given back when it runs again (a Chihiro's USB driver waits at DISPATCH_LEVEL); v2 states: none, the thread runs at PASSIVE_LEVEL
+- upgraded: v1..v2 states load

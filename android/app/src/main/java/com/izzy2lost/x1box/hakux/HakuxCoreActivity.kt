@@ -580,12 +580,27 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     }
   }
 
-  /** The game's savestates, kept by its disc. */
+  /**
+   * An unpacked Chihiro game's folder (HakuxLaunch.launchChihiro: the XBE it boots from the
+   * hard disk); null for a disc. Every such game starts from the same empty disc.
+   */
+  private val chihiroDir: File? by lazy {
+    val boot = intent.getStringExtra(EXTRA_BOOT_XBE)
+    val prefix = "\\Device\\Harddisk0\\Partition1\\"
+    if (intent.getStringExtra(EXTRA_CHIHIRO_ROMS) == null || boot == null || !boot.startsWith(prefix, true)) {
+      null
+    } else {
+      File(filesDir, "hakux/hdd/Partition1/" + boot.substring(prefix.length).replace('\\', '/')).parentFile
+    }
+  }
+
+  /** The game's savestates, kept by its disc (an unpacked Chihiro game's: by its folder). */
   private val saveStates by lazy {
     HakuxSaveStates(
       this,
-      gameKey = discUri?.toString() ?: intent.getStringExtra(EXTRA_DVD_URI) ?: "",
-      gameName = gameName(),
+      gameKey = chihiroDir?.let { HakuxLaunch.CHIHIRO_STATE_KEY + it.absolutePath }
+        ?: discUri?.toString() ?: intent.getStringExtra(EXTRA_DVD_URI) ?: "",
+      gameName = chihiroDir?.name?.substringBeforeLast('.') ?: gameName(),
       showDialog = ::showMenuDialog,
       captureFrame = ::captureFrame,
       restartInto = ::restartInto,

@@ -115,7 +115,10 @@ object HakuxLaunch {
    * xemu, else files/chihiro-roms; the core has House of the Dead 3's built in otherwise.
    * Returns false when the folder holds no XBE.
    */
-  fun launchChihiro(activity: Activity, dir: File): Boolean {
+  /** A savestate store's key for an unpacked Chihiro game: this, then its folder. */
+  const val CHIHIRO_STATE_KEY = "chihiro:"
+
+  fun launchChihiro(activity: Activity, dir: File, loadState: String? = null): Boolean {
     val xbe = ChihiroGameFolder.bootExecutable(dir) ?: return false
     val partition1 = File(activity.filesDir, "hakux/hdd/Partition1")
     val rel = dir.relativeTo(partition1).path.replace('/', '\\')
@@ -127,6 +130,9 @@ object HakuxLaunch {
         HakuxCoreActivity.EXTRA_CHIHIRO_SAVE,
         File(activity.filesDir, "hakux/chihiro-saves/${dir.name}.sav").apply { parentFile?.mkdirs() }.absolutePath,
       )
+    if (loadState != null) {
+      intent.putExtra(HakuxCoreActivity.EXTRA_LOADSTATE, loadState)
+    }
     EmulationProcessHandoff.launch(activity, intent)
     return true
   }

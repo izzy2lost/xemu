@@ -795,12 +795,20 @@ void nc_dev_ohci_init(struct NcVm *vm)
 bool nc_usb_state_save(NcBuf *b)
 {
     Ohci *o = &g_ohci;
-    if (nc_chihiro_enabled()) {
-        nc_log("hakuX-native-state", "usb: a Chihiro's baseboard isn't in savestates yet");
-        return false;
-    }
     pthread_mutex_lock(&o->lock);
     nc_rec_put(b, &nc_rec_Ohci, o);
+    if (nc_chihiro_enabled()) {
+        /* the baseboard's AN2131s on their root ports, no hubs: their USB
+         * side here, the rest in CHIH (chihiro.c) */
+        for (unsigned i = 0; i < ROOT_PORTS; i++) {
+            nc_buf_u8(b, o->dev[i] != NULL);
+            if (o->dev[i]) {
+                nc_rec_put(b, &nc_rec_NcUsbDev, o->dev[i]);
+            }
+        }
+        pthread_mutex_unlock(&o->lock);
+        return true;
+    }
     for (unsigned i = 0; i < ROOT_PORTS; i++) {
         NcUsbDev *hub = o->dev[i];
         nc_buf_u8(b, hub != NULL);
@@ -826,13 +834,32 @@ bool nc_usb_state_save(NcBuf *b)
 bool nc_usb_state_load(NcRd *r, unsigned v)
 {
     Ohci *o = &g_ohci;
-    if (nc_chihiro_enabled()) {
-        return false;
-    }
     pthread_mutex_lock(&o->lock);
     uint32_t fresh_port[ROOT_PORTS];
     memcpy(fresh_port, o->port, sizeof(fresh_port));
     nc_rec_get(r, &nc_rec_Ohci, o, v);
+    if (nc_chihiro_enabled()) {
+        /* the boards are always plugged in: a state without one isn't a Chihiro's */
+        bool ok = true;
+        for (unsigned i = 0; i < ROOT_PORTS && !r->fail; i++) {
+            const bool had = nc_rd_u8(r);
+            if (had != (o->dev[i] != NULL)) {
+                ok = false;
+                break;
+            }
+            if (had) {
+                nc_rec_get(r, &nc_rec_NcUsbDev, o->dev[i], v);
+            }
+        }
+        /* as below: the line as the registers say, and the frame thread,
+         * asleep since boot, running the controller the state started */
+        o->irq = !((o->intr & INT_MIE) && (o->intr_status & o->intr & ~INT_MIE));
+        update_irq(o);
+        o->frame_t0_ns = now_ns();
+        pthread_cond_broadcast(&o->run);
+        pthread_mutex_unlock(&o->lock);
+        return ok && !r->fail;
+    }
     unsigned changes = 0;
     for (unsigned i = 0; i < ROOT_PORTS && !r->fail; i++) {
         NcUsbDev *hub = o->dev[i];

@@ -863,7 +863,15 @@ class GameLibraryActivity : AppCompatActivity() {
         if (!ok) {
           Toast.makeText(this, R.string.hakux_sync_failed, Toast.LENGTH_LONG).show()
         }
-        HakuxLaunch.launch(this, dvdUri, statePath)
+        // an unpacked Chihiro game's states are kept by its folder (HakuxCoreActivity.chihiroDir)
+        if (dvdUri.startsWith(HakuxLaunch.CHIHIRO_STATE_KEY)) {
+          val dir = File(dvdUri.removePrefix(HakuxLaunch.CHIHIRO_STATE_KEY))
+          if (!HakuxLaunch.launchChihiro(this, dir, statePath)) {
+            Toast.makeText(this, R.string.hakux_state_load_failed, Toast.LENGTH_SHORT).show()
+          }
+        } else {
+          HakuxLaunch.launch(this, dvdUri, statePath)
+        }
       }
     }
   }

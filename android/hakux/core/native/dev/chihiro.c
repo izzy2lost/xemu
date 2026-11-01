@@ -694,6 +694,100 @@ void nc_chihiro_flush(void)
     }
 }
 
+/* ------------------------------------------------------------ savestates */
+
+#define NC_DEF_SECTION CHIH
+#define NC_DEF_FILE "native/state/chihiro.def"
+#include "native/state/def.h"
+#include "native/state/sections.h"
+
+bool nc_chih_state_save(NcBuf *b)
+{
+    nc_buf_u8(b, g_enabled);
+    if (!g_enabled) {
+        return true;
+    }
+    nc_rec_put(b, &nc_rec_Board, g_qc);
+    nc_rec_put(b, &nc_rec_Board, g_sc);
+    nc_rec_put(b, &nc_rec_DriveBoardState, &g_sega838);
+    nc_rec_put(b, &nc_rec_V257DriveBoard, &g_v257);
+    nc_rec_put(b, &nc_rec_CRP1231State, &g_crp1231);
+    NcMbState mb;
+    nc_mediaboard_state_get(&mb);
+    nc_rec_put(b, &nc_rec_NcMbState, &mb);
+    return true;
+}
+
+/* A board as booted, then the state's fields: its pointers and callbacks set
+ * again, as xemu's chihiro_usb_post_load sets them. */
+static bool board_loaded(Board *b)
+{
+    AN2131State *a = &b->an;
+    /* positions out of a state file that would reach past their buffers */
+    if (a->jvs_tx_len < 0 || a->jvs_tx_len > (int)sizeof(a->jvs_tx_buf) || a->jvs_rx_len < 0 ||
+        a->jvs_rx_len > (int)sizeof(a->jvs_rx_buf) || a->jvs_rx_pos < 0 || a->jvs_rx_pos > a->jvs_rx_len) {
+        a->jvs_tx_len = a->jvs_tx_expected = a->jvs_rx_len = a->jvs_rx_pos = 0;
+        return false;
+    }
+    an2131_relink(a);
+    a->ic10_eeprom = b->eeprom;
+    a->ic10_size = sizeof(b->eeprom);
+    a->ic11_eeprom = b->ic11;
+    a->ic11_size = 256;
+    a->extmem = b->extmem[0];
+    /* the state's backup is the game's now: to the save file */
+    a->backup_dirty = b->qc;
+    return true;
+}
+
+bool nc_chih_state_load(NcRd *r, unsigned v)
+{
+    const bool was = nc_rd_u8(r);
+    if (was != g_enabled) {
+        nc_state_fail(was ? "the state is of a Chihiro game, this isn't one" : "the state isn't of a Chihiro game");
+        return false;
+    }
+    if (!was) {
+        return true;
+    }
+    nc_rec_get(r, &nc_rec_Board, g_qc, v);
+    nc_rec_get(r, &nc_rec_Board, g_sc, v);
+    nc_rec_get(r, &nc_rec_DriveBoardState, &g_sega838, v);
+    nc_rec_get(r, &nc_rec_V257DriveBoard, &g_v257, v);
+    nc_rec_get(r, &nc_rec_CRP1231State, &g_crp1231, v);
+    NcMbState mb;
+    nc_mediaboard_state_get(&mb);
+    nc_rec_get(r, &nc_rec_NcMbState, &mb, v);
+    if (r->fail) {
+        return false;
+    }
+    nc_mediaboard_state_set(&mb);
+
+    DriveBoardState *db = &g_sega838;
+    V257DriveBoard *wb = &g_v257;
+    CRP1231State *cr = &g_crp1231;
+    if (!board_loaded(g_qc) || !board_loaded(g_sc) ||
+        db->tx_pos < 0 || db->tx_pos >= (int)sizeof(db->tx_buf) ||
+        db->resp_head < 0 || db->resp_head >= DRIVEBOARD_RESP_SIZE ||
+        db->resp_tail < 0 || db->resp_tail >= DRIVEBOARD_RESP_SIZE ||
+        wb->cmd_pos < 0 || wb->cmd_pos >= V257_CMD_LEN ||
+        wb->resp_head < 0 || wb->resp_head >= V257_RESP_SIZE ||
+        wb->resp_tail < 0 || wb->resp_tail >= V257_RESP_SIZE ||
+        wb->pending_head < 0 || wb->pending_head >= V257_MSG_SLOTS ||
+        wb->pending_tail < 0 || wb->pending_tail >= V257_MSG_SLOTS ||
+        cr->cmd_len < 0 || cr->cmd_len > CRP1231_CMD_MAX ||
+        cr->resp_len < 0 || cr->resp_len > CRP1231_RESP_MAX ||
+        cr->resp_pos < 0 || cr->resp_pos > cr->resp_len ||
+        cr->last_len < 0 || cr->last_len > (int)sizeof(cr->last_frame)) {
+        nc_state_fail("the state's Chihiro boards are damaged");
+        return false;
+    }
+    chihiro_jvs_global = &g_qc->jvs;
+    nc_log(TAG, "savestate: the baseboard restored (QC %s, SC %s)", g_qc->an.cpu_running ? "running" : "stopped",
+           g_sc->an.cpu_running ? "running" : "stopped");
+    return true;
+}
+
 /* ----------------------------------------------------------------- input */
 
 static pthread_mutex_t g_gun_lock = PTHREAD_MUTEX_INITIALIZER;

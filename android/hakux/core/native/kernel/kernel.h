@@ -159,7 +159,8 @@ typedef struct NcThread {
                                 running frame must not be saved over it */
     /* The IRQL it waits at (ps.c nc_ps_schedule): a thread that blocks
      * raised gets it back when it runs again, the CPU meanwhile at
-     * PASSIVE_LEVEL so the DPCs that end its wait run. Not in savestates. */
+     * PASSIVE_LEVEL so the DPCs that end its wait run. In savestates from
+     * THRD v3 (a Chihiro's USB driver waits at DISPATCH_LEVEL). */
     bool has_wait_irql;
     uint8_t wait_irql;
     /* Scheduling (ps.c): threads of one priority run in the order they

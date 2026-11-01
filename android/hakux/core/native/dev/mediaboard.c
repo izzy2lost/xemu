@@ -457,6 +457,51 @@ bool nc_mediaboard_mbcom(NcVm *vm, uint64_t off, uint8_t *buf, uint32_t len, boo
     return true;
 }
 
+void nc_mediaboard_state_get(NcMbState *s)
+{
+    pthread_mutex_lock(&g_lock);
+    memset(s, 0, sizeof(*s));
+    s->e0 = g_e0;
+    s->scratch = g_scratch;
+    s->base_reads = g_base_reads;
+    memcpy(s->resp, g_resp, sizeof(s->resp));
+    s->reg = g_reg;
+    s->saddr = g_saddr;
+    s->saddr_status = g_saddr_status;
+    s->asic_ctrl = g_asic_ctrl;
+    memcpy(s->t3_cmd, g_t3_cmd, sizeof(s->t3_cmd));
+    memcpy(s->t3_resp, g_t3_resp, sizeof(s->t3_resp));
+    s->e1_armed = g_e1_armed;
+    memcpy(s->nd_cmd, g_nd_cmd, sizeof(s->nd_cmd));
+    memcpy(s->nd_resp, g_nd_resp, sizeof(s->nd_resp));
+    s->nd_cmd_i = g_nd_cmd_i;
+    s->nd_resp_i = g_nd_resp_i;
+    pthread_mutex_unlock(&g_lock);
+}
+
+void nc_mediaboard_state_set(const NcMbState *s)
+{
+    pthread_mutex_lock(&g_lock);
+    g_e0 = s->e0;
+    g_scratch = s->scratch;
+    g_base_reads = s->base_reads;
+    memcpy(g_resp, s->resp, sizeof(g_resp));
+    g_reg = s->reg;
+    g_saddr = s->saddr;
+    g_saddr_status = s->saddr_status;
+    g_asic_ctrl = s->asic_ctrl;
+    memcpy(g_t3_cmd, s->t3_cmd, sizeof(g_t3_cmd));
+    memcpy(g_t3_resp, s->t3_resp, sizeof(g_t3_resp));
+    g_e1_armed = s->e1_armed;
+    memcpy(g_nd_cmd, s->nd_cmd, sizeof(g_nd_cmd));
+    memcpy(g_nd_resp, s->nd_resp, sizeof(g_nd_resp));
+    g_nd_cmd_i = s->nd_cmd_i;
+    g_nd_resp_i = s->nd_resp_i;
+    /* the board's messages are edges: a state's raised IRQ 10 stays one */
+    nc_irq_set_edge(MB_IRQ, true);
+    pthread_mutex_unlock(&g_lock);
+}
+
 bool nc_mediaboard_raw(NcVm *vm, uint64_t off, uint8_t *buf, uint32_t len, bool write)
 {
     const uint64_t base = (uint64_t)MBCOM_BASE * 512u;
