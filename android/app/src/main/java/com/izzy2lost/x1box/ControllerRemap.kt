@@ -130,31 +130,62 @@ object ControllerRemap {
   }
 
   /**
-   * Lists every Xbox input with its source. Tapping one waits for a press on
-   * the controller, with a picker as the fallback for pads that report odd
-   * keycodes. [onChanged] gets every edit, already saved.
+   * Lists every Xbox input with its source, then the [hotkeyActions] this
+   * activity carries out. Tapping an input waits for a press on the
+   * controller, with a picker as the fallback for pads that report odd
+   * keycodes; tapping a hotkey waits for a held combination. [onChanged] and
+   * [onHotkeysChanged] get every edit, already saved.
    */
   fun showEditor(
     activity: Activity,
+    hotkeyActions: List<ControllerHotkeys.Action>,
     onChanged: (Map<XboxInput, Source>) -> Unit,
+    onHotkeysChanged: (Map<ControllerHotkeys.Action, List<Source>>) -> Unit,
     onDismiss: () -> Unit,
   ) {
     val map = load(activity)
+    val hotkeys = ControllerHotkeys.load(activity)
+    val inputs = XboxInput.entries
+    val headerRow = inputs.size
     val listView = ListView(activity)
     val adapter = object : BaseAdapter() {
-      override fun getCount() = XboxInput.entries.size
-      override fun getItem(position: Int) = XboxInput.entries[position]
+      override fun getCount() = inputs.size + 1 + hotkeyActions.size
+      override fun getItem(position: Int): Any? = when {
+        position < headerRow -> inputs[position]
+        position == headerRow -> null
+        else -> hotkeyActions[position - headerRow - 1]
+      }
       override fun getItemId(position: Int) = position.toLong()
+      override fun getViewTypeCount() = 2
+      override fun getItemViewType(position: Int) = if (position == headerRow) 1 else 0
+      override fun isEnabled(position: Int) = position != headerRow
       override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+        if (position == headerRow) {
+          return convertView ?: TextView(activity).apply {
+            val dp = activity.resources.displayMetrics.density
+            setPadding((16 * dp).toInt(), (20 * dp).toInt(), (16 * dp).toInt(), (6 * dp).toInt())
+            setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_TitleSmall)
+            text = activity.getString(R.string.remap_hotkeys_header)
+          }
+        }
         val view = convertView ?: activity.layoutInflater.inflate(
           android.R.layout.simple_list_item_2, parent, false
         )
-        val input = getItem(position)
-        val source = map.getValue(input)
-        view.findViewById<TextView>(android.R.id.text1).text = input.label
-        view.findViewById<TextView>(android.R.id.text2).text =
-          if (source == input.defaultSource) source.label
-          else activity.getString(R.string.remap_changed_source, source.label)
+        val title = view.findViewById<TextView>(android.R.id.text1)
+        val detail = view.findViewById<TextView>(android.R.id.text2)
+        when (val item = getItem(position)) {
+          is XboxInput -> {
+            val source = map.getValue(item)
+            title.text = item.label
+            detail.text =
+              if (source == item.defaultSource) source.label
+              else activity.getString(R.string.remap_changed_source, source.label)
+          }
+          is ControllerHotkeys.Action -> {
+            title.text = activity.getString(item.label)
+            detail.text = ControllerHotkeys.label(hotkeys[item])
+          }
+        }
         return view
       }
     }
@@ -166,11 +197,22 @@ object ControllerRemap {
       onChanged(map)
     }
 
+    fun commitHotkeys() {
+      ControllerHotkeys.save(activity, hotkeys)
+      adapter.notifyDataSetChanged()
+      onHotkeysChanged(hotkeys)
+    }
+
     listView.setOnItemClickListener { _, _, position, _ ->
-      val input = XboxInput.entries[position]
-      showCaptureDialog(activity, input) { source ->
-        map[input] = source
-        commit()
+      when (val item = adapter.getItem(position)) {
+        is XboxInput -> showCaptureDialog(activity, item) { source ->
+          map[item] = source
+          commit()
+        }
+        is ControllerHotkeys.Action -> showComboCaptureDialog(activity, activity.getString(item.label)) { combo ->
+          if (combo.isEmpty()) hotkeys.remove(item) else hotkeys[item] = combo
+          commitHotkeys()
+        }
       }
     }
 
@@ -187,10 +229,84 @@ object ControllerRemap {
           dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
             XboxInput.entries.forEach { map[it] = it.defaultSource }
             commit()
+            hotkeys.clear()
+            commitHotkeys()
           }
         }
         dialog.show()
       }
+  }
+
+  /**
+   * Waits for a held combination of up to [ControllerHotkeys.MAX_BUTTONS]
+   * buttons, taken when the last one is let go. [onPicked] gets an empty list
+   * for Clear.
+   */
+  private fun showComboCaptureDialog(activity: Activity, label: String, onPicked: (List<Source>) -> Unit) {
+    lateinit var dialog: AlertDialog
+    var done = false
+    val held = HashSet<Source>()
+    val combo = mutableListOf<Source>()
+
+    fun finish(result: List<Source>) {
+      if (done) return
+      done = true
+      onPicked(result)
+      dialog.dismiss()
+    }
+    fun press(source: Source) {
+      if (held.add(source) && source !in combo && combo.size < ControllerHotkeys.MAX_BUTTONS) {
+        combo += source
+        dialog.setMessage(ControllerHotkeys.label(combo))
+      }
+    }
+    fun release(source: Source) {
+      if (held.remove(source) && held.isEmpty() && combo.isNotEmpty()) finish(combo.toList())
+    }
+
+    dialog = MaterialAlertDialogBuilder(activity, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(activity.getString(R.string.remap_capture_title, label))
+      .setMessage(R.string.hotkey_capture_message)
+      .setNegativeButton(android.R.string.cancel, null)
+      .setNeutralButton(R.string.hotkey_clear) { _, _ -> finish(emptyList()) }
+      .create()
+
+    // As in showCaptureDialog: every pad key is swallowed, so B and Back bind.
+    dialog.setOnKeyListener { _, keyCode, event ->
+      if (!isGamepadEvent(event)) return@setOnKeyListener false
+      if (!done) {
+        Source.fromKeyCode(keyCode)?.let { source ->
+          when (event.action) {
+            KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) press(source)
+            KeyEvent.ACTION_UP -> release(source)
+          }
+        }
+      }
+      true
+    }
+    dialog.setOnShowListener {
+      dialog.window?.decorView?.setOnGenericMotionListener { _, event ->
+        if ((event.source and InputDevice.SOURCE_JOYSTICK) != InputDevice.SOURCE_JOYSTICK) {
+          return@setOnGenericMotionListener false
+        }
+        val left = maxOf(
+          event.getAxisValue(MotionEvent.AXIS_LTRIGGER),
+          event.getAxisValue(MotionEvent.AXIS_BRAKE)
+        )
+        val right = maxOf(
+          event.getAxisValue(MotionEvent.AXIS_RTRIGGER),
+          event.getAxisValue(MotionEvent.AXIS_GAS)
+        )
+        if (!done) {
+          if (left > ControllerHotkeys.TRIGGER_PRESS) press(Source.LEFT_TRIGGER)
+          else if (left < ControllerHotkeys.TRIGGER_RELEASE) release(Source.LEFT_TRIGGER)
+          if (right > ControllerHotkeys.TRIGGER_PRESS) press(Source.RIGHT_TRIGGER)
+          else if (right < ControllerHotkeys.TRIGGER_RELEASE) release(Source.RIGHT_TRIGGER)
+        }
+        true
+      }
+    }
+    dialog.show()
   }
 
   private fun showCaptureDialog(activity: Activity, input: XboxInput, onPicked: (Source) -> Unit) {

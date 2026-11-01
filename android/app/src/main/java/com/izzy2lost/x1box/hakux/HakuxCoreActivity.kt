@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.izzy2lost.x1box.XboxInsigniaHelper
+import com.izzy2lost.x1box.ControllerHotkeys
 import com.izzy2lost.x1box.ControllerRemap
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -333,7 +334,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {
     super.onWindowFocusChanged(hasFocus)
-    if (hasFocus) hideSystemBars()
+    if (hasFocus) hideSystemBars() else hotkeys.reset()
   }
 
   private fun hideSystemBars() {
@@ -652,7 +653,9 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       val done = holdPause()
       ControllerRemap.showEditor(
         this,
+        hotkeyActions = ControllerHotkeys.Action.entries,
         onChanged = { router?.setRemap(it) },
+        onHotkeysChanged = hotkeys::setBindings,
         onDismiss = {
           hideSystemBars()
           done()
@@ -1151,6 +1154,44 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var selectDown = false
   private var comboTriggered = false
 
+  /** The controller hotkeys (ControllerHotkeys), ahead of the router. */
+  private val hotkeys by lazy { ControllerHotkeys.Matcher(ControllerHotkeys.load(this), ::runHotkey) }
+  private var exitHotkeyArmedAt = 0L
+
+  private fun runHotkey(action: ControllerHotkeys.Action) {
+    if (touchLayoutToolbar != null || menuDialogs > 0) return
+    when (action) {
+      ControllerHotkeys.Action.MENU -> showMenu()
+      ControllerHotkeys.Action.SAVE_STATE -> {
+        if (!nativeStatesAvailable()) return
+        router?.reset()                 /* the busy dialog takes the releases */
+        saveStates.quickSave(ControllerHotkeys.slot(this))
+      }
+      ControllerHotkeys.Action.LOAD_STATE -> {
+        if (!nativeStatesAvailable()) return
+        val slot = ControllerHotkeys.slot(this)
+        if (!saveStates.quickLoad(slot)) {
+          Toast.makeText(this, getString(R.string.hotkey_slot_empty, slot), Toast.LENGTH_SHORT).show()
+        }
+      }
+      ControllerHotkeys.Action.NEXT_SLOT, ControllerHotkeys.Action.PREVIOUS_SLOT -> {
+        val slot = ControllerHotkeys.stepSlot(this, if (action == ControllerHotkeys.Action.NEXT_SLOT) 1 else -1)
+        Toast.makeText(this, getString(R.string.hotkey_slot_selected, slot), Toast.LENGTH_SHORT).show()
+      }
+      ControllerHotkeys.Action.FAST_FORWARD -> setFastForward(!fastForward)
+      ControllerHotkeys.Action.EXIT_GAME -> {
+        /* twice within the window, so a stray press doesn't end the game */
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - exitHotkeyArmedAt <= HOTKEY_EXIT_CONFIRM_MS) {
+          exitGame()
+        } else {
+          exitHotkeyArmedAt = now
+          Toast.makeText(this, R.string.hotkey_exit_confirm, Toast.LENGTH_SHORT).show()
+        }
+      }
+    }
+  }
+
   private fun menuCombo(event: KeyEvent): Boolean {
     val start = event.keyCode == KeyEvent.KEYCODE_BUTTON_START
     val select = event.keyCode == KeyEvent.KEYCODE_BUTTON_SELECT || event.keyCode == KeyEvent.KEYCODE_BACK
@@ -1190,6 +1231,9 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
         if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) showMenu()
         return true
       }
+      if (touchLayoutToolbar == null && hotkeys.onKey(event)) {
+        return true
+      }
       if (menuCombo(event)) {
         router?.reset()
         return true
@@ -1202,6 +1246,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+    hotkeys.onMotion(event)
     if (touchLayoutToolbar == null && router?.onMotion(event) == true) {
       return true
     }
@@ -1381,6 +1426,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
 
     /** Fast-forward's speed: the game's time at this many times real time. */
     private const val FAST_FORWARD_SPEED = 2
+    private const val HOTKEY_EXIT_CONFIRM_MS = 2000L
 
     private const val REQUEST_IMPORT_CHEATS = 0x4843
     private const val LAN_EVENT_POLL_MS = 1000L

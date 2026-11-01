@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.InputDevice
@@ -56,6 +57,9 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
     private const val TOTAL_SNAPSHOT_SLOTS = 10
     private const val TAG = "MainActivity"
     private const val EXIT_WATCHDOG_MS = 8000L
+    private const val HOTKEY_EXIT_CONFIRM_MS = 2000L
+    /* xemu has no speed control, so no fast forward */
+    private val XEMU_HOTKEYS = ControllerHotkeys.Action.entries - ControllerHotkeys.Action.FAST_FORWARD
     private const val LAN_EVENT_POLL_MS = 1000L
   }
 
@@ -83,6 +87,9 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
   private var startButtonDown = false
   private var selectButtonDown = false
   private var comboTriggered = false
+  private val hotkeys by lazy { ControllerHotkeys.Matcher(ControllerHotkeys.load(this), ::runHotkey) }
+  private var hotkeySnapshotBusy = false
+  private var exitHotkeyArmedAt = 0L
   private var suspendedByLifecycle = false
   private var resumeEmulationOnMenuDismiss = false
   private var startupSnapshotSlot: Int? = null
@@ -196,6 +203,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       // triggers can stay "pressed" if the touch UP event is never delivered.
       onScreenController?.resetAllInputs()
       controllerBridge?.reset()
+      hotkeys.reset()
     }
   }
 
@@ -251,10 +259,53 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       return true
     }
 
+    if (isGamepadKeyEvent(event) && !isEditingTouchLayout() && hotkeys.onKey(event)) {
+      return true
+    }
     if (handleGamepadMenuCombo(event)) {
       return true
     }
     return super.dispatchKeyEvent(event)
+  }
+
+  override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+    hotkeys.onMotion(event)
+    return super.dispatchGenericMotionEvent(event)
+  }
+
+  private fun runHotkey(action: ControllerHotkeys.Action) {
+    if (pendingCloseAction != PendingCloseAction.NONE) {
+      return
+    }
+    when (action) {
+      ControllerHotkeys.Action.MENU -> showInGameMenu()
+      ControllerHotkeys.Action.SAVE_STATE, ControllerHotkeys.Action.LOAD_STATE -> {
+        if (hotkeySnapshotBusy) {
+          return
+        }
+        // Same route as the menu's slot list: paused, then resumed once done.
+        hotkeySnapshotBusy = true
+        nativePauseEmulation()
+        runSnapshotOperation(ControllerHotkeys.slot(this), action == ControllerHotkeys.Action.SAVE_STATE) {
+          hotkeySnapshotBusy = false
+        }
+      }
+      ControllerHotkeys.Action.NEXT_SLOT, ControllerHotkeys.Action.PREVIOUS_SLOT -> {
+        val slot = ControllerHotkeys.stepSlot(this, if (action == ControllerHotkeys.Action.NEXT_SLOT) 1 else -1)
+        Toast.makeText(this, getString(R.string.hotkey_slot_selected, slot), Toast.LENGTH_SHORT).show()
+      }
+      ControllerHotkeys.Action.EXIT_GAME -> {
+        // Twice within the window, so a stray press doesn't end the session.
+        val now = SystemClock.uptimeMillis()
+        if (now - exitHotkeyArmedAt <= HOTKEY_EXIT_CONFIRM_MS) {
+          exitToGameLibrary()
+        } else {
+          exitHotkeyArmedAt = now
+          Toast.makeText(this, R.string.hotkey_exit_confirm, Toast.LENGTH_SHORT).show()
+        }
+      }
+      ControllerHotkeys.Action.FAST_FORWARD -> {}
+    }
   }
 
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -867,7 +918,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       .show()
   }
 
-  private fun runSnapshotOperation(slot: Int, save: Boolean) {
+  private fun runSnapshotOperation(slot: Int, save: Boolean, onDone: () -> Unit = {}) {
     Thread {
       val ok = if (save) nativeSaveSnapshot(slotName(slot)) else nativeLoadSnapshot(slotName(slot))
       runOnUiThread {
@@ -882,6 +933,7 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         hideSystemUI()
         resumeEmulationIfSafe()
+        onDone()
       }
     }.start()
   }
@@ -1006,7 +1058,9 @@ class MainActivity : SDLActivity(), InputManager.InputDeviceListener {
       entry(getString(R.string.in_game_menu_remap_controller), R.drawable.ic_xemu_gamepad) {
         ControllerRemap.showEditor(
           this,
+          hotkeyActions = XEMU_HOTKEYS,
           onChanged = ::applyControllerRemap,
+          onHotkeysChanged = hotkeys::setBindings,
           onDismiss = {
             hideSystemUI()
             resumeEmulationIfSafe()

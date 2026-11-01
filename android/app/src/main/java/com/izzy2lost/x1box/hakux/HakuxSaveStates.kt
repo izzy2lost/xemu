@@ -114,6 +114,16 @@ class HakuxSaveStates(
     )
   }
 
+  /** A hotkey's save, straight into [slot]. */
+  fun quickSave(slot: Int) = save(slot)
+
+  /** A hotkey's load from [slot]; false when it holds no state. */
+  fun quickLoad(slot: Int): Boolean {
+    if (!store.state(slot).isFile) return false
+    load(slot)
+    return true
+  }
+
   private fun busy(text: String): AlertDialog {
     val row = LinearLayout(activity).apply {
       orientation = LinearLayout.HORIZONTAL
