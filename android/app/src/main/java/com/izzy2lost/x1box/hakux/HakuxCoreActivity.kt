@@ -292,6 +292,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     if (nativePaused != want) {
       nativePaused = want
       nativeSetPaused(want)
+      if (want) rumble?.stop()      /* the title's last rumble would go on under the menu */
     }
   }
 
@@ -313,13 +314,14 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     fpsView?.visibility = if (prefs.getBoolean("show_fps", false)) View.VISIBLE else View.GONE
     handler.removeCallbacks(poll)
     handler.postDelayed(poll, POLL_MS)
-    handler.removeCallbacks(rumble)
-    handler.postDelayed(rumble, RUMBLE_MS)
+    handler.removeCallbacks(rumblePoll)
+    handler.postDelayed(rumblePoll, RUMBLE_MS)
   }
 
   override fun onPause() {
     handler.removeCallbacks(poll)
-    handler.removeCallbacks(rumble)
+    handler.removeCallbacks(rumblePoll)
+    rumble?.stop()
     router?.reset()
     activityPaused = true
     syncPause()
@@ -328,6 +330,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
 
   override fun onDestroy() {
     handler.removeCallbacksAndMessages(null)
+    rumble?.stop()
     (getSystemService(Context.INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(this)
     super.onDestroy()
   }
@@ -527,6 +530,13 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
         nativeSetPads(mask)
       },
     )
+    val r = router!!
+    rumble = HakuxRumble(
+      this,
+      deviceOf = r::rumbleDevice,
+      playing = r::pluggedMask,
+      rumbleOf = { p -> nativeGetRumble(p) },
+    )
     (getSystemService(Context.INPUT_SERVICE) as InputManager).registerInputDeviceListener(this, null)
     updateControllerVisibility()
   }
@@ -551,31 +561,15 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   override fun onInputDeviceChanged(deviceId: Int) = updateControllerVisibility()
   override fun onInputDeviceRemoved(deviceId: Int) {
     router?.forget(deviceId)
+    rumble?.forget(deviceId)
     updateControllerVisibility()
   }
 
-  /** The rumble the title asks of each player, on that player's controller used last. */
-  private val rumbleOn = BooleanArray(4)
-  private val rumble = object : Runnable {
+  /** The title's rumble, on each player's controller used last (or the device's own motor). */
+  private var rumble: HakuxRumble? = null
+  private val rumblePoll = object : Runnable {
     override fun run() {
-      val r = router
-      if (r != null && Build.VERSION.SDK_INT >= 31) {
-        val mask = r.pluggedMask()
-        for (p in 0 until 4) {
-          if (mask shr p and 1 == 0) continue
-          val v = nativeGetRumble(p)
-          val amp = (maxOf(v ushr 16, v and 0xFFFF) ushr 8).coerceIn(0, 255)
-          val dev = InputDevice.getDevice(r.rumbleDevice(p)) ?: continue
-          val vib = dev.vibratorManager.defaultVibrator
-          if (amp > 0 && vib.hasVibrator()) {
-            vib.vibrate(android.os.VibrationEffect.createOneShot(RUMBLE_MS + 20, amp.coerceAtLeast(1)))
-            rumbleOn[p] = true
-          } else if (rumbleOn[p]) {
-            vib.cancel()
-            rumbleOn[p] = false
-          }
-        }
-      }
+      if (nativePaused != true) rumble?.poll()
       handler.postDelayed(this, RUMBLE_MS)
     }
   }
