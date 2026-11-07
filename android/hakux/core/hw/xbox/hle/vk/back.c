@@ -291,7 +291,7 @@ static void gput_collect(unsigned slot)
 
 static void gput_begin(VkCommandBuffer cb, unsigned slot)
 {
-    if (!g_hle_prof_on || g_gput.failed) {
+    if (!g_hle_prof_on || g_gput.failed || hle_quirk(HLE_QUIRK_NO_TIMESTAMPS)) {
         return;
     }
     if (!g_gput.pool) {
@@ -354,7 +354,7 @@ static struct {
 static void pt_slot_begin(VkCommandBuffer cb, unsigned slot)
 {
     g_pt.n[slot] = 0;
-    if (!g_hle_prof_on || g_pt.failed) {
+    if (!g_hle_prof_on || g_pt.failed || hle_quirk(HLE_QUIRK_NO_TIMESTAMPS)) {
         return;
     }
     if (!g_pt.pool) {

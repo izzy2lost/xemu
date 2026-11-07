@@ -9,6 +9,7 @@
 #include "hw/xbox/hle/mem/guestmem.h"
 #include "hw/xbox/hle/vk/back_int.h"
 #include "hw/xbox/hle/vk/guest_ram.h"
+#include "hw/xbox/hle/vk/quirks.h"
 
 #ifdef __ANDROID__
 #include "hw/xbox/hle/prop.h"
@@ -128,6 +129,45 @@ static void publish(uint64_t v)
     }
 }
 
+/* A wait that failed loses the device; the log has what it waited for and
+ * where the timeline stood (the loss's message names the call alone) */
+static void wait_failed(VkResult r, const char *what, uint64_t value)
+{
+    hle_log("hakuX-hle-back", "%s failed for %llu: submitted %llu, completed %llu", what,
+            (unsigned long long)value, (unsigned long long)hle_atomic_read(&g_tl.submitted),
+            (unsigned long long)hle_atomic_read(&g_tl.completed));
+    hle_vk_lose(r, what);
+}
+
+/* The poll's half-millisecond steps cost the waiter at most that in latency;
+ * the GPU work it waits for is milliseconds. */
+VkResult hle_tl_sem_wait(const struct VolkDeviceTable *t, VkSemaphore sem, uint64_t value,
+                         uint64_t timeout_ns)
+{
+    if (likely(!hle_quirk(HLE_QUIRK_NO_SEM_WAIT))) {
+        VkSemaphoreWaitInfo wi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                   .semaphoreCount = 1, .pSemaphores = &sem,
+                                   .pValues = &value };
+        return t->vkWaitSemaphores(g_hvk.dev, &wi, timeout_ns);
+    }
+    const int64_t end = hle_now_ns() + (int64_t)timeout_ns;
+    const struct timespec nap = { 0, 500 * 1000 };
+    for (;;) {
+        uint64_t v = 0;
+        VkResult r = t->vkGetSemaphoreCounterValue(g_hvk.dev, sem, &v);
+        if (r != VK_SUCCESS) {
+            return r;
+        }
+        if (v >= value) {
+            return VK_SUCCESS;
+        }
+        if (hle_now_ns() >= end) {
+            return VK_TIMEOUT;
+        }
+        nanosleep(&nap, NULL);
+    }
+}
+
 static void *watch_thread(void *opaque)
 {
     uint64_t done = 0;
@@ -138,10 +178,7 @@ static void *watch_thread(void *opaque)
             continue;
         }
         uint64_t want = done + 1;
-        VkSemaphoreWaitInfo wi = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-            .semaphoreCount = 1, .pSemaphores = &g_tl.sem, .pValues = &want };
-        VkResult r = T.vkWaitSemaphores(g_hvk.dev, &wi, 100 * 1000 * 1000ull);
+        VkResult r = hle_tl_sem_wait(&T, g_tl.sem, want, 100 * 1000 * 1000ull);
         if (r == VK_TIMEOUT) {
             if (++g_tl.timeouts % 10 == 0) {
                 hle_log("hakuX-hle-back", "GPU has not reached %llu for %llu s",
@@ -151,7 +188,7 @@ static void *watch_thread(void *opaque)
             continue;
         }
         if (r != VK_SUCCESS) {
-            hle_vk_lose(r, "vkWaitSemaphores (timeline)");
+            wait_failed(r, "vkWaitSemaphores (timeline)", want);
             return NULL;
         }
         uint64_t v = 0;
@@ -275,12 +312,9 @@ void hle_tl_wait(uint64_t value)
     }
     uint32_t pa = hle_hitch_enter(HLE_ACT_GPU);
     while (hle_tl_completed() < value) {
-        VkSemaphoreWaitInfo wi = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-            .semaphoreCount = 1, .pSemaphores = &g_tl.sem, .pValues = &value };
-        const VkResult r = T.vkWaitSemaphores(g_hvk.dev, &wi, 100 * 1000 * 1000ull);
+        const VkResult r = hle_tl_sem_wait(&T, g_tl.sem, value, 100 * 1000 * 1000ull);
         if (r != VK_SUCCESS && r != VK_TIMEOUT) {
-            hle_vk_lose(r, "vkWaitSemaphores");    /* completed: all (hle_tl_lose) */
+            wait_failed(r, "vkWaitSemaphores", value);  /* completed: all (hle_tl_lose) */
         }
         uint64_t v = 0;
         T.vkGetSemaphoreCounterValue(g_hvk.dev, g_tl.sem, &v);

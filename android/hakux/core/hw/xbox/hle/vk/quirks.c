@@ -33,11 +33,6 @@ static bool mesa_turnip(const HleDriver *d)
     return d->drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
 }
 
-static bool not_turnip(const HleDriver *d)
-{
-    return !mesa_turnip(d);
-}
-
 /* Mali hardware, any driver (vendor 0x13B5: Arm's, PanVK) */
 static bool mali(const HleDriver *d)
 {
@@ -47,6 +42,58 @@ static bool mali(const HleDriver *d)
 static bool mali_g57(const HleDriver *d)
 {
     return mali(d) && strstr(d->props.deviceName, "Mali-G57") != NULL;
+}
+
+/* Arm's own Mali driver. malisx2 (a custom driver) reports Arm's vendor and
+ * driver IDs too; "malisx2" in driverInfo tells it apart, and the blob's
+ * bugs below are not its. */
+static bool arm_blob(const HleDriver *d)
+{
+    return d->drv.driverID == VK_DRIVER_ID_ARM_PROPRIETARY &&
+           strstr(d->drv.driverInfo, "malisx2") == NULL;
+}
+
+/* Arm's driver's release, from its driverInfo ("v1.r34p0-01eac0.<build>":
+ * 34); 0 for another driver or info that names none */
+static unsigned arm_release(const HleDriver *d)
+{
+    const char *r = arm_blob(d) ? d->drv.driverInfo : NULL;
+    while (r && (r = strstr(r, ".r")) != NULL) {
+        unsigned n = 0;
+        for (r += 2; *r >= '0' && *r <= '9' && n < 1000; r++) {
+            n = n * 10 + (unsigned)(*r - '0');
+        }
+        if (n && *r == 'p') {
+            return n;
+        }
+    }
+    return 0;
+}
+
+static bool arm_before_r40(const HleDriver *d)
+{
+    const unsigned r = arm_release(d);
+    return r && r < 40;
+}
+
+static bool mali_g52_arm(const HleDriver *d)
+{
+    return arm_blob(d) && strstr(d->props.deviceName, "Mali-G52") != NULL;
+}
+
+/* The present CPU wait works around Qualcomm's driver, whose present holds
+ * the queue's lock for 3-6 ms while it waits; the Mali-G52's (Arm's r34p0)
+ * returns at once, so the wait only cost there (upstream: the presenter
+ * spent 620-730 ms/s waiting for its passes, without it 0.3 ms/s). Arm's
+ * other GPUs and releases are untested, so they keep it. */
+static bool not_turnip_not_g52_arm(const HleDriver *d)
+{
+    return !mesa_turnip(d) && !mali_g52_arm(d);
+}
+
+static bool no_timestamps_on(const HleDriver *d)
+{
+    return arm_blob(d) && (strstr(d->props.deviceName, "Mali-G615") != NULL || mali_g52_arm(d));
 }
 
 /* Seen on (driver, version, what showed it). */
@@ -74,13 +121,29 @@ static const HleQuirk k_quirks[] = {
      * 3-6 ms a refresh in the driver, the queue's lock held (Halo 2).
      * Turnip's makes a sync file and returns (Mesa vk_android.c); the other
      * drivers are untested, so they keep the wait. */
-    { HLE_QUIRK_PRESENT_CPU_WAIT, "present_cpu_wait", not_turnip },
+    { HLE_QUIRK_PRESENT_CPU_WAIT, "present_cpu_wait", not_turnip_not_g52_arm },
     /* Mali-G57 MC2, Arm's r54p1 (an Infinix X6858 user's diag log,
      * 2026-10-26): Mortal Kombat Shaolin Monks' meshes exploded; its vertices
      * are 18 bytes, two floats at offset 10, and the diag build counted 7.8
      * million misaligned attribute fetches in 230 s, nothing else wrong.
      * The driver has no VK_EXT_legacy_vertex_attributes. */
     { HLE_QUIRK_VB_ALIGN, "vb_align", mali_g57 },
+    /* Mali-G57 MC4, Arm's r40p0 (upstream: an Anbernic RG556, Unisoc T820,
+     * 2026-10-31): Morrowind lost the device 0.2 s into its loading screen
+     * every time, the kernel log "JS: Job Hard-Stopped" and "GPU fault 0x4002
+     * from job slot 0" (fragment). Its draws are W-buffered (ZENABLE 2);
+     * HAKUX_HLE_DBGFLAGS=8 alone (W-buffering off) ran it at 60 fps. */
+    { HLE_QUIRK_NO_WBUF, "no_wbuf", mali_g57 },
+    /* Mali-G52 MP2 and Mali-G57, Arm's r34p0 (upstream, 2026-10-26..30): the
+     * host wait on the timeline semaphore returned VK_ERROR_DEVICE_LOST
+     * mid-game, across titles, while the GPU had run everything up to the
+     * call; the counter query never failed, so the waits poll it: ~40
+     * minutes of play without a loss after. r40p0 and r54p1 ran without it,
+     * the releases between are untested: on for Arm's driver before r40. */
+    { HLE_QUIRK_NO_SEM_WAIT, "no_sem_wait", arm_before_r40 },
+    /* ARMSX2: "Mali-G615's timestamp queries never resolve" under Arm's
+     * driver; the Mali-G52's r34p0 the same (upstream) */
+    { HLE_QUIRK_NO_TIMESTAMPS, "no_timestamps", no_timestamps_on },
 };
 
 static uint32_t g_defaults;

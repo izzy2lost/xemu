@@ -11,6 +11,11 @@
 
 /* timeline.c */
 int hle_tl_init(void (*on_complete)(uint64_t completed));
+/* Wait for a timeline semaphore's value through a device table (the back
+ * end's, or the presenter's own): the driver's host wait, or with
+ * no_sem_wait a poll of the counter (quirks.h). */
+VkResult hle_tl_sem_wait(const struct VolkDeviceTable *t, VkSemaphore sem, uint64_t value,
+                         uint64_t timeout_ns);
 VkSemaphore hle_tl_sem(void);
 void hle_tl_signaled(uint64_t value);
 /* Before each submit: the GPU left idle a moment when the app asked
