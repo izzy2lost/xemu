@@ -23,7 +23,18 @@ import java.security.MessageDigest
 object XbeMetadataReader {
 
   /** version: the certificate's, which tells a disc's releases apart (54430006 is .5 and .6). */
-  class Metadata(val titleId: Long, val titleName: String, val icon: Bitmap?, val version: Long = 0) {
+  class Metadata(
+    val titleId: Long,
+    val titleName: String,
+    val icon: Bitmap?,
+    val version: Long = 0,
+    /**
+     * The raw keys its saves are signed with, by title ID: its own (certificate +0xC0) and, per
+     * alternate title ID (+0x5C, 16 of them), that title's (+0xD0, 16 bytes each). The kernel
+     * derives each with the BIOS's certificate key (HakuxSaveResigner).
+     */
+    val saveKeys: Map<Long, ByteArray> = emptyMap(),
+  ) {
     /** The disc release's key, title ID and version (4D530004.9), as hakuX keys mods and cheats. */
     val gameKey: String get() = String.format(java.util.Locale.ROOT, "%08X.%d", titleId, version)
   }
@@ -65,6 +76,10 @@ object XbeMetadataReader {
   private const val CERTIFICATE_TITLE_NAME_LENGTH = 40
   private const val CERTIFICATE_VERSION = 0xAC
   private const val CERTIFICATE_MIN_SIZE = 0xB0
+  private const val CERTIFICATE_ALT_TITLE_IDS = 0x5C
+  private const val CERTIFICATE_SIGNATURE_KEY = 0xC0
+  private const val CERTIFICATE_ALT_SIGNATURE_KEYS = 0xD0
+  private const val CERTIFICATE_KEYS_SIZE = 0x1D0
 
   /* Bounds on a well-formed executable, so a damaged one can't make this read gigabytes. */
   private const val MAX_HEADERS_SIZE = 1024 * 1024
@@ -238,7 +253,16 @@ object XbeMetadataReader {
         break
       }
     }
-    return Metadata(titleId, name.toString().trim(), icon, version)
+    val saveKeys = LinkedHashMap<Long, ByteArray>()
+    if (headerOffset(u32(headers, XBE_CERTIFICATE_ADDRESS), CERTIFICATE_KEYS_SIZE.toLong()) != null) {
+      fun key(at: Int) = headers.copyOfRange(at, at + 16)
+      saveKeys[titleId] = key(certificate + CERTIFICATE_SIGNATURE_KEY)
+      for (i in 0 until 16) {
+        val alt = u32(headers, certificate + CERTIFICATE_ALT_TITLE_IDS + i * 4)
+        if (alt != 0L && alt !in saveKeys) saveKeys[alt] = key(certificate + CERTIFICATE_ALT_SIGNATURE_KEYS + i * 16)
+      }
+    }
+    return Metadata(titleId, name.toString().trim(), icon, version, saveKeys)
   }
 
   /*

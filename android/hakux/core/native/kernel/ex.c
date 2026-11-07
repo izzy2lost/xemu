@@ -10,6 +10,7 @@
 #include "native/core/xbe_load.h"
 #include "native/core/xdvdfs.h"
 #include "native/dev/dev.h"
+#include "native/kernel/xc_crypto.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -135,6 +136,24 @@ void nc_kernel_set_video(int64_t flags, int av_pack)
     g_av_pack = av_pack;
 }
 
+/* x1box: the console keys of xemu's console (nc_kernel_set_console_keys),
+ * so that saves are signed as xemu signs them: one hard disk for both
+ * cores. */
+static uint8_t g_cert_key[16], g_console_hd[16];
+static bool g_have_cert, g_have_hd;
+
+void nc_kernel_set_console_keys(const uint8_t *cert_key, const uint8_t *hd_key)
+{
+    g_have_cert = cert_key != NULL;
+    g_have_hd = hd_key != NULL;
+    if (cert_key) {
+        memcpy(g_cert_key, cert_key, 16);
+    }
+    if (hd_key) {
+        memcpy(g_console_hd, hd_key, 16);
+    }
+}
+
 /* The app's language (nc_kernel_set_language); 0 keeps the stored one. */
 static int g_language;
 
@@ -242,6 +261,14 @@ static uint8_t *eeprom(NcKernel *k)
         if (!memcmp(g_eeprom + 0x1C, k_zero16, 16)) {
             memcpy(g_eeprom + 0x1C, g_eeprom + 0x36, 16);
             eeprom_store();
+        }
+        /* x1box: xemu's console's HD key, kept, so that saves locked to the
+         * console are xemu's too (the app re-signs the ones made before:
+         * HakuxSaveResigner, which keeps the key this had) */
+        if (g_have_hd && memcmp(g_eeprom + 0x1C, g_console_hd, 16)) {
+            memcpy(g_eeprom + 0x1C, g_console_hd, 16);
+            eeprom_store();
+            nc_log("hakuX-native", "ex: the HD key is xemu's console's now");
         }
         /* Every console had the same serial (eeprom_create's) and an empty
          * online key: Insignia (Xbox Live) tells consoles apart by them, so
@@ -925,12 +952,50 @@ const uint8_t *nc_kernel_eeprom(NcKernel *k)
     return eeprom(k);
 }
 
+/*
+ * x1box: the title's keys as the console's kernel makes them at its start,
+ * each HMAC-SHA1(the certificate key, the key the XBE's certificate holds)
+ * cut to 16 bytes: XboxSignatureKey (its saves, certificate +0xC0),
+ * XboxLANKey (System Link, +0xB0), XboxAlternateSignatureKeys (the saves of
+ * the alternate title IDs it reads, +0xD0, 16 of them). Without the
+ * certificate key (no BIOS dump) they stay the zero placeholders.
+ */
+static void derive_keys(NcKernel *k, const char *name, uint32_t src, unsigned n)
+{
+    const uint32_t va = data_va(k, name);
+    if (!va) {
+        return;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        uint8_t d[20];
+        nc_hmac_sha1(g_cert_key, 16, nc_vm_host(k->vm, src + 16 * i), 16, NULL, 0, d);
+        memcpy(nc_vm_host(k->vm, va + 16 * i), d, 16);
+    }
+}
+
+static void set_title_keys(NcKernel *k)
+{
+    if (!g_have_cert || !k->xbe_base) {
+        return;
+    }
+    const uint32_t cert = nc_vm_rd32(k->vm, k->xbe_base + 0x118);
+    if (nc_vm_phys(k->vm, cert) == UINT32_MAX || nc_vm_phys(k->vm, cert + 0x1CF) == UINT32_MAX ||
+        nc_vm_rd32(k->vm, cert) < 0x1D0) {
+        nc_log("hakuX-native", "ex: the title's certificate has no keys: they stay zero");
+        return;
+    }
+    derive_keys(k, "XboxSignatureKey", cert + 0xC0, 1);
+    derive_keys(k, "XboxLANKey", cert + 0xB0, 1);
+    derive_keys(k, "XboxAlternateSignatureKeys", cert + 0xD0, 16);
+}
+
 void nc_kernel_set_hd_key(NcKernel *k)
 {
     const uint32_t va = data_va(k, "XboxHDKey");
     if (va) {
         memcpy(nc_vm_host(k->vm, va), eeprom(k) + 0x1C, 16);   /* see eeprom() */
     }
+    set_title_keys(k);
 }
 
 void nc_ex_register(NcKernel *k)

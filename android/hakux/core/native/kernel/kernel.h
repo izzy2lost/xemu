@@ -433,6 +433,11 @@ void nc_kernel_title_loaded(NcKernel *k, const struct NcDisc *disc, const struct
  * title's start, and after a state load (the state holds its run's kernel
  * memory). */
 void nc_kernel_set_hd_key(NcKernel *k);
+/* x1box: the keys xemu's console signs with, before the title starts (NULL:
+ * not known): the BIOS's certificate key, from which each title's signature,
+ * LAN and alternate keys come (set with the HD key, nc_kernel_set_hd_key),
+ * and the HD key of xemu's EEPROM, which this console's EEPROM takes. */
+void nc_kernel_set_console_keys(const uint8_t *cert_key, const uint8_t *hd_key);
 /* The console's EEPROM image (ex.c), the encrypted section in the clear. */
 const uint8_t *nc_kernel_eeprom(NcKernel *k);
 

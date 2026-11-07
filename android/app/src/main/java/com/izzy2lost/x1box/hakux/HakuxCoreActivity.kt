@@ -148,6 +148,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
      * in as its player when it is first used (HakuxPadRouter). */
     args += "pads=" + Integer.toHexString(router?.pluggedMask() ?: 1)
     vkDriverArg()?.let { args += it }
+    keysArg(hdd)?.let { args += it }
     modsArg()?.let { args += it }
     (lanArg() ?: natArg())?.let { args += it }
     return args.toTypedArray()
@@ -210,10 +211,28 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     }
   }
 
+  /** The disc's default.xbe (title, release, save keys), read once. */
+  private val discMeta by lazy {
+    discUri?.let { runCatching { XbeMetadataReader.read(this, it, icon = false) }.getOrNull() }
+  }
+
+  /**
+   * "keys=" with xemu's console's keys (HakuxConsoleKeys), so the core signs saves as xemu does;
+   * this game's saves made under the core's old keys are re-signed to them first.
+   */
+  private fun keysArg(hdd: File): String? {
+    val keys = HakuxConsoleKeys.load(this)
+    Log.i(TAG, "console keys: certificate ${if (keys.cert != null) "from the BIOS" else "none"}, " +
+      "HD ${if (keys.hd != null) "xemu's" else "the core's own"}")
+    if (intent.getStringExtra(EXTRA_BOOT_XBE) == null) {
+      HakuxSaveResigner.beforeRun(hdd, keys, discMeta?.saveKeys.orEmpty())
+    }
+    return keys.arg()
+  }
+
   /** "mods=<manifest>" with the game's mods that are on and its cheats (HakuxModRun), when it has any. */
   private fun modsArg(): String? {
-    val uri = discUri ?: return null
-    val key = runCatching { XbeMetadataReader.read(this, uri, icon = false)?.gameKey }.getOrNull() ?: return null
+    val key = discMeta?.gameKey ?: return null
     gameKey = key
     cheatStore = HakuxCheatStore(this, key)
     gameMods = runCatching { HakuxModCatalog.load(this, key) }.getOrDefault(emptyList())

@@ -74,6 +74,24 @@ static bool g_sdl_pads;
 
 /* The overlay o over the controller state s: buttons and analog buttons
  * either, each stick the one pushed furthest. */
+/* 16 bytes from exactly 32 hex digits */
+static bool hex16(const char *p, size_t len, uint8_t out[16])
+{
+    if (len != 32) {
+        return false;
+    }
+    for (int i = 0; i < 32; i++) {
+        const char c = p[i];
+        const int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                    : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (v < 0) {
+            return false;
+        }
+        out[i / 2] = (uint8_t)(i & 1 ? out[i / 2] | v : v << 4);
+    }
+    return true;
+}
+
 static void merge_pad(NcPadState *s, const NcPadState *o)
 {
     s->buttons |= o->buttons;
@@ -711,6 +729,18 @@ EXPORT int SDL_main(int argc, char *argv[])
                       : !strcmp(p, "scart")  ? NC_AV_PACK_SCART
                       : !strcmp(p, "vga")    ? NC_AV_PACK_VGA
                                              : NC_AV_PACK_HDTV;
+        }
+        /* keys=<certificate key>|<HD key>, 32 hex digits each or empty:
+         * xemu's console's (HakuxConsoleKeys), so saves are signed alike */
+        if (!strncmp(argv[i], "keys=", 5)) {
+            uint8_t cert[16], hd[16];
+            const char *p = argv[i] + 5;
+            const char *bar = strchr(p, '|');
+            bool have_cert = bar && hex16(p, (size_t)(bar - p), cert);
+            bool have_hd = bar && hex16(bar + 1, strlen(bar + 1), hd);
+            nc_kernel_set_console_keys(have_cert ? cert : NULL, have_hd ? hd : NULL);
+            nc_log("hakuX-app", "console keys: certificate %s, HD %s", have_cert ? "xemu's" : "none",
+                   have_hd ? "xemu's" : "this console's");
         }
         if (!strncmp(argv[i], "lang=", 5)) {
             nc_kernel_set_language(atoi(argv[i] + 5));
