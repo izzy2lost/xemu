@@ -150,6 +150,7 @@ void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_P
  * all of them notified now, for a frame thread stopped for the guest that
  * waited their time (true when one was). */
 bool mcpx_apu_vp_off_pending(void);
+bool mcpx_apu_vp_withdraw_stale_idle_trap(MCPXAPUState *d);
 bool mcpx_apu_vp_off_notify_all(MCPXAPUState *d);
 void mcpx_apu_vp_reset(MCPXAPUState *d);
 void mcpx_apu_vp_refresh_voice_cache(MCPXAPUState *d, uint32_t new_base);

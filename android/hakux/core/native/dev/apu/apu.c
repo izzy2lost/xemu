@@ -130,6 +130,14 @@ static uint64_t mcpx_apu_read(MCPXAPUState *d, uint32_t addr, unsigned int size)
     case NV_PAPU_XGSCNT:
         r = gscnt_now() - apu_ld(&d->regs[NV_PAPU_XGSCNT]);
         break;
+    case NV_PAPU_FECTL:
+        if (mcpx_apu_vp_withdraw_stale_idle_trap(d)) {
+            apu_and(&d->regs[NV_PAPU_ISTS], ~NV_PAPU_ISTS_FETINTSTS);
+            update_irq(d);
+            pthread_cond_broadcast(&d->cond);   /* a frame thread parked on the trap */
+        }
+        r = apu_ld(&d->regs[NV_PAPU_FECTL]);
+        break;
     default:
         if (addr < 0x20000) {
             r = apu_ld(&d->regs[addr]);

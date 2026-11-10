@@ -2508,6 +2508,61 @@ static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
     apu_spin_unlock(&d->vp.fe_spin);
 }
 
+/* Whether voice v is on one of the lists now: the guest's links, read live
+ * (not the frame's walk). A list too long to be one (a cycle) counts as
+ * holding it. */
+static bool voice_listed(MCPXAPUState *d, uint16_t v)
+{
+    for (int list = 0; list < 3; list++) {
+        uint32_t cur = apu_ld(&d->regs[voice_list_regs[list].top]);
+        for (int i = 0; cur != 0xFFFF; i++) {
+            if (cur == v || i >= MCPX_HW_MAX_VOICES) {
+                return true;
+            }
+            if (cur >= MCPX_HW_MAX_VOICES) {
+                break;
+            }
+            cur = voice_get_mask(d, (uint16_t)cur, NV_PAVS_VOICE_TAR_PITCH_LINK,
+                                 NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE);
+        }
+    }
+    return false;
+}
+
+/* The guest reads FECTL (its ISR, before the trap's method): an
+ * SE2FE_IDLE_VOICE trap whose voice has left the lists since the frame
+ * raised it is withdrawn, true when it was. idle_report repeats a voice the
+ * guest leaves listed, frame after frame; DirectSound's DPC takes the voice
+ * off its list on the first report and frees its slot. A repeat raised just
+ * before, its interrupt delivered after the DPC (the IRQ can come several ms
+ * late here, microseconds on the hardware), sent the ISR to the empty slot:
+ * Star Wars Obi-Wan read the NULL voice's field 0xE0 (eip 0x3ACBE8) a few
+ * lightsaber swings into a level, and the process died. In the ISR the DPC
+ * can't run between this read and the ISR's lookup. */
+bool mcpx_apu_vp_withdraw_stale_idle_trap(MCPXAPUState *d)
+{
+    const uint32_t trapped = NV_PAPU_FECTL_FEMETHMODE_TRAPPED | NV_PAPU_FECTL_FETRAPREASON_REQUESTED;
+    if ((apu_ld(&d->regs[NV_PAPU_FECTL]) & trapped) != trapped ||
+        apu_ld(&d->regs[NV_PAPU_FEDECMETH]) != SE2FE_IDLE_VOICE) {
+        return false;           /* the common case, without the lock */
+    }
+    bool withdrawn = false;
+    apu_spin_lock(&d->vp.fe_spin);
+    const uint32_t fectl = apu_ld(&d->regs[NV_PAPU_FECTL]);
+    const uint32_t v = apu_ld(&d->regs[NV_PAPU_FEDECPARAM]);
+    if ((fectl & trapped) == trapped && apu_ld(&d->regs[NV_PAPU_FEDECMETH]) == SE2FE_IDLE_VOICE &&
+        v < MCPX_HW_MAX_VOICES && !voice_listed(d, (uint16_t)v)) {
+        apu_st(&d->regs[NV_PAPU_FECTL], fectl & ~(NV_PAPU_FECTL_FEMETHMODE | NV_PAPU_FECTL_FETRAPREASON));
+        withdrawn = true;
+        static unsigned s_logged;
+        if (s_logged++ < 16) {
+            nc_log("hakuX-apu", "idle trap for voice %u withdrawn: it left the lists before the guest took it", v);
+        }
+    }
+    apu_spin_unlock(&d->vp.fe_spin);
+    return withdrawn;
+}
+
 void mcpx_apu_vp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
 {
     memset(d->vp.sample_buf, 0, sizeof(d->vp.sample_buf));
