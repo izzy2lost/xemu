@@ -126,8 +126,13 @@ static const HleQuirk k_quirks[] = {
      * 2026-10-26): Mortal Kombat Shaolin Monks' meshes exploded; its vertices
      * are 18 bytes, two floats at offset 10, and the diag build counted 7.8
      * million misaligned attribute fetches in 230 s, nothing else wrong.
-     * The driver has no VK_EXT_legacy_vertex_attributes. */
-    { HLE_QUIRK_VB_ALIGN, "vb_align", mali_g57 },
+     * The driver has no VK_EXT_legacy_vertex_attributes.
+     * Mali-G715, Arm's r54p3 (Pixel 10a, 2026-11-09): Star Wars Obi-Wan's
+     * level geometry drew as long spikes; its vertices are 19 and 47 bytes
+     * (float3 + NORMPACKED3 + 3-byte colour). +vb_align drew it right. Two
+     * Mali generations on the current release: on for all Mali. It copies
+     * only the bindings that are misaligned. */
+    { HLE_QUIRK_VB_ALIGN, "vb_align", mali },
     /* Mali-G57 MC4, Arm's r40p0 (upstream: an Anbernic RG556, Unisoc T820,
      * 2026-10-31): Morrowind lost the device 0.2 s into its loading screen
      * every time, the kernel log "JS: Job Hard-Stopped" and "GPU fault 0x4002
