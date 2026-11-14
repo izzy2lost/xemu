@@ -28,6 +28,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import android.util.TypedValue
 import android.view.InputDevice
@@ -320,6 +322,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   override fun onPause() {
     handler.removeCallbacks(poll)
     handler.removeCallbacks(rumble)
+    stopDeviceRumble()
     router?.reset()
     activityPaused = true
     syncPause()
@@ -327,6 +330,7 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
   }
 
   override fun onDestroy() {
+    stopDeviceRumble()
     handler.removeCallbacksAndMessages(null)
     (getSystemService(Context.INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(this)
     super.onDestroy()
@@ -554,19 +558,48 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
     updateControllerVisibility()
   }
 
-  /** The rumble the title asks of each player, on that player's controller used last. */
+  /** The original external-controller rumble path remains unchanged.
+   * When player 1 has no controller vibrator (Odin built-in controls or touch),
+   * forward its rumble to the Android device's own vibration motor instead.
+   */
   private val rumbleOn = BooleanArray(4)
+  private var deviceRumbleOn = false
+
+  private fun deviceVibrator(): Vibrator? = runCatching {
+    val vibrator = if (Build.VERSION.SDK_INT >= 31) {
+      getSystemService(VibratorManager::class.java)?.defaultVibrator
+    } else {
+      @Suppress("DEPRECATION")
+      getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+    }
+    vibrator?.takeIf { it.hasVibrator() }
+  }.getOrNull()
+
+  private fun stopDeviceRumble() {
+    if (!deviceRumbleOn) return
+    runCatching { deviceVibrator()?.cancel() }
+    deviceRumbleOn = false
+  }
+
   private val rumble = object : Runnable {
     override fun run() {
       val r = router
       if (r != null && Build.VERSION.SDK_INT >= 31) {
         val mask = r.pluggedMask()
+        var useDeviceMotor = false
+        var deviceAmplitude = 0
         for (p in 0 until 4) {
           if (mask shr p and 1 == 0) continue
           val v = nativeGetRumble(p)
           val amp = (maxOf(v ushr 16, v and 0xFFFF) ushr 8).coerceIn(0, 255)
-          val dev = InputDevice.getDevice(r.rumbleDevice(p)) ?: continue
-          val vib = dev.vibratorManager.defaultVibrator
+          val dev = InputDevice.getDevice(r.rumbleDevice(p))
+          val vib = dev?.vibratorManager?.defaultVibrator
+          if (p == 0 && (vib == null || !vib.hasVibrator())) {
+            useDeviceMotor = true
+            deviceAmplitude = amp
+            continue
+          }
+          if (vib == null) continue
           if (amp > 0 && vib.hasVibrator()) {
             vib.vibrate(android.os.VibrationEffect.createOneShot(RUMBLE_MS + 20, amp.coerceAtLeast(1)))
             rumbleOn[p] = true
@@ -575,6 +608,21 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
             rumbleOn[p] = false
           }
         }
+        if (useDeviceMotor && deviceAmplitude > 0) {
+          val vib = deviceVibrator()
+          if (vib != null) {
+            val amplitude = if (vib.hasAmplitudeControl()) deviceAmplitude
+              else android.os.VibrationEffect.DEFAULT_AMPLITUDE
+            runCatching {
+              vib.vibrate(android.os.VibrationEffect.createOneShot(RUMBLE_MS + 20, amplitude))
+              deviceRumbleOn = true
+            }
+          }
+        } else {
+          stopDeviceRumble()
+        }
+      } else {
+        stopDeviceRumble()
       }
       handler.postDelayed(this, RUMBLE_MS)
     }
