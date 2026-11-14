@@ -918,7 +918,15 @@ void nc_kernel_title_loaded(NcKernel *k, const NcDisc *disc, const NcDiscFile *x
         nc_vm_wr32(k->vm, s + 4, buf);
     }
     nc_kernel_set_hd_key(k);
-}
+    
+    /* Expose the configured AV pack to Xbox titles.
+     * XGetAVPack uses HalBootSMCVideoMode.
+     */
+    s = data_va(k, "HalBootSMCVideoMode");
+    if (s) {
+        nc_vm_wr32(k->vm, s, av_pack_smc());
+    }
+  }
 
 const uint8_t *nc_kernel_eeprom(NcKernel *k)
 {
