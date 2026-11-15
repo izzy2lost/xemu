@@ -17,7 +17,6 @@
 #include <time.h>
 
 static int g_aspect = NC_ASPECT_AUTO;
-static bool g_widescreen;
 static bool g_fxaa;
 static int g_upscale = NC_UPSCALE_BILINEAR;
 static bool g_shown;
@@ -55,11 +54,6 @@ void nc_present_set_upscale(int mode)
 void nc_present_set_aspect(int mode)
 {
     g_aspect = mode;
-}
-
-void nc_present_set_widescreen(bool on)
-{
-    g_widescreen = on;
 }
 
 static uint64_t now_ns(void)
@@ -120,13 +114,11 @@ static void debug_poll(void)
     g_dbg.average = !strstr(v, "noaverage");
 }
 
-/* The frame's half size in the window (clip space): letterboxed to the
- * chosen shape, the frame's own (4:3 for 640x480), 4:3, 16:9, or the
- * window's (stretched). */
-static void place(uint32_t fw, uint32_t fh, uint32_t ww, uint32_t wh, float *sx, float *sy)
+/* The frame's half size in the window (clip space). */
+static void place(uint32_t ww, uint32_t wh, bool widescreen, float *sx, float *sy)
 {
     const float wa = (float)ww / (float)wh;
-    float fa = (float)fw / (float)fh;
+    float fa;
     switch (g_aspect) {
     case NC_ASPECT_4_3:
         fa = 4.0f / 3.0f;
@@ -138,11 +130,7 @@ static void place(uint32_t fw, uint32_t fh, uint32_t ww, uint32_t wh, float *sx,
         fa = wa;
         break;
     default:
-        /* A standard-definition frame (640x480, 720x480: under 16:10) from a
-         * console set to widescreen is anamorphic 16:9. */
-        if (g_widescreen && fa < 1.6f) {
-            fa = 16.0f / 9.0f;
-        }
+        fa = widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
         break;
     }
     *sx = *sy = 1.0f;
@@ -195,9 +183,10 @@ bool nc_present_frame(struct ANativeWindow *win)
     debug_poll();
     const bool fxaa = g_dbg.fxaa < 0 ? g_fxaa : g_dbg.fxaa != 0;
     const int upscale = g_dbg.upscale < 0 ? g_upscale : g_dbg.upscale;
+    const bool widescreen = g_aspect == NC_ASPECT_AUTO && nc_dev_av_widescreen();
     /* what places and filters the frame, beside it and the window */
     const uint64_t key = (uint64_t)fxaa | (uint64_t)upscale << 1 | (uint64_t)g_dbg.average << 4 |
-                         (uint64_t)g_widescreen << 5 | (uint64_t)(uint32_t)g_aspect << 8;
+                         (uint64_t)widescreen << 5 | (uint64_t)(uint32_t)g_aspect << 8;
     if (hle_present_unchanged(win, key)) {
         nc_dev_nv2a_display_pickup(now_ns()); /* it looked: the vblank keeps clear of it */
         wait_next_vsync();
@@ -210,7 +199,7 @@ bool nc_present_frame(struct ANativeWindow *win)
     nc_dev_nv2a_display_pickup(now_ns()); /* the vblank keeps clear of it */
     float sx = 1.0f, sy = 1.0f;
     if (hle_present_frame(&fw, &fh)) {
-        place(fw, fh, ww, wh, &sx, &sy);
+        place(ww, wh, widescreen, &sx, &sy);
         __atomic_store_n(&g_shown, true, __ATOMIC_RELAXED);
         __atomic_store_n(&g_placed, (uint64_t)fbits(sx) | (uint64_t)fbits(sy) << 32, __ATOMIC_RELAXED);
     }

@@ -331,6 +331,14 @@
               android:layout_weight="1"
               android:text="@string/settings_display_mode_16_9" />
 
+            <com.google.android.material.button.MaterialButton
+              android:id="@+id/btn_display_auto"
+              style="?attr/materialButtonOutlinedStyle"
+              android:layout_width="0dp"
+              android:layout_height="wrap_content"
+              android:layout_weight="1"
+              android:text="@string/settings_display_mode_auto" />
+
           </com.google.android.material.button.MaterialButtonToggleGroup>
 
           <com.google.android.material.textfield.TextInputLayout

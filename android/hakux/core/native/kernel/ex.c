@@ -612,11 +612,18 @@ static uint64_t AvSendTVEncoderOption(NcKernel *k, NcFrame *f, const uint32_t *a
     return 0;
 }
 
+/* AV mode encodings: WSS for anamorphic SD, and the two wide HD timings. */
+#define AV_MODE_WSS 0x10000000u
+#define AV_MODE_720P 0x880B0A02u
+#define AV_MODE_1080I 0x880E0C03u
+
 /* AvSetDisplayMode(RegisterBase, Step, Mode, Format, Pitch, FrameBuffer) */
 static uint64_t AvSetDisplayMode(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     nc_log("hakuX-native", "av: display mode %08x format %08x pitch %u fb %08x", a[2], a[3], a[4], a[5]);
     if (a[2]) {
+        const uint32_t mode = a[2];
+        nc_dev_av_set_widescreen((mode & AV_MODE_WSS) || mode == AV_MODE_720P || mode == AV_MODE_1080I);
         /* AV mode bit 30: the 50 Hz modes (PAL 576-line timings, as
          * 0x58030314 is); the 480-line, 480p and HD modes are 60 Hz. */
         nc_dev_nv2a_refresh(a[2] & 0x40000000u ? 50 : 60);
@@ -895,6 +902,7 @@ static uint32_t data_va(NcKernel *k, const char *name)
 void nc_kernel_title_loaded(NcKernel *k, const NcDisc *disc, const NcDiscFile *xbe, uint32_t xbe_base,
                             uint32_t image_size)
 {
+    nc_dev_av_set_widescreen(false);
     k->disc = disc;
     k->xbe_file = xbe;
     k->xbe_base = xbe_base;

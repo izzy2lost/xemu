@@ -21,9 +21,9 @@
 #define NC_STATE_V_FILE 3
 #define NC_STATE_MIN_FILE 1
 #define NC_STATE_H_FILE 0x2c150e4cu
-#define NC_STATE_V_KERN 3
+#define NC_STATE_V_KERN 4
 #define NC_STATE_MIN_KERN 1
-#define NC_STATE_H_KERN 0x156d0f8bu
+#define NC_STATE_H_KERN 0x087413e4u
 #define NC_STATE_V_MISC 1
 #define NC_STATE_MIN_MISC 1
 #define NC_STATE_H_MISC 0x04c0c5c8u

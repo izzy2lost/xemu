@@ -1240,6 +1240,9 @@ static SetupFiles SyncSetupFiles() {
   } else if (displayMode == 2) {
     ds.aspect_ratio = "16:9";
     xemu_android_set_display_mode_setting(2);
+  } else if (displayMode == 3) {
+    ds.aspect_ratio = "auto";
+    xemu_android_set_display_mode_setting(3);
   } else if (displayMode == 0) {
     ds.aspect_ratio = "fit";
     xemu_android_set_display_mode_setting(0);

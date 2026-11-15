@@ -773,7 +773,6 @@ EXPORT int SDL_main(int argc, char *argv[])
         av_pack = NC_AV_PACK_VGA;
     }
     nc_kernel_set_video(video, av_pack);
-    nc_present_set_widescreen(video >= 0 && (video & NC_VIDEO_WIDESCREEN));
     if (video >= 0) {
         nc_log("hakuX-app", "video flags %08llx, AV pack %d", (unsigned long long)video, av_pack);
     }

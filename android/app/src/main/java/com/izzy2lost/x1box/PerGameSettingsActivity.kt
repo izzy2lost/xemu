@@ -108,6 +108,7 @@ class PerGameSettingsActivity : AppCompatActivity() {
           SettingOption("0", R.string.settings_display_mode_stretch),
           SettingOption("1", R.string.settings_display_mode_4_3),
           SettingOption("2", R.string.settings_display_mode_16_9),
+          SettingOption("3", R.string.settings_display_mode_auto),
         ),
       ),
       SettingField(
