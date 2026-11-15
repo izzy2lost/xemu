@@ -17,13 +17,10 @@ bool nc_present_init(void);
  * into win, waiting for the panel; false when nothing could be presented
  * (the HLE GPU not up yet, no window). */
 bool nc_present_frame(struct ANativeWindow *win);
-/* The picture's shape on screen: the frame's own (auto: 4:3 for 640x480),
- * 4:3, 16:9 (a widescreen title's anamorphic 640x480), or the whole window. */
+/* The picture's shape on screen: follow guest video output, force
+ * 4:3 or 16:9, or fill the window. */
 enum { NC_ASPECT_AUTO, NC_ASPECT_4_3, NC_ASPECT_16_9, NC_ASPECT_STRETCH };
 void nc_present_set_aspect(int mode);
-/* The console is set to widescreen: auto shows a 4:3-sized frame as 16:9
- * (a widescreen title renders anamorphic into it). */
-void nc_present_set_widescreen(bool on);
 /* A point of the window (0..1 each way) as one of the last frame shown
  * (0..1 inside it); false when it's on the letterbox's bars. */
 bool nc_present_to_frame(float *x, float *y);

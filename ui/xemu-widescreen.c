@@ -28,10 +28,10 @@ static bool g_widescreen = false;
 
 void xemu_set_widescreen(bool widescreen)
 {
-    g_widescreen = widescreen;
+    __atomic_store_n(&g_widescreen, widescreen, __ATOMIC_RELAXED);
 }
 
 bool xemu_get_widescreen(void)
 {
-    return g_widescreen;
+    return __atomic_load_n(&g_widescreen, __ATOMIC_RELAXED);
 }

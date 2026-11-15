@@ -127,12 +127,13 @@ class HakuxCoreActivity : SDLActivity(), InputManager.InputDeviceListener {
       args += "version=$it"
     }
     /* The app's own display settings: the resolution scale (1-6x) and the
-     * picture's shape (0 stretch, 1 4:3, 2 16:9). */
+     * picture's shape (0 stretch, 1 4:3, 2 16:9, 3 auto). */
     val scale = setting("setting_surface_scale")?.toIntOrNull()?.coerceIn(1, 6) ?: 1
     args += "scale=$scale"
     args += "aspect=" + when (setting("setting_display_mode")?.toIntOrNull() ?: 0) {
       1 -> "4:3"
       2 -> "16:9"
+      3 -> "auto"
       else -> "stretch"
     }
     args += "tz=${TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000}"

@@ -1347,6 +1347,47 @@ static bool create_single_display_image_resources(PGRAPHState *pg,
 }
 
 #ifdef __ANDROID__
+extern int xemu_android_get_display_mode_setting(void);
+
+static void update_android_present_viewport(PGRAPHVkDisplayState *d, int display_mode)
+{
+    const VkExtent2D extent = d->swapchain_extent;
+    VkRect2D viewport = { .extent = extent };
+    if (display_mode != 0) {
+        double target_aspect =
+            display_mode == 1 ? (4.0 / 3.0) : (16.0 / 9.0);
+        double surface_aspect = (double)extent.width / extent.height;
+        if (surface_aspect > target_aspect) {
+            viewport.extent.height = extent.height;
+            viewport.extent.width =
+                MAX(1u, (uint32_t)lround(extent.height * target_aspect));
+        } else {
+            viewport.extent.width = extent.width;
+            viewport.extent.height =
+                MAX(1u, (uint32_t)lround(extent.width / target_aspect));
+        }
+    }
+    viewport.offset.x =
+        (int32_t)(extent.width - viewport.extent.width) / 2;
+    viewport.offset.y =
+        (int32_t)(extent.height - viewport.extent.height) / 2;
+
+    d->present_viewport = viewport;
+
+    /*
+     * Publish the letterboxed game rect (in drawable pixels) so the Chihiro
+     * light gun can map the pointer into guest screen space. On desktop this
+     * is filled in by the ImGui renderer instead; Android skips ui/xui, so
+     * without this the gun would aim against the whole window and be off by
+     * the size of the black bars.
+     */
+    extern int viewport_coords[4];
+    viewport_coords[0] = d->present_viewport.offset.x;
+    viewport_coords[1] = d->present_viewport.offset.y;
+    viewport_coords[2] = (int)d->present_viewport.extent.width;
+    viewport_coords[3] = (int)d->present_viewport.extent.height;
+}
+
 static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
 {
     PGRAPHVkState *r = pg->vk_renderer_state;
@@ -1576,43 +1617,8 @@ static bool create_android_swapchain(PGRAPHState *pg, int width, int height)
 
     d->swapchain_format = selected.format;
     d->swapchain_extent = extent;
-    extern int xemu_android_get_display_mode_setting(void);
-    int display_mode = xemu_android_get_display_mode_setting();
-    if (display_mode == 0) {
-        d->present_viewport.extent = extent;
-    } else {
-        double target_aspect =
-            display_mode == 1 ? (4.0 / 3.0) : (16.0 / 9.0);
-        double surface_aspect = (double)extent.width / extent.height;
-        if (surface_aspect > target_aspect) {
-            d->present_viewport.extent.height = extent.height;
-            d->present_viewport.extent.width =
-                MAX(1u, (uint32_t)lround(extent.height * target_aspect));
-        } else {
-            d->present_viewport.extent.width = extent.width;
-            d->present_viewport.extent.height =
-                MAX(1u, (uint32_t)lround(extent.width / target_aspect));
-        }
-    }
-    d->present_viewport.offset.x =
-        (int32_t)(extent.width - d->present_viewport.extent.width) / 2;
-    d->present_viewport.offset.y =
-        (int32_t)(extent.height - d->present_viewport.extent.height) / 2;
-
-    /*
-     * Publish the letterboxed game rect (in drawable pixels) so the Chihiro
-     * light gun can map the pointer into guest screen space. On desktop this
-     * is filled in by the ImGui renderer instead; Android skips ui/xui, so
-     * without this the gun would aim against the whole window and be off by
-     * the size of the black bars.
-     */
-    {
-        extern int viewport_coords[4];
-        viewport_coords[0] = d->present_viewport.offset.x;
-        viewport_coords[1] = d->present_viewport.offset.y;
-        viewport_coords[2] = (int)d->present_viewport.extent.width;
-        viewport_coords[3] = (int)d->present_viewport.extent.height;
-    }
+    const int display_mode = xemu_android_get_display_mode_setting();
+    update_android_present_viewport(d, display_mode);
     d->image_count = image_count;
     d->width = width;
     d->height = height;
@@ -2104,6 +2110,7 @@ static void render_display(PGRAPHState *pg, SurfaceBinding *surface)
 
 #ifdef __ANDROID__
     if (disp->direct_present) {
+        update_android_present_viewport(disp, xemu_android_get_display_mode_setting());
         present_sync_index = disp->present_frame % disp->image_count;
         VK_CHECK(vkWaitForFences(
             r->device, 1, &disp->present_fences[present_sync_index],

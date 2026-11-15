@@ -12,6 +12,7 @@
  */
 #include "native/kernel/kernel.h"
 #include "native/core/irq.h"
+#include "native/dev/dev.h"
 
 #include <stdlib.h>
 
@@ -22,6 +23,7 @@ typedef struct NcKState {
     uint32_t av_saved;
     uint8_t isr_line;
     uint32_t irq_enabled, irq_lines;
+    bool av_widescreen;
 } NcKState;
 
 typedef struct NcThreadRefs {
@@ -67,6 +69,7 @@ bool nc_kern_state_save(NcBuf *b)
     s.guest_cycles = nc_cpu_guest_cycles(k->cpu) - (nc_cpu_host_cycles() - nc_kernel_pause_cycles());
     s.x87_single = nc_cpu_x87_single(k->cpu);
     s.av_saved = nc_kernel_av_saved();
+    s.av_widescreen = nc_dev_av_widescreen();
     s.isr_line = nc_intr_isr_line();
     nc_irq_state(&s.irq_enabled, &s.irq_lines);
     nc_rec_put(b, &nc_rec_NcKState, &s);
@@ -100,6 +103,7 @@ bool nc_kern_state_load(NcRd *r, unsigned v)
         nc_cpu_x87_single_restore(k->cpu);
     }
     nc_kernel_av_saved_set(s.av_saved);
+    nc_dev_av_set_widescreen(s.av_widescreen);
     nc_intr_isr_line_set(s.isr_line);
     nc_irq_state_set(s.irq_enabled, s.irq_lines);
     nc_log("hakuX-native-state", "kernel: guest time %.3f s, %llu kernel calls", s.guest_ns / 1e9,

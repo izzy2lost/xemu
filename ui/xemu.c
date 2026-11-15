@@ -48,6 +48,7 @@
 #include "system/system.h"
 #include "xui/xemu-hud.h"
 #include "xemu-input.h"
+#include "xemu-widescreen.h"
 #include "xemu-settings.h"
 // #include "xemu-shaders.h"
 #include "xemu-snapshots.h"
@@ -157,7 +158,7 @@ static uint64_t g_android_frame_counter = 0;
 static uint64_t g_android_last_hw_frame = 0;
 static int g_android_target_fps = 60;
 static int64_t g_android_frame_interval_ns = 16666666;
-static int g_android_display_mode = 0; /* 0=stretch, 1=4:3, 2=16:9 */
+static int g_android_display_mode = 0; /* 0=stretch, 1=4:3, 2=16:9, 3=auto */
 static GLuint g_android_last_hw_tex = 0;
 static bool g_android_last_hw_flip = false;
 static bool g_android_direct_vulkan = false;
@@ -271,6 +272,9 @@ void xemu_android_set_display_mode_setting(int mode)
 
 int xemu_android_get_display_mode_setting(void)
 {
+    if (g_android_display_mode == 3) {
+        return xemu_get_widescreen() ? 2 : 1;
+    }
     return g_android_display_mode;
 }
 
@@ -359,8 +363,9 @@ static void sdl2_gl_render_texture(struct sdl2_console *scon,
 
     vw = w;
     vh = h;
-    if (g_android_display_mode != 0) {
-        float target = (g_android_display_mode == 1)
+    const int display_mode = xemu_android_get_display_mode_setting();
+    if (display_mode != 0) {
+        float target = (display_mode == 1)
                            ? (4.0f / 3.0f)
                            : (16.0f / 9.0f);
         float screen = (float)w / (float)h;
@@ -378,7 +383,7 @@ static void sdl2_gl_render_texture(struct sdl2_console *scon,
         __android_log_print(ANDROID_LOG_INFO, "xemu-android",
                             "present drawable=%dx%d window=%dx%d viewport=%d,%d %dx%d tex=%u flip=%d mode=%d",
                             w, h, ww, wh, vx, vy, vw, vh,
-                            (unsigned)tex, flip ? 1 : 0, g_android_display_mode);
+                            (unsigned)tex, flip ? 1 : 0, display_mode);
     }
 #endif
 

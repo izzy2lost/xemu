@@ -52,6 +52,9 @@ bool nc_dev_nvnet_link_up(void);
 /* x86 I/O ports (IN/OUT); bytes is 1, 2 or 4. */
 uint32_t nc_port_in(uint16_t port, unsigned bytes);
 void nc_port_out(uint16_t port, unsigned bytes, uint32_t value);
+/* Aspect ratio currently signalled by the guest video output. */
+bool nc_dev_av_widescreen(void);
+void nc_dev_av_set_widescreen(bool widescreen);
 
 #ifdef __cplusplus
 }
