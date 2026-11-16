@@ -20,8 +20,21 @@
  * player, which starts a movie on the other field, never started
  * (Riddick's movies stayed black in push-buffer mode). */
 #define MCPX_GPIO_FIELD 0x80C0u
+#define MCPX_GPIO_ASPECT_RATIO 0x80D6u
 #define FIELD_BIT       0x20u
 #define LOGGED_PORTS  64
+
+static bool g_av_widescreen;
+
+bool nc_dev_av_widescreen(void)
+{
+    return __atomic_load_n(&g_av_widescreen, __ATOMIC_RELAXED);
+}
+
+void nc_dev_av_set_widescreen(bool widescreen)
+{
+    __atomic_store_n(&g_av_widescreen, widescreen, __ATOMIC_RELAXED);
+}
 
 static struct {
     uint16_t port;
@@ -80,5 +93,8 @@ uint32_t nc_port_in(uint16_t port, unsigned bytes)
 void nc_port_out(uint16_t port, unsigned bytes, uint32_t value)
 {
     note(port, true, bytes, value);
+    if (port == MCPX_GPIO_ASPECT_RATIO) {
+        nc_dev_av_set_widescreen(value == 5);
+    }
     nc_mediaboard_port_out(port, value);
 }

@@ -53,3 +53,8 @@ One entry per section version (tools/native/statelock.py).
 
 - NcThread.has_wait_irql, wait_irql: the IRQL a thread blocked at, given back when it runs again (a Chihiro's USB driver waits at DISPATCH_LEVEL); v2 states: none, the thread runs at PASSIVE_LEVEL
 - upgraded: v1..v2 states load
+
+## KERN v4 (2026-11-15, after 9431719)
+
+- Store the guest video aspect ratio. Older states default to 4:3 until the guest signals its video mode.
+- upgraded: v1..v3 states load
