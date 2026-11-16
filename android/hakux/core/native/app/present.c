@@ -114,11 +114,16 @@ static void debug_poll(void)
     g_dbg.average = !strstr(v, "noaverage");
 }
 
-/* The frame's half size in the window (clip space). */
-static void place(uint32_t ww, uint32_t wh, bool widescreen, float *sx, float *sy)
+/* The frame's half size in the window (clip space): letterboxed to the
+ * chosen shape, 4:3, 16:9, or the window's (stretched). Auto is 16:9 while
+ * the guest signals widescreen (an anamorphic SD frame, or an HD mode), else
+ * the frame's own when it is wide already (an HD mode the signal missed),
+ * else 4:3. */
+static void place(uint32_t fw, uint32_t fh, uint32_t ww, uint32_t wh, bool widescreen,
+                  float *sx, float *sy)
 {
     const float wa = (float)ww / (float)wh;
-    float fa;
+    float fa = (float)fw / (float)fh;
     switch (g_aspect) {
     case NC_ASPECT_4_3:
         fa = 4.0f / 3.0f;
@@ -130,7 +135,11 @@ static void place(uint32_t ww, uint32_t wh, bool widescreen, float *sx, float *s
         fa = wa;
         break;
     default:
-        fa = widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+        if (widescreen) {
+            fa = 16.0f / 9.0f;
+        } else if (fa < 1.6f) {
+            fa = 4.0f / 3.0f;
+        }
         break;
     }
     *sx = *sy = 1.0f;
@@ -199,7 +208,7 @@ bool nc_present_frame(struct ANativeWindow *win)
     nc_dev_nv2a_display_pickup(now_ns()); /* the vblank keeps clear of it */
     float sx = 1.0f, sy = 1.0f;
     if (hle_present_frame(&fw, &fh)) {
-        place(ww, wh, widescreen, &sx, &sy);
+        place(fw, fh, ww, wh, widescreen, &sx, &sy);
         __atomic_store_n(&g_shown, true, __ATOMIC_RELAXED);
         __atomic_store_n(&g_placed, (uint64_t)fbits(sx) | (uint64_t)fbits(sy) << 32, __ATOMIC_RELAXED);
     }

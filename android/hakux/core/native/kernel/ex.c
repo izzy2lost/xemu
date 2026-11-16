@@ -953,15 +953,15 @@ void nc_kernel_title_loaded(NcKernel *k, const NcDisc *disc, const NcDiscFile *x
         nc_vm_wr32(k->vm, s + 4, buf);
     }
     nc_kernel_set_hd_key(k);
-    
-    /* Expose the configured AV pack to Xbox titles.
-     * XGetAVPack uses HalBootSMCVideoMode.
-     */
+
+    /* XGetAVPack returns *HalBootSMCVideoMode: the SMC's AV pack register,
+     * which the kernel reads at boot. Left 0 it is SCART, and a title that
+     * gates its HD modes on component (Halo 2) stayed in 480i. */
     s = data_va(k, "HalBootSMCVideoMode");
     if (s) {
         nc_vm_wr32(k->vm, s, av_pack_smc());
     }
-  }
+}
 
 const uint8_t *nc_kernel_eeprom(NcKernel *k)
 {
