@@ -41,7 +41,7 @@
   <string name="setup_pick_disc">Choose Games Folder</string>
   <string name="setup_disc_value">Games Folder: %1$s</string>
 
-  <string name="library_title">Game Library</string>
+  <string name="library_title">X1 BOX</string>
   <string name="library_boot_dashboard">Dashboard</string>
   <string name="library_boot_dashboard_note">Requires a hard drive image with the Microsoft dashboard installed. Barebones HDD layouts will not work.</string>
   <string name="library_snapshots">Snapshots</string>
