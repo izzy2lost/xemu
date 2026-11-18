@@ -723,12 +723,32 @@ static const void *lookup_tb_ptr_common(CPUState *cpu, TCGTBCPUState s)
  * If found, return the code pointer.  If not found, return
  * the tcg epilogue so that we return into cpu_tb_exec.
  */
+/*
+ * curr_cflags() for the lookup helpers, which run on every indirect branch:
+ * inline the common case (no single-step, no -one-insn-per-tb, no -d nochain)
+ * instead of calling out of line. From upstream PR #3141.
+ */
+static inline uint32_t lookup_tb_cflags(CPUState *cpu)
+{
+    if (unlikely(cpu->singlestep_enabled || qatomic_read(&one_insn_per_tb) ||
+                 qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN))) {
+        return curr_cflags(cpu);
+    }
+    return cpu->tcg_cflags;
+}
+
 const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
 {
     CPUState *cpu = env_cpu(env);
+#ifdef XBOX
+    /* xemu only builds i386: call the x86 hook directly, not through
+     * tcg_ops. */
+    TCGTBCPUState s = x86_get_tb_cpu_state_direct(cpu);
+#else
     TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+#endif
 
-    s.cflags = curr_cflags(cpu);
+    s.cflags = lookup_tb_cflags(cpu);
     return lookup_tb_ptr_common(cpu, s);
 }
 
@@ -748,7 +768,7 @@ const void *HELPER(lookup_tb_ptr_i32)(CPUArchState *env, uint32_t eip,
     TCGTBCPUState s = {
         .pc = (uint32_t)(cs_base + eip),
         .flags = flags,
-        .cflags = curr_cflags(cpu),
+        .cflags = lookup_tb_cflags(cpu),
         .cs_base = cs_base,
     };
 
