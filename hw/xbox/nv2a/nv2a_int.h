@@ -128,6 +128,11 @@ typedef struct NV2AState {
         QemuThread thread;
         QemuCond fifo_cond;
         QemuCond fifo_idle_cond;
+        QemuCond trap_cond;
+        /* A NOP trap is on its way to the guest; see pfifo_wait_for_trap. */
+        bool trap_pending;
+        /* Set by the NOP method handler once it has scheduled the IRQ. */
+        bool trap_irq_scheduled;
         bool fifo_kick;
         bool halt;
     } pfifo;

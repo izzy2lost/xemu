@@ -108,6 +108,9 @@ uint64_t pfifo_read(void *opaque, hwaddr addr, unsigned int size)
     NV2AState *d = (NV2AState *)opaque;
 
     qemu_mutex_lock(&d->pfifo.lock);
+    if (addr == NV_PFIFO_CACHE1_DMA_GET || addr == NV_PFIFO_CACHE1_DMA_PUT) {
+        pfifo_wait_for_trap(d);
+    }
 
     uint64_t r = 0;
     switch (addr) {
@@ -142,6 +145,9 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
     nv2a_reg_log_write(NV_PFIFO, addr, size, val);
 
     qemu_mutex_lock(&d->pfifo.lock);
+    if (addr == NV_PFIFO_CACHE1_DMA_GET || addr == NV_PFIFO_CACHE1_DMA_PUT) {
+        pfifo_wait_for_trap(d);
+    }
 
     switch (addr) {
     case NV_PFIFO_INTR_0:
@@ -167,6 +173,57 @@ void pfifo_kick(NV2AState *d)
     if (!d->pfifo.fifo_kick) {
         d->pfifo.fifo_kick = true;
         qemu_cond_broadcast(&d->pfifo.fifo_cond);
+    }
+}
+
+/*
+ * Port of upstream PR #3174 (fixes the random "Reserved pb command" abort).
+ *
+ * A NO_OPERATION with a non-zero parameter traps to the guest. Xbox Direct3D
+ * uses one to wake a thread that waits for the GPU to reach some point in the
+ * pushbuffer: it patches the NOP into commands it has already submitted, and
+ * takes it out again if the GPU turns out to be too close. A NOP consumed
+ * just before it is taken out still interrupts. On hardware that happens at
+ * once. Here the interrupt is raised from a main-loop bottom half (see
+ * pgraph_schedule_trap_irq), and the guest keeps running until it does. If
+ * the guest starts its next wait in that gap, the late interrupt ends that
+ * wait immediately and D3D overwrites commands not yet executed.
+ *
+ * D3D reads DMA_GET before it starts a wait. So while a trap is on its way,
+ * hold the guest at the pushbuffer pointers until the interrupt is raised.
+ * The BQL is dropped meanwhile so the bottom half can run. The timeout is
+ * only a safety net.
+ *
+ * Called with pfifo.lock held.
+ */
+#define PFIFO_TRAP_WAIT_MAX_MS 100
+
+void pfifo_wait_for_trap(NV2AState *d)
+{
+    if (!d->pfifo.trap_pending) {
+        return;
+    }
+
+    bool had_bql = bql_locked();
+    if (had_bql) {
+        bql_unlock();
+    }
+
+    int64_t deadline =
+        qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + PFIFO_TRAP_WAIT_MAX_MS;
+    while (d->pfifo.trap_pending && !d->exiting) {
+        int64_t left = deadline - qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+        if (left <= 0) {
+            break;
+        }
+        qemu_cond_timedwait(&d->pfifo.trap_cond, &d->pfifo.lock, left);
+    }
+
+    if (had_bql) {
+        /* Lock order is BQL, then pfifo.lock */
+        qemu_mutex_unlock(&d->pfifo.lock);
+        bql_lock();
+        qemu_mutex_lock(&d->pfifo.lock);
     }
 }
 
@@ -237,6 +294,7 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
     uint32_t *engine_reg = &d->pfifo.regs[NV_PFIFO_CACHE1_ENGINE];
     uint32_t *status = &d->pfifo.regs[NV_PFIFO_CACHE1_STATUS];
     ssize_t num_proc = -1;
+    bool trap = false;
 
     // TODO think more about locking
 
@@ -314,6 +372,15 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
         assert(engine == ENGINE_GRAPHICS);
         SET_MASK(*pull1, NV_PFIFO_CACHE1_PULL1_ENGINE, engine);
 
+        /* Set while pfifo.lock is still held from reading the method, so a
+         * guest that takes the NOP out after this point finds the flag set
+         * when it next looks at the pushbuffer pointers. */
+        trap = method == NV097_NO_OPERATION && parameter != 0;
+        if (trap) {
+            d->pfifo.trap_pending = true;
+            qatomic_set(&d->pfifo.trap_irq_scheduled, false);
+        }
+
 #if XEMU_OPT_PFIFO_LOCK_BATCH
 #if XEMU_OPT_LOCKLESS_FAST_DISPATCH
         if (inc && can_fifo_access(d)) {
@@ -364,6 +431,14 @@ static ssize_t pfifo_run_puller(NV2AState *d, uint32_t method_entry,
     }
 
 puller_done:
+    /* The trap bottom half clears the flag once the IRQ is raised. If the
+     * NOP did not trap after all (FIFO access off, not a kelvin object),
+     * nothing will, so clear it here. */
+    if (trap && !qatomic_read(&d->pfifo.trap_irq_scheduled)) {
+        d->pfifo.trap_pending = false;
+        qemu_cond_broadcast(&d->pfifo.trap_cond);
+    }
+
     if (num_proc > 0) {
         *status |= NV_PFIFO_CACHE1_STATUS_LOW_MARK;
     }
