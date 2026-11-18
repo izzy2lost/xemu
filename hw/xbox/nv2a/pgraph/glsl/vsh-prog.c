@@ -745,6 +745,27 @@ static const char* vsh_header =
     "  return t;\n"
     "}\n";
 
+bool pgraph_glsl_vsh_prog_writes_fog(const uint32_t *tokens,
+                                     unsigned int length)
+{
+    for (unsigned int slot = 0; slot < length; slot++) {
+        const uint32_t *t = &tokens[slot * VSH_TOKEN_SIZE];
+        /* Same condition decode_opcode() uses to emit the output write. */
+        bool op = vsh_get_field(t, FLD_OUT_MUX) == OMUX_MAC
+                      ? vsh_get_field(t, FLD_MAC) != MAC_NOP
+                      : vsh_get_field(t, FLD_ILU) != ILU_NOP;
+        if (op && vsh_get_field(t, FLD_OUT_O_MASK) != 0 &&
+            vsh_get_field(t, FLD_OUT_ORB) != OUTPUT_C &&
+            (vsh_get_field(t, FLD_OUT_ADDRESS) & 0xF) == OUTPUT_REG_FOG) {
+            return true;
+        }
+        if (vsh_get_field(t, FLD_FINAL)) {
+            break;
+        }
+    }
+    return false;
+}
+
 void pgraph_glsl_gen_vsh_prog(uint16_t version, const uint32_t *tokens,
                               unsigned int length, MString *header,
                               MString *body)

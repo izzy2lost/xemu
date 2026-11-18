@@ -32,6 +32,7 @@
 #include "util.h"
 #include "swizzle.h"
 #include "nv2a_vsh_emulator.h"
+#include "glsl/vsh-prog.h"
 
 #define PG_GET_MASK(reg, mask) GET_MASK(pgraph_reg_r(pg, reg), mask)
 #define PG_SET_MASK(reg, mask, value)        \
@@ -1042,6 +1043,7 @@ void pgraph_init(NV2AState *d)
     }
 
     pgraph_clear_dirty_reg_map(pg);
+    pgraph_vsh_carryover_reset(pg);
 }
 
 void pgraph_clear_dirty_reg_map(PGRAPHState *pg)
@@ -1325,6 +1327,128 @@ unsigned int nv2a_get_surface_scale_factor(void)
 #define DEF_METHOD_CASE_4_OFFSET(gclass, name, offset, stride) /* Drop */
 #define DEF_METHOD_CASE_4(gclass, name, stride) \
     DEF_METHOD_PROTO(gclass, name);
+/* The parsed form of the program at program_start, cached until program data
+ * is uploaded again. NULL when it cannot be parsed (no final marker). */
+Nv2aVshProgram *pgraph_get_vsh_program(PGRAPHState *pg,
+                                       unsigned int program_start)
+{
+    assert(program_start < NV2A_MAX_TRANSFORM_PROGRAM_LENGTH);
+
+    if (pg->vsh_program_cache_gen != pg->vsh_program_data_gen) {
+        for (int i = 0; i < NV2A_MAX_TRANSFORM_PROGRAM_LENGTH; i++) {
+            if (pg->vsh_program_cache_valid[i]) {
+                nv2a_vsh_program_destroy(&pg->vsh_program_cache[i]);
+                pg->vsh_program_cache_valid[i] = false;
+            }
+        }
+        pg->vsh_program_cache_gen = pg->vsh_program_data_gen;
+    }
+
+    Nv2aVshProgram *program = &pg->vsh_program_cache[program_start];
+    if (!pg->vsh_program_cache_valid[program_start]) {
+        Nv2aVshParseResult result = nv2a_vsh_parse_program(
+            program, pg->program_data[program_start],
+            NV2A_MAX_TRANSFORM_PROGRAM_LENGTH - program_start);
+        if (result != NV2AVPR_SUCCESS) {
+            return NULL;
+        }
+        pg->vsh_program_cache_valid[program_start] = true;
+    }
+    return program;
+}
+
+void pgraph_vsh_carryover_reset(PGRAPHState *pg)
+{
+    pg->vsh_carry_fog[0] = 0.0f;
+    pg->vsh_carry_fog[1] = 0.0f;
+    pg->vsh_carry_fog[2] = 0.0f;
+    pg->vsh_carry_fog[3] = 1.0f;
+    pg->vsh_carry_pending = false;
+}
+
+/* At the end of a draw. A program that writes oFog replaces the carried value
+ * (oFog.x, the only component fog reads, is set by any write), so only the
+ * last such draw matters: snapshot its inputs and evaluate later, if ever. A
+ * program that does not write oFog leaves it as it was. */
+void pgraph_vsh_carryover_update(PGRAPHState *pg)
+{
+    if (!pg->draw_arrays_length && !pg->inline_elements_length &&
+        !pg->inline_buffer_length && !pg->inline_array_length) {
+        return;
+    }
+
+    bool is_vertex_program = GET_MASK(pgraph_reg_r(pg, NV_PGRAPH_CSV0_D),
+                                      NV_PGRAPH_CSV0_D_MODE) == 2;
+    if (!is_vertex_program) {
+        return;
+    }
+
+    unsigned int program_start = GET_MASK(pgraph_reg_r(pg, NV_PGRAPH_CSV0_C),
+                                          NV_PGRAPH_CSV0_C_CHEOPS_PROGRAM_START);
+    if (program_start >= NV2A_MAX_TRANSFORM_PROGRAM_LENGTH ||
+        !pgraph_glsl_vsh_prog_writes_fog(
+            pg->program_data[program_start],
+            NV2A_MAX_TRANSFORM_PROGRAM_LENGTH - program_start)) {
+        return;
+    }
+
+    pg->vsh_carry_pending = true;
+    pg->vsh_carry_pending_start = program_start;
+    for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
+        memcpy(pg->vsh_carry_pending_inputs[i],
+               pg->vertex_attributes[i].inline_value, sizeof(float) * 4);
+    }
+    memcpy(pg->vsh_carry_pending_constants, pg->vsh_constants,
+           sizeof(pg->vsh_carry_pending_constants));
+}
+
+/* Run the pending program for the provoking vertex (approximated, as upstream
+ * does, by the inline attribute values) and keep its oFog. */
+void pgraph_vsh_carryover_resolve(PGRAPHState *pg)
+{
+    if (!pg->vsh_carry_pending) {
+        return;
+    }
+    pg->vsh_carry_pending = false;
+
+    Nv2aVshProgram *program =
+        pgraph_get_vsh_program(pg, pg->vsh_carry_pending_start);
+    if (!program) {
+        return;
+    }
+
+    Nv2aVshCPUFullExecutionState execution_state;
+    Nv2aVshExecutionState state =
+        nv2a_vsh_emu_initialize_full_execution_state(&execution_state);
+
+    QEMU_BUILD_BUG_MSG(sizeof(execution_state.input_regs) !=
+                           sizeof(pg->vsh_carry_pending_inputs),
+                       "input_regs and vertex attributes size mismatch");
+    memcpy(execution_state.input_regs, pg->vsh_carry_pending_inputs,
+           sizeof(execution_state.input_regs));
+
+    for (int i = 0; i < ARRAY_SIZE(execution_state.output_regs) / 4; ++i) {
+        execution_state.output_regs[i * 4 + 0] = 0.0f;
+        execution_state.output_regs[i * 4 + 1] = 0.0f;
+        execution_state.output_regs[i * 4 + 2] = 0.0f;
+        execution_state.output_regs[i * 4 + 3] = 1.0f;
+    }
+    memcpy(&execution_state.output_regs[NV2AOR_FOG_COORD * 4],
+           pg->vsh_carry_fog, sizeof(pg->vsh_carry_fog));
+
+    QEMU_BUILD_BUG_MSG(sizeof(execution_state.context_regs) !=
+                           sizeof(pg->vsh_carry_pending_constants),
+                       "context_regs and vsh_constants size mismatch");
+    memcpy(execution_state.context_regs, pg->vsh_carry_pending_constants,
+           sizeof(execution_state.context_regs));
+
+    nv2a_vsh_emu_execute(&state, program);
+
+    memcpy(pg->vsh_carry_fog,
+           &execution_state.output_regs[NV2AOR_FOG_COORD * 4],
+           sizeof(pg->vsh_carry_fog));
+}
+
 #include "methods.h.inc"
 #undef DEF_METHOD
 #undef DEF_METHOD_RANGE
@@ -3060,6 +3184,8 @@ DEF_METHOD_INC(NV097, SET_TRANSFORM_PROGRAM)
                                 NV_PGRAPH_CHEOPS_OFFSET_PROG_LD_PTR);
 
     assert(program_load < NV2A_MAX_TRANSFORM_PROGRAM_LENGTH);
+    /* A pending carryover evaluation reads the program being replaced. */
+    pgraph_vsh_carryover_resolve(pg);
     pg->program_data[program_load][slot%4] = parameter;
     pg->program_data_dirty = true;
     pg->vsh_program_data_gen++;
@@ -3584,6 +3710,9 @@ DEF_METHOD(NV097, SET_BEGIN_END)
         }
         nv2a_profile_inc_counter(NV2A_PROF_BEGIN_ENDS);
         d->pgraph.renderer->ops.draw_end(d);
+        /* After draw_end, whatever path it took (frame skip, nop draw,
+         * reorder): the hardware runs the program regardless. */
+        pgraph_vsh_carryover_update(pg);
         pgraph_reset_inline_buffers(pg);
         pg->primitive_mode = PRIM_TYPE_INVALID;
     } else {
@@ -4100,26 +4229,11 @@ DEF_METHOD(NV097, LAUNCH_TRANSFORM_PROGRAM)
     unsigned int program_start = parameter;
     assert(program_start < NV2A_MAX_TRANSFORM_PROGRAM_LENGTH);
 
-    /* Invalidate cache when program data has been uploaded */
-    if (pg->vsh_program_cache_gen != pg->vsh_program_data_gen) {
-        for (int i = 0; i < NV2A_MAX_TRANSFORM_PROGRAM_LENGTH; i++) {
-            if (pg->vsh_program_cache_valid[i]) {
-                nv2a_vsh_program_destroy(&pg->vsh_program_cache[i]);
-                pg->vsh_program_cache_valid[i] = false;
-            }
-        }
-        pg->vsh_program_cache_gen = pg->vsh_program_data_gen;
-    }
-
-    /* Use cached parsed program or parse and cache */
-    Nv2aVshProgram *program = &pg->vsh_program_cache[program_start];
-    if (!pg->vsh_program_cache_valid[program_start]) {
-        Nv2aVshParseResult result = nv2a_vsh_parse_program(
-                program,
-                pg->program_data[program_start],
-                NV2A_MAX_TRANSFORM_PROGRAM_LENGTH - program_start);
-        assert(result == NV2AVPR_SUCCESS);
-        pg->vsh_program_cache_valid[program_start] = true;
+    Nv2aVshProgram *program = pgraph_get_vsh_program(pg, program_start);
+    if (!program) {
+        NV2A_DPRINTF("LAUNCH_TRANSFORM_PROGRAM: unparsable program at %u\n",
+                     program_start);
+        return;
     }
 
     Nv2aVshCPUXVSSExecutionState state_linkage;

@@ -28,4 +28,9 @@ void pgraph_glsl_gen_vsh_prog(uint16_t version, const uint32_t *tokens,
                               unsigned int length, MString *header,
                               MString *body);
 
+/* Whether the program writes oFog. Any write sets oFog.x, the only component
+ * fog reads, so a program that writes it never shows a carried-over value. */
+bool pgraph_glsl_vsh_prog_writes_fog(const uint32_t *tokens,
+                                     unsigned int length);
+
 #endif

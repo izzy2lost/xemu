@@ -525,6 +525,7 @@ static void nv2a_reset(NV2AState *d)
     d->unlock_mode_active = false;
     d->vblank_deferred = false;
     d->pgraph.waiting_for_context_switch = false;
+    pgraph_vsh_carryover_reset(&d->pgraph);
 
     d->pmc.pending_interrupts = 0;
     d->pfifo.pending_interrupts = 0;
@@ -634,8 +635,37 @@ static int nv2a_pre_load(void *opaque)
 {
     NV2AState *d = opaque;
     nv2a_lock_fifo(d);
+    /* States saved before carryover have no vsh-carry subsection. */
+    pgraph_vsh_carryover_reset(&d->pgraph);
     return 0;
 }
+
+static int nv2a_vsh_carry_pre_save(void *opaque)
+{
+    NV2AState *d = opaque;
+    pgraph_vsh_carryover_resolve(&d->pgraph);
+    return 0;
+}
+
+static bool nv2a_vsh_carry_needed(void *opaque)
+{
+    return true;
+}
+
+/* A subsection rather than a version bump, so the main section's version
+ * stays in step with upstream's numbering. */
+static const VMStateDescription vmstate_nv2a_vsh_carry = {
+    .name = "nv2a/vsh-carry",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = nv2a_vsh_carry_needed,
+    .pre_save = nv2a_vsh_carry_pre_save,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BUFFER_UNSAFE(pgraph.vsh_carry_fog, NV2AState, 0,
+                              sizeof(((PGRAPHState *)0)->vsh_carry_fog)),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 static int nv2a_post_load(void *opaque, int version_id)
 {
@@ -778,6 +808,10 @@ static const VMStateDescription vmstate_nv2a = {
         VMSTATE_UNUSED(1),
         VMSTATE_BOOL(pgraph.waiting_for_context_switch, NV2AState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_nv2a_vsh_carry,
+        NULL
     },
 };
 

@@ -200,7 +200,7 @@ set(LIBSLIRP_SOURCES
 )
 
 # --- nv2a_vsh_cpu ---
-set(NV2A_VSH_CPU_GIT_REV "1115255708c10c4841b65dcd2223262e7a316598")
+set(NV2A_VSH_CPU_GIT_REV "89315e8eff62605d2a96fe14429ebeac1dacaa8c")
 set(nv2a_vsh_cpu_UNIT_TEST OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   nv2a_vsh_cpu

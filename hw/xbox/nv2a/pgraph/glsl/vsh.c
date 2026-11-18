@@ -152,10 +152,15 @@ void pgraph_glsl_set_vsh_state(PGRAPHState *pg, VshState *vsh)
     }
 
     vsh->is_fixed_function = fixed_function;
+    vsh->carry_fog = false;
     if (fixed_function) {
         set_fixed_function_vsh_state(pg, &vsh->fixed_function);
     } else {
         set_programmable_vsh_state(pg, &vsh->programmable);
+        vsh->carry_fog = vsh->fog_enable &&
+                         !pgraph_glsl_vsh_prog_writes_fog(
+                             (const uint32_t *)vsh->programmable.program_data,
+                             vsh->programmable.program_length);
     }
 }
 
@@ -169,6 +174,11 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         if (i == VshUniform_inlineValue &&
             (!state->uniform_attrs ||
              opts.use_push_constants_for_uniform_attrs)) {
+            continue;
+        }
+        /* Only declared where read, so other shaders' uniform layouts are
+         * unchanged and the lazy carryover evaluation stays lazy. */
+        if (i == VshUniform_vshCarryFog && !state->carry_fog) {
             continue;
         }
         if (info->count == 1) {
@@ -312,6 +322,9 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
     if (state->is_fixed_function) {
         pgraph_glsl_gen_vsh_ff(state, header, body);
     } else {
+        if (state->carry_fog) {
+            mstring_append(body, "  oFog = vshCarryFog;\n");
+        }
         pgraph_glsl_gen_vsh_prog(
             VSH_VERSION_XVS, (uint32_t *)state->programmable.program_data,
             state->programmable.program_length, header, body);
@@ -541,6 +554,12 @@ void pgraph_glsl_set_vsh_uniform_values(PGRAPHState *pg, const VshState *state,
     if (locs[VshUniform_inlineValue] != -1) {
         pgraph_get_inline_values(pg, state->uniform_attrs, values->inlineValue,
                                  NULL);
+    }
+
+    if (locs[VshUniform_vshCarryFog] != -1) {
+        pgraph_vsh_carryover_resolve(pg);
+        memcpy(values->vshCarryFog, pg->vsh_carry_fog,
+               sizeof(values->vshCarryFog));
     }
 
     if (locs[VshUniform_surfaceSize] != -1) {

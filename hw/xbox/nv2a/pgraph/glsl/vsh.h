@@ -59,6 +59,9 @@ typedef struct {
 
     bool fog_enable;
     enum VshFogMode fog_mode;
+    /* Programmable, fog on, and the program never writes oFog: it starts from
+     * the value the previous program left behind (vshCarryFog). */
+    bool carry_fog;
 
     bool specular_enable;
     bool separate_specular;
@@ -97,7 +100,8 @@ void pgraph_glsl_set_vsh_state(PGRAPHState *pg, VshState *state);
     DECL(S, material_alpha, float, 1)                        \
     DECL(S, pointParams, float, 8)                           \
     DECL(S, specularPower, float, 1)                         \
-    DECL(S, surfaceSize, vec2, 1)
+    DECL(S, surfaceSize, vec2, 1)                            \
+    DECL(S, vshCarryFog, vec4, 1)
 
 DECL_UNIFORM_TYPES(VshUniform, VSH_UNIFORM_DECL_X)
 

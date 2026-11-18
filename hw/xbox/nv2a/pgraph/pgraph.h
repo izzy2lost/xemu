@@ -212,6 +212,16 @@ typedef struct PGRAPHState {
     bool vsh_program_cache_valid[NV2A_MAX_TRANSFORM_PROGRAM_LENGTH];
     Nv2aVshProgram vsh_program_cache[NV2A_MAX_TRANSFORM_PROGRAM_LENGTH];
 
+    /* Vertex shader register carryover: oFog keeps the value the provoking
+     * vertex of the previous draw left in it. Evaluated on the CPU lazily,
+     * only when a program that does not write oFog draws with fog on; a draw
+     * that writes it just snapshots what the evaluation needs. */
+    float vsh_carry_fog[4];
+    bool vsh_carry_pending;
+    unsigned int vsh_carry_pending_start;
+    float vsh_carry_pending_inputs[NV2A_VERTEXSHADER_ATTRIBUTES][4];
+    uint32_t vsh_carry_pending_constants[NV2A_VERTEXSHADER_CONSTANTS][4];
+
     uint32_t vsh_constants[NV2A_VERTEXSHADER_CONSTANTS][4];
     bool vsh_constants_dirty[NV2A_VERTEXSHADER_CONSTANTS];
     bool vsh_constants_any_dirty;
@@ -497,6 +507,11 @@ void pgraph_allocate_inline_buffer_vertices(PGRAPHState *pg, unsigned int attr);
 void pgraph_finish_inline_buffer_vertex(PGRAPHState *pg);
 void pgraph_reset_inline_buffers(PGRAPHState *pg);
 void pgraph_reset_draw_arrays(PGRAPHState *pg);
+Nv2aVshProgram *pgraph_get_vsh_program(PGRAPHState *pg,
+                                       unsigned int program_start);
+void pgraph_vsh_carryover_reset(PGRAPHState *pg);
+void pgraph_vsh_carryover_update(PGRAPHState *pg);
+void pgraph_vsh_carryover_resolve(PGRAPHState *pg);
 void pgraph_update_inline_value(VertexAttribute *attr, const uint8_t *data);
 void pgraph_get_inline_values(PGRAPHState *pg, uint16_t attrs,
                                float values[NV2A_VERTEXSHADER_ATTRIBUTES][4],
