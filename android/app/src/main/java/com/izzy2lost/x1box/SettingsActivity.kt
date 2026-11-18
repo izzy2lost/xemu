@@ -741,6 +741,9 @@ class SettingsActivity : AppCompatActivity() {
     btnClearCache.setOnClickListener {
       showClearCacheConfirmation()
     }
+    findViewById<MaterialButton>(R.id.btn_reset_all_settings).setOnClickListener {
+      confirmResetAllSettings()
+    }
     btnExportDebugLog.setOnClickListener {
       if (!DebugLog.hasAnyLog(this)) {
         Toast.makeText(this, R.string.settings_export_debug_log_empty, Toast.LENGTH_LONG).show()
@@ -2105,6 +2108,63 @@ class SettingsActivity : AppCompatActivity() {
     val option = eepromRefreshRateOptions.firstOrNull { it.value == refreshRate }
       ?: eepromRefreshRateOptions.first()
     dropdownEepromRefreshRate.setText(getString(option.labelRes), false)
+  }
+
+  private fun confirmResetAllSettings() {
+    MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_Xemu_RoundedDialog)
+      .setTitle(R.string.settings_reset_all_title)
+      .setMessage(R.string.settings_reset_all_message)
+      .setPositiveButton(R.string.settings_reset_all_action) { _, _ -> resetAllSettings() }
+      .setNegativeButton(android.R.string.cancel, null)
+      .show()
+  }
+
+  /**
+   * The global settings this screen saves, back to the values it shows for a
+   * fresh install. Written explicitly rather than removed, so the screen and
+   * the native side (which keeps its own fallbacks) agree. Per-game overrides
+   * live in their own store and are left alone, as are file paths, the
+   * library, EEPROM, GPU driver, System Link addresses and Insignia state.
+   */
+  private fun resetAllSettings() {
+    val wasDebugLoggingEnabled = prefs.getBoolean(DebugLog.PREF_ENABLED, false)
+    prefs.edit()
+      .putString(HakuxLaunch.PREF_CORE, HakuxLaunch.CORE_HAKUX)
+      .putString("setting_renderer", "vulkan")
+      .putString("setting_filtering", "nearest") // what migration V2 gives a fresh install
+      .putInt("setting_surface_scale", 1)
+      .putInt("setting_display_mode", 3)
+      .putInt("setting_frame_rate_limit", 60)
+      .putInt("setting_system_memory_mib", 64)
+      .remove(OrientationPreferences.PREF_UI_ORIENTATION)
+      .remove(OrientationPreferences.PREF_GAME_ORIENTATION)
+      .putString("setting_tcg_thread", "multi")
+      .putBoolean("setting_use_dsp", false)
+      .putBoolean("setting_use_dsp_jit", true)
+      .putBoolean(PREF_HRTF, false)
+      .putBoolean("setting_cache_shaders", true)
+      .putBoolean("setting_hard_fpu", true)
+      .putBoolean("setting_vsync", false)
+      .putBoolean("setting_skip_boot_anim", true)
+      .putBoolean("draw_reorder", false)
+      .putBoolean("draw_merge_v2", false)
+      .putBoolean("async_compile", false)
+      .putBoolean("show_fps", false)
+      .putBoolean(DebugLog.PREF_ENABLED, false)
+      .putBoolean("setting_network_enable", false)
+      .putString(SystemLink.PREF_MODE, SystemLink.MODE_OFF)
+      .putBoolean("setting_chihiro_widescreen", false)
+      .putString("setting_chihiro_controls", "gun")
+      .putString("setting_audio_driver", "openslES")
+      .putInt("tcg_tb_size", 256)
+      .apply()
+    if (wasDebugLoggingEnabled) {
+      DebugLog.setEnabled(context = this, value = false)
+    }
+    Toast.makeText(this, R.string.settings_reset_all_done, Toast.LENGTH_SHORT).show()
+    // Reload the screen on the defaults, without saving the old values over them.
+    skipSaveOnPause = true
+    recreate()
   }
 
   private fun showClearCacheConfirmation() {

@@ -440,6 +440,10 @@
   <string name="settings_clear_cache_success">Cache cleared</string>
   <string name="settings_clear_cache_partial">Some cache files could not be removed</string>
   <string name="settings_clear_cache_empty">Cache is already clear</string>
+  <string name="settings_reset_all_action">Reset All Settings</string>
+  <string name="settings_reset_all_title">Reset All Settings</string>
+  <string name="settings_reset_all_message">Put every setting on this screen back to its default? Your games folder, BIOS, HDD and EEPROM files, saves, controller mappings, GPU driver and per-game settings are kept.</string>
+  <string name="settings_reset_all_done">Settings reset to defaults</string>
 
   <string name="in_game_menu_title">Game Menu</string>
   <string name="in_game_menu_resume">Resume</string>
