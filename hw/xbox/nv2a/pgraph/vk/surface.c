@@ -162,6 +162,24 @@ static bool check_surface_overlaps_range(const SurfaceBinding *surface,
     return !(surface->vram_addr >= range_end || range_start >= surface_end);
 }
 
+unsigned int pgraph_vk_mark_surfaces_in_range_for_upload(NV2AState *d,
+                                                         hwaddr start,
+                                                         hwaddr size)
+{
+    PGRAPHVkState *r = d->pgraph.vk_renderer_state;
+    SurfaceBinding *surface;
+    unsigned int num_marked = 0;
+
+    QTAILQ_FOREACH (surface, &r->surfaces, entry) {
+        if (check_surface_overlaps_range(surface, start, size)) {
+            surface->upload_pending = true;
+            ++num_marked;
+        }
+    }
+
+    return num_marked;
+}
+
 bool pgraph_vk_download_surfaces_in_range_if_dirty(PGRAPHState *pg,
                                                    hwaddr start, hwaddr size)
 {

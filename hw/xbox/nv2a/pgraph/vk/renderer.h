@@ -1607,6 +1607,9 @@ void pgraph_vk_wait_for_surface_download(SurfaceBinding *e);
 bool pgraph_vk_prerecord_display_download(NV2AState *d);
 void pgraph_vk_download_dirty_surfaces(NV2AState *d);
 bool pgraph_vk_download_surfaces_in_range_if_dirty(PGRAPHState *pg, hwaddr start, hwaddr size);
+unsigned int pgraph_vk_mark_surfaces_in_range_for_upload(NV2AState *d,
+                                                         hwaddr start,
+                                                         hwaddr size);
 void pgraph_vk_upload_surface_data(NV2AState *d, SurfaceBinding *surface,
                                    bool force);
 void pgraph_vk_surface_update(NV2AState *d, bool upload, bool color_write,
