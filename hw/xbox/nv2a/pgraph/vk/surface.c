@@ -572,6 +572,9 @@ void pgraph_vk_complete_staged_downloads(NV2AState *d, PGRAPHVkState *r)
             memory_region_set_client_dirty(d->vram, s->vram_addr,
                                            s->pitch * s->height,
                                            DIRTY_MEMORY_NV2A_TEX);
+            memory_region_set_client_dirty(d->vram, s->vram_addr,
+                                           s->pitch * s->height,
+                                           DIRTY_MEMORY_NV2A);
             s->download_pending = false;
             s->download_row_count = 0;
             s->draw_dirty = false;
@@ -630,6 +633,9 @@ void pgraph_vk_download_surface_complete_deferred(NV2AState *d)
             memory_region_set_client_dirty(d->vram, s->vram_addr,
                                            s->pitch * s->height,
                                            DIRTY_MEMORY_NV2A_TEX);
+            memory_region_set_client_dirty(d->vram, s->vram_addr,
+                                           s->pitch * s->height,
+                                           DIRTY_MEMORY_NV2A);
             s->download_pending = false;
             s->download_row_count = 0;
             s->draw_dirty = false;
@@ -1112,6 +1118,9 @@ static void download_surface(NV2AState *d, SurfaceBinding *surface, bool force)
     memory_region_set_client_dirty(d->vram, surface->vram_addr,
                                    surface->pitch * surface->height,
                                    DIRTY_MEMORY_NV2A_TEX);
+    memory_region_set_client_dirty(d->vram, surface->vram_addr,
+                                   surface->pitch * surface->height,
+                                   DIRTY_MEMORY_NV2A);
 
     surface->download_pending = false;
     surface->download_row_count = 0;
@@ -1317,6 +1326,9 @@ void pgraph_vk_process_pending_downloads(NV2AState *d)
         memory_region_set_client_dirty(d->vram, surface->vram_addr,
                                        surface->pitch * surface->height,
                                        DIRTY_MEMORY_NV2A_TEX);
+        memory_region_set_client_dirty(d->vram, surface->vram_addr,
+                                       surface->pitch * surface->height,
+                                       DIRTY_MEMORY_NV2A);
         surface->download_pending = false;
         surface->download_row_count = 0;
         surface->draw_dirty = false;
@@ -1395,6 +1407,9 @@ void pgraph_vk_download_dirty_surfaces(NV2AState *d)
         memory_region_set_client_dirty(d->vram, surface->vram_addr,
                                        surface->pitch * surface->height,
                                        DIRTY_MEMORY_NV2A_TEX);
+        memory_region_set_client_dirty(d->vram, surface->vram_addr,
+                                       surface->pitch * surface->height,
+                                       DIRTY_MEMORY_NV2A);
         surface->download_pending = false;
         surface->download_row_count = 0;
         surface->draw_dirty = false;
