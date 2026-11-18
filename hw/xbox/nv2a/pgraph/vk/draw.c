@@ -2907,6 +2907,11 @@ void pgraph_vk_finish(PGRAPHState *pg, FinishReason finish_reason)
         r->push_tex_dirty = true;
         r->uniforms_changed = true;
         r->in_command_buffer = false;
+        /* Upstream PR #3139: everything drawn so far is now submitted. Without
+         * this, the last surface drawn before the submit has draw_time ==
+         * the next command buffer's start time and looks unfinished, which
+         * cost a PRESENTING finish every frame. */
+        pg->draw_time++;
         r->color_drawn_in_cb = false;
         r->zeta_drawn_in_cb = false;
         r->queries_reset_in_cb = false;
