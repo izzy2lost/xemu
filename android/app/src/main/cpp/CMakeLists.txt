@@ -204,7 +204,10 @@ set(NV2A_VSH_CPU_GIT_REV "89315e8eff62605d2a96fe14429ebeac1dacaa8c")
 set(nv2a_vsh_cpu_UNIT_TEST OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   nv2a_vsh_cpu
-  GIT_REPOSITORY "https://github.com/xemu-project/nv2a_vsh_cpu.git"
+  # abaire's repo: the pinned revision is on its main, while the xemu-project
+  # mirror's branches stop at 1115255 (a plain clone there cannot check it out;
+  # meson's wrap fetches by hash and is fine).
+  GIT_REPOSITORY "https://github.com/abaire/nv2a_vsh_cpu.git"
   GIT_TAG "${NV2A_VSH_CPU_GIT_REV}"
   GIT_SHALLOW FALSE
 )
