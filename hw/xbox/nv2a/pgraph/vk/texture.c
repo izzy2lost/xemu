@@ -1445,6 +1445,11 @@ static bool check_surface_to_texture_compatiblity(PGRAPHVkState *r,
         return true;
     }
 
+    /* The texture is a converted copy; a surface's raw bytes are not it. */
+    if (shape->color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R6G5B5) {
+        return false;
+    }
+
     VkColorFormatInfo tex_vkf = r->texture_format_map[shape->color_format];
     return tex_vkf.vk_format &&
            surface->host_fmt.host_bytes_per_pixel == vk_format_texel_size(tex_vkf.vk_format);

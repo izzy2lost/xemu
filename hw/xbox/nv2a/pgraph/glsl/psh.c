@@ -213,14 +213,11 @@ void pgraph_glsl_set_psh_state(PGRAPHState *pg, PshState *state)
             }
         }
 
-        /* Keep track of textures uploaded as signed normalized data. Those
-         * must not be remapped a second time in the fragment shader. R6G5B5
-         * is the only such format, and both backends upload it signed
-         * (GL_RGBA8_SNORM / VK_FORMAT_R8G8B8A8_SNORM), so this does not depend
-         * on which renderer is in use.
+        /* Textures uploaded as signed normalized data must not be remapped
+         * a second time in the fragment shader. None are any more: R6G5B5,
+         * the only candidate, samples unsigned on hardware.
          */
-        state->snorm_tex[i] =
-            color_format == NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R6G5B5;
+        state->snorm_tex[i] = false;
         state->shadow_map[i] = f.depth;
 
         uint32_t filter = pgraph_reg_r(pg, NV_PGRAPH_TEXFILTER0 + i * 4);
