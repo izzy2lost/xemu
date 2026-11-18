@@ -158,7 +158,7 @@ static uint64_t g_android_frame_counter = 0;
 static uint64_t g_android_last_hw_frame = 0;
 static int g_android_target_fps = 60;
 static int64_t g_android_frame_interval_ns = 16666666;
-static int g_android_display_mode = 0; /* 0=stretch, 1=4:3, 2=16:9, 3=auto */
+static int g_android_display_mode = 3; /* 0=stretch, 1=4:3, 2=16:9, 3=auto */
 static GLuint g_android_last_hw_tex = 0;
 static bool g_android_last_hw_flip = false;
 static bool g_android_direct_vulkan = false;

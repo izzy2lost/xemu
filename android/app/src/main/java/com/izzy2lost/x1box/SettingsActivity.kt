@@ -531,7 +531,7 @@ class SettingsActivity : AppCompatActivity() {
       else -> toggleScale.check(R.id.btn_scale_1x)
     }
 
-    val displayMode = prefs.getInt("setting_display_mode", 0)
+    val displayMode = prefs.getInt("setting_display_mode", 3)
     when (displayMode) {
       1    -> toggleDisplayMode.check(R.id.btn_display_4_3)
       2    -> toggleDisplayMode.check(R.id.btn_display_16_9)
@@ -830,7 +830,7 @@ class SettingsActivity : AppCompatActivity() {
     if (!prefs.contains("setting_tcg_thread")) editor.putString("setting_tcg_thread", "multi")
     if (!prefs.contains("setting_audio_driver")) editor.putString("setting_audio_driver", "openslES")
     if (!prefs.contains("setting_surface_scale")) editor.putInt("setting_surface_scale", 1)
-    if (!prefs.contains("setting_display_mode")) editor.putInt("setting_display_mode", 0)
+    if (!prefs.contains("setting_display_mode")) editor.putInt("setting_display_mode", 3)
     if (!prefs.contains("setting_system_memory_mib")) editor.putInt("setting_system_memory_mib", 64)
     if (!prefs.contains("tcg_tb_size")) editor.putInt("tcg_tb_size", 256)
 

@@ -1248,7 +1248,12 @@ static SetupFiles SyncSetupFiles() {
     xemu_android_set_display_mode_setting(0);
   } else {
     std::string arPref = GetPrefString(env, activity, "aspect_ratio");
-    if (!arPref.empty()) ds.aspect_ratio = arPref;
+    if (!arPref.empty()) {
+      ds.aspect_ratio = arPref;
+    } else {
+      ds.aspect_ratio = "auto";
+      xemu_android_set_display_mode_setting(3);
+    }
   }
 
   WriteConfigToml(out.config_path, out.mcpx, out.flash, out.hdd, out.dvd, out.eeprom, tbSize, ds);

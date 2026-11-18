@@ -305,7 +305,7 @@ class PerGameSettingsActivity : AppCompatActivity() {
       "setting_filtering" -> prefs.getString(key, "linear") ?: "linear"
       "setting_vsync" -> prefs.getBoolean(key, false).toString()
       "setting_surface_scale" -> prefs.getInt(key, 1).toString()
-      "setting_display_mode" -> prefs.getInt(key, 0).toString()
+      "setting_display_mode" -> prefs.getInt(key, 3).toString()
       OrientationPreferences.PREF_GAME_ORIENTATION ->
         prefs.getString(
           key,
